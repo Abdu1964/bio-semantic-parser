@@ -44,13 +44,16 @@ def fetch_pubtator_entities(pmid: str, timeout: int = 15) -> List[Dict]:
                 label      = infons.get("type", "")
                 identifier = infons.get("identifier", "") or infons.get("normalized_id", "")
 
+                loc   = ann.get("locations", [{}])[0]
+                start = loc.get("offset", -1)
+                end   = (start + loc.get("length", 0)) if start >= 0 else -1
                 entities.append({
                     "text":       text,
                     "normalized": normalized,
                     "label":      label,
                     "identifier": identifier,
-                    "start":      ann.get("locations", [{}])[0].get("offset", -1),
-                    "end":        -1,
+                    "start":      start,
+                    "end":        end,
                     "negated":    False,
                     "source":     "pubtator3",
                 })
