@@ -41,7 +41,12 @@ def _client() -> object:
 
 # ── Taxonomy prompt block ─────────────────────────────────────────────────────
 
+_TAXONOMY_BLOCK: str = ""
+
 def _taxonomy_block() -> str:
+    global _TAXONOMY_BLOCK
+    if _TAXONOMY_BLOCK:
+        return _TAXONOMY_BLOCK
     lines = ["RELATION TAXONOMY — use exactly these types, nothing else:\n"]
     for rel, entry in TAXONOMY.items():
         lines.append(f"  {rel.value}")
@@ -49,7 +54,8 @@ def _taxonomy_block() -> str:
         lines.append(f"    Example    : {entry['example']}")
         lines.append(f"    Not this   : {entry['not_this']}")
         lines.append("")
-    return "\n".join(lines)
+    _TAXONOMY_BLOCK = "\n".join(lines)
+    return _TAXONOMY_BLOCK
 
 
 # ── Extraction prompt ─────────────────────────────────────────────────────────
