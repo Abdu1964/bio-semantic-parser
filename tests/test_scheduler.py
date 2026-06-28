@@ -7,14 +7,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-# ---------------------------------------------------------------------------
-# Local imports (conftest.py already inserts project root + src/ into sys.path)
-# ---------------------------------------------------------------------------
+# conftest.py already inserts project root + src/
 from scheduler.scheduler import Scheduler
 from registry.registry import SourceRegistry
 
-
-# ── helpers ─────────────────────────────────────────────────────────────────
+# helpers
 
 def _make_registry(tmp_path, sources):
     cfg = tmp_path / "sources.yaml"
@@ -39,7 +36,7 @@ def _make_scheduler(tmp_path, sources=None):
     return Scheduler(registry, db_path)
 
 
-# ── DB initialisation ────────────────────────────────────────────────────────
+# DB initialisation
 
 class TestInitDb:
     def test_creates_processed_ids_table(self, tmp_path):
@@ -63,7 +60,7 @@ class TestInitDb:
         assert nested.exists()
 
 
-# ── last_run / set_last_run ──────────────────────────────────────────────────
+# last_run / set_last_run
 
 class TestLastRun:
     def test_get_last_run_returns_7_days_ago_for_unknown_source(self, tmp_path):
@@ -81,12 +78,12 @@ class TestLastRun:
     def test_set_last_run_idempotent(self, tmp_path):
         sched = _make_scheduler(tmp_path)
         sched.set_last_run("pubmed")
-        sched.set_last_run("pubmed")  # should not raise / duplicate
+        sched.set_last_run("pubmed")  # should not duplicate
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         assert sched.get_last_run("pubmed") == today
 
 
-# ── is_processed / mark_processed / should_process ──────────────────────────
+# is_processed / mark_processed / should_process
 
 class TestProcessedIds:
     def test_new_id_not_processed(self, tmp_path):
@@ -131,7 +128,7 @@ class TestProcessedIds:
         assert ids == {"p1", "p2"}
 
 
-# ── resolve_id ───────────────────────────────────────────────────────────────
+# resolve_id
 
 class TestResolveId:
     def test_with_id_field_returns_content_and_standard(self, tmp_path):
@@ -159,7 +156,7 @@ class TestResolveId:
         assert doc_id == expected
 
 
-# ── _build_fetch_url ─────────────────────────────────────────────────────────
+# _build_fetch_url
 
 class TestBuildFetchUrl:
     @pytest.fixture
@@ -198,7 +195,7 @@ class TestBuildFetchUrl:
         assert sched._build_fetch_url(source, "X") == ""
 
 
-# ── get_new_ids routing ──────────────────────────────────────────────────────
+# get_new_ids routing
 
 class TestGetNewIds:
     """Verifies that get_new_ids dispatches to the correct private method."""
@@ -246,7 +243,7 @@ class TestGetNewIds:
         assert result == []
 
 
-# ── _query_ncbi (mocked HTTP) ────────────────────────────────────────────────
+# _query_ncbi (mocked HTTP)
 
 class TestQueryNcbi:
     def test_returns_id_list(self, tmp_path):
@@ -292,7 +289,7 @@ class TestQueryNcbi:
         assert "MYKEY123" in captured["url"]
 
 
-# ── _query_biorxiv (mocked HTTP) ────────────────────────────────────────────
+# _query_biorxiv
 
 class TestQueryBiorxiv:
     def test_extracts_dois(self, tmp_path):
@@ -314,7 +311,7 @@ class TestQueryBiorxiv:
         assert dois == ["10.1101/2024.01.01.000001", "10.1101/2024.01.02.000002"]
 
 
-# ── _query_clinicaltrials (mocked HTTP) ──────────────────────────────────────
+# _query_clinicaltrials
 
 class TestQueryClinicalTrials:
     def test_extracts_nct_ids(self, tmp_path):
@@ -338,7 +335,7 @@ class TestQueryClinicalTrials:
         assert len(nct_ids) == 2
 
 
-# ── _scan_file_inbox ──────────────────────────────────────────────────────────
+# _scan_file_inbox
 
 class TestScanFileInbox:
     def test_processes_matching_file(self, tmp_path):
@@ -381,7 +378,6 @@ class TestScanFileInbox:
         source = {"name": "local_pdf", "type": "file", "watch_dir": str(inbox), "format": "pdf"}
         sched = _make_scheduler(tmp_path, [source])
 
-        # pre-mark the sha256 as processed
         doc_id = hashlib.sha256(content).hexdigest()
         sched.mark_processed(doc_id, "local_pdf", "sha256")
 
@@ -417,7 +413,7 @@ class TestScanFileInbox:
         assert results["errors"] == 1
 
 
-# ── run() integration (fully mocked) ─────────────────────────────────────────
+# run() integration
 
 class TestRun:
     def test_run_skips_source_without_search_query(self, tmp_path):

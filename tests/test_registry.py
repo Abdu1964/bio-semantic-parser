@@ -93,7 +93,6 @@ def test_register_source_deduplicates(config_path):
     registry.register_source({"name": "pubmed", "base_url": "https://changed"})
 
     assert len(registry.get_all_sources()) == before
-    # existing entry left untouched
     assert registry.get_source_by_name("pubmed").get("base_url") != "https://changed"
 
 
