@@ -83,10 +83,8 @@ def call_llm(
                 _time.sleep(_COMPLETION_DELAY)
             return response.choices[0].message.content or ""
         except concurrent.futures.TimeoutError:
-            try:
-                client.close()
-            except Exception:
-                pass
+            # Best-effort cancellation; the underlying request may still be in flight.
+            future.cancel()
             if attempt < _RETRY_BUDGET:
                 print(
                     f"[llm_client] vLLM timeout (attempt {attempt+1}/{_RETRY_BUDGET+1}). "
@@ -99,7 +97,11 @@ def call_llm(
                 f"LLM did not respond within {_wall_timeout}s after {_RETRY_BUDGET+1} attempts"
             )
         finally:
-            pool.shutdown(wait=False)
+            try:
+                client.close()
+            except Exception:
+                pass
+            pool.shutdown(wait=False, cancel_futures=True)
             _global_sem.release()
 
 
