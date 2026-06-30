@@ -36,6 +36,12 @@ def make_client() -> OpenAI:
     )
 
 
+_RETRY_WAIT       = int(os.getenv("LLM_RETRY_WAIT",       "60"))
+_RETRY_BUDGET     = int(os.getenv("LLM_RETRY_BUDGET",     "5"))
+# Stagger completions to prevent burst arrivals that trigger vLLM scheduler freeze.
+_COMPLETION_DELAY = float(os.getenv("LLM_COMPLETION_DELAY", "2"))
+
+
 def call_llm(
     messages:     list,
     model:        str  = "",
@@ -44,6 +50,8 @@ def call_llm(
     wall_timeout: int   = None,
     json_mode:    bool  = True,
 ) -> str:
+    import time as _time
+
     _model        = model        or MODEL
     _temperature  = temperature  if temperature  is not None else TEMPERATURE
     _max_tokens   = max_tokens   if max_tokens   is not None else MAX_TOKENS
@@ -58,24 +66,41 @@ def call_llm(
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
-    def _call(kw=kwargs):
-        kw = {**kw, "messages": messages}
-        return make_client().chat.completions.create(**kw)
+    for attempt in range(_RETRY_BUDGET + 1):
+        client = make_client()
 
-    # Single throttle point for all users/layers.
-    _global_sem.acquire()
-    pool   = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(_call)
-    try:
-        response = future.result(timeout=_wall_timeout)
-        return response.choices[0].message.content or ""
-    except concurrent.futures.TimeoutError:
-        raise TimeoutError(
-            f"LLM did not respond within {_wall_timeout}s — server may be overloaded"
-        )
-    finally:
-        pool.shutdown(wait=False)
-        _global_sem.release()
+        def _call(kw=kwargs, _client=client):
+            kw = {**kw, "messages": messages}
+            return _client.chat.completions.create(**kw)
+
+        # Single throttle point for all users/layers.
+        _global_sem.acquire()
+        pool   = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(_call)
+        try:
+            response = future.result(timeout=_wall_timeout)
+            if _COMPLETION_DELAY > 0:
+                _time.sleep(_COMPLETION_DELAY)
+            return response.choices[0].message.content or ""
+        except concurrent.futures.TimeoutError:
+            try:
+                client.close()
+            except Exception:
+                pass
+            if attempt < _RETRY_BUDGET:
+                print(
+                    f"[llm_client] vLLM timeout (attempt {attempt+1}/{_RETRY_BUDGET+1}). "
+                    f"Waiting {_RETRY_WAIT}s then retrying — restart vLLM if stuck.",
+                    flush=True,
+                )
+                _time.sleep(_RETRY_WAIT)
+                continue
+            raise TimeoutError(
+                f"LLM did not respond within {_wall_timeout}s after {_RETRY_BUDGET+1} attempts"
+            )
+        finally:
+            pool.shutdown(wait=False)
+            _global_sem.release()
 
 
 def parse_json(raw: str) -> dict:
