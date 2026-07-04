@@ -478,3 +478,14 @@ def process(
         r["_source_text"] = text_by_doc.get(doc_id, "")
     return records
 
+
+def process_batch(
+    results: list,
+    annotated_chunks: list,
+    verbose: bool = False,
+    step_cb=None,
+    batch_cb=None,
+) -> list:
+    """Convenience wrapper: pair ExtractionResult list with annotated chunk list."""
+    pairs = list(zip(results, annotated_chunks))
+    return process(pairs, verbose=verbose, step_cb=step_cb, batch_cb=batch_cb)
