@@ -371,3 +371,43 @@ def normalize_entity(
         return {"canonical_id": f"TEXT:{slug}", "id_source": "fuzzy", "needs_review": True}
 
     return {"canonical_id": "NEEDS_REVIEW", "id_source": "review", "needs_review": True}
+
+
+def normalize_record(record: dict, annotated_chunk: dict) -> dict:
+    """Normalize subject and object entities in one extraction record; adds *_id and *_id_source fields."""
+    subject_name = record.get("subject_name", "")
+    subject_type = record.get("subject_type", "OTHER")
+    object_name  = record.get("object_name",  "")
+    object_type  = record.get("object_type",  "OTHER")
+
+    layer4_map: dict = {
+        e["text"].lower(): e.get("identifier") or e.get("normalized", "")
+        for e in annotated_chunk.get("entities", [])
+        if e.get("identifier") or e.get("normalized")
+    }
+
+    subj_norm = normalize_entity(
+        subject_name, subject_type,
+        existing_id=layer4_map.get(subject_name.lower(), ""),
+    )
+    obj_norm = normalize_entity(
+        object_name, object_type,
+        existing_id=layer4_map.get(object_name.lower(), ""),
+    )
+
+    review_reason = ""
+    if subj_norm["needs_review"]:
+        review_reason += f"subject '{subject_name}' not normalized; "
+    if obj_norm["needs_review"]:
+        review_reason += f"object '{object_name}' not normalized"
+
+    return {
+        **record,
+        "subject_id":         subj_norm["canonical_id"],
+        "subject_id_source":  subj_norm["id_source"],
+        "subject_needs_review": subj_norm["needs_review"],
+        "object_id":          obj_norm["canonical_id"],
+        "object_id_source":   obj_norm["id_source"],
+        "object_needs_review": obj_norm["needs_review"],
+        "review_reason":      review_reason.strip("; "),
+    }
