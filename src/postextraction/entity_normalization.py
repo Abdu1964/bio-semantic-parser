@@ -263,7 +263,16 @@ def _wikidata_search(text: str, entity_type: str, timeout: int = _TIMEOUT) -> Op
                     if vals:
                         ext_id = vals[0].get("mainsnak", {}).get("datavalue", {}).get("value", "")
                         if ext_id:
-                            return ext_id   # return the canonical DB id, not QID
+                            _WD_PREFIX = {
+                                "GENE":          "NCBI_GENE:",
+                                "PROTEIN":       "UniProtKB:",
+                                "DISEASE":       "DOID:",
+                                "SMALL_MOLECULE":"PUBCHEM:",
+                                "PATHWAY":       "REACTOME:",
+                                "ORGANISM":      "NCBITaxon:",
+                            }
+                            pfx = _WD_PREFIX.get(entity_type, "")
+                            return f"{pfx}{ext_id}" if pfx else ext_id
                 return f"WD:{qid}"
     except Exception:
         pass
