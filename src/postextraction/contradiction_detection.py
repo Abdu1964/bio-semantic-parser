@@ -33,14 +33,18 @@ def check_contradiction(record: dict) -> dict:
     if not subject_id or not object_id:
         return record
 
-    if not _DB_PATH.exists():
+    negated = 1 if record.get("negated") else 0
+
+    import os as _os
+    db_path = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
+    if not db_path.exists():
         return record
 
     conn = _get_conn()
     row  = conn.execute(
         "SELECT id, source_papers FROM triples "
-        "WHERE subject_id=? AND relation=? AND object_id=?",
-        (subject_id, opposing.value, object_id),
+        "WHERE subject_id=? AND relation=? AND object_id=? AND negated=?",
+        (subject_id, opposing.value, object_id, negated),
     ).fetchone()
     conn.close()
 
@@ -64,7 +68,9 @@ def check_contradiction(record: dict) -> dict:
 
 def flag_existing_as_contradiction(triple_id: int, reason: str) -> None:
     """Mark an already-stored triple as a contradiction (called when new opposing arrives)."""
-    if not _DB_PATH.exists():
+    import os as _os
+    db_path = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
+    if not db_path.exists():
         return
     conn = _get_conn()
     conn.execute(
