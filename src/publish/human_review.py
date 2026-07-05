@@ -219,12 +219,13 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
         }
         lines = []
         for line in queue_path.read_text().splitlines():
+            entry = None
             try:
                 entry = json.loads(line)
                 key = (entry.get("subject_name",""), entry.get("relation",""), entry.get("object_name",""))
                 if key in approved_keys:
-                    entry["status"]        = "APPROVED"
-                    entry["reviewed_at"]   = now
+                    entry["status"]          = "APPROVED"
+                    entry["reviewed_at"]     = now
                     entry["reviewer_action"] = "approve"
             except Exception:
                 pass
