@@ -210,3 +210,54 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
     return summary
 
 
+def export_csvs_from_db(staging_db: str, run_dir: str, formats: str = "neo4j") -> None:
+    """Re-export Neo4j/MeTTa CSVs from the staging DB after human-review approval."""
+    import sqlite3 as _sq
+    from pathlib import Path as _Path
+
+    sdb = _Path(staging_db)
+    run = _Path(run_dir)
+    if not sdb.exists():
+        return
+
+    try:
+        conn = _sq.connect(str(sdb))
+        conn.row_factory = _sq.Row
+        rows = conn.execute(
+            "SELECT * FROM triples WHERE flagged_for_review = 0"
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return
+
+    if not rows:
+        return
+
+    records = [dict(r) for r in rows]
+
+    try:
+        import json as _json
+        _safe    = (records[0].get("source_papers", "[]") if records else "[]")
+        _doc_ids = _json.loads(_safe) if isinstance(_safe, str) else _safe
+        _doc_id  = _doc_ids[0] if _doc_ids else ""
+        if _doc_id:
+            _ckpt = _Path("data/checkpoints") / _doc_id / "layer7_processed.json"
+            if _ckpt.exists():
+                _l7 = _json.loads(_ckpt.read_text(encoding="utf-8"))
+                _ch_map = {
+                    (r.get("subject_name",""), r.get("relation",""), r.get("object_name","")): r.get("confidence_channels", {})
+                    for r in _l7
+                }
+                for rec in records:
+                    key = (rec.get("subject_name",""), rec.get("relation",""), rec.get("object_name",""))
+                    if not rec.get("confidence_channels") and key in _ch_map:
+                        rec["confidence_channels"] = _ch_map[key]
+    except Exception:
+        pass
+
+    try:
+        insert_to_atomspace(records, run_dir=run, formats=formats)
+    except Exception:
+        pass
+
+
