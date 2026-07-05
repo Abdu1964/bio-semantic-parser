@@ -168,11 +168,11 @@ def get_all_triples() -> list:
     return [dict(row) for row in rows]
 
 
-def commit_staging_to_main(staging_path: str, formats: str = "both") -> int:
+def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
     """
     Merge all triples from a staging DB into the main triple_store.db.
     Used by the demo after the user approves a paper.
-    Returns the number of triples committed.
+    Returns {"new": int, "updated": int, "total": int}.
     """
     import os as _os
     main_path = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
