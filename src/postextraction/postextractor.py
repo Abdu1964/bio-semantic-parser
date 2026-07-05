@@ -106,10 +106,13 @@ def process(
     # Collect all chunks for cross-chunk sentence search in confidence scoring
     all_chunks = [chunk for _, chunk in extraction_pairs]
 
+    # Build (document_id, chunk_index) → chunk lookup to avoid O(N²) scan in Step 1
+    _chunk_map: dict = {}
     for result, chunk in extraction_pairs:
         doc_id = chunk.get("document_id", "")
         if doc_id:
             text_by_doc[doc_id] = chunk.get("text", "")
+            _chunk_map[(doc_id, chunk.get("chunk_index", 0))] = chunk
 
         for relation in result.relations:
             if relation.extraction_viable:
@@ -126,10 +129,8 @@ def process(
     records = []
     _n_total = len(raw_records)
     for _i, record in enumerate(raw_records, 1):
-        chunk_for_record = next(
-            (c for _, c in extraction_pairs
-             if c.get("document_id") == record["document_id"]),
-            {}
+        chunk_for_record = _chunk_map.get(
+            (record["document_id"], record.get("chunk_index", 0)), {}
         )
         norm = entity_normalization.normalize_record(record, chunk_for_record)
         records.append(norm)
