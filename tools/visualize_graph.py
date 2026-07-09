@@ -226,12 +226,17 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
         '></script>'
     )
 
+    degrees: dict = {}
+    for e in edges:
+        degrees[e["source_id"]] = degrees.get(e["source_id"], 0) + 1
+        degrees[e["target_id"]] = degrees.get(e["target_id"], 0) + 1
+
     vis_nodes = []
     for nid, n in nodes.items():
         etype  = n.get("entity_type", "OTHER")
         name   = _display_name(nid, n.get("name", ""))
         color  = _node_color(etype)
-        degree = sum(1 for e in edges if e["source_id"] == nid or e["target_id"] == nid)
+        degree = degrees.get(nid, 0)
         type_label = etype.replace("_", " ").title()
         all_props = {k: v for k, v in n.items() if v is not None and str(v).strip()}
 
