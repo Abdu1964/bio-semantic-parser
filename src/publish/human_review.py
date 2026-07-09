@@ -65,7 +65,7 @@ def append(records: list, run_dir: Path = None, target_format: str = "both") -> 
             jf.write(json.dumps(entry) + "\n")
             count += 1
 
-    _write_csv(records, csv_path)
+    _write_csv([{**r, "target_format": target_format} for r in records], csv_path)
     return count
 
 
