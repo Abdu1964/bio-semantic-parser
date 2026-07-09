@@ -170,7 +170,8 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
             flagged_for_review INTEGER NOT NULL DEFAULT 0,
             validation_verdict TEXT NOT NULL DEFAULT '',
             created_at         TEXT NOT NULL DEFAULT '',
-            updated_at         TEXT NOT NULL DEFAULT ''
+            updated_at         TEXT NOT NULL DEFAULT '',
+            UNIQUE(subject_id, relation, object_id, negated)
         )
     """)
 
