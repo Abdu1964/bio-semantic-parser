@@ -282,13 +282,13 @@ def check_duplicates(neo4j_dir: Path) -> dict:
 
     for path in neo4j_dir.rglob("edges_*.csv"):
         for row in _read_csv(path):
-            key = (row.get("source_id",""), row.get("target_id",""), path.stem)
+            key = (row.get("source_id", ""), row.get("target_id", ""), row.get("relation", ""))
             seen[key].append(str(path.name))
 
     for key, occurrences in seen.items():
         if len(occurrences) > 1:
             duplicates.append(
-                f"  ({key[0]}) → ({key[1]}) in {key[2]}  ×{len(occurrences)}"
+                f"  ({key[0]}) → ({key[1]}) rel='{key[2]}'  ×{len(occurrences)}  in {sorted(set(occurrences))}"
             )
 
     if duplicates:
