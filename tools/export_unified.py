@@ -139,7 +139,7 @@ def write_neo4j(triples: list, out_dir: Path) -> dict:
             "tissue":        t.get("tissue",  "") or "",
             "condition":     t.get("condition", "") or "",
             "effect_size":   t.get("effect_size", "") or "",
-            "source_papers": " | ".join(sources),
+            "source_papers": json.dumps([s for s in sources if s]),
             "reasoning":     (t.get("reasoning", "") or "")[:300],
             "is_contradiction": str(bool(t.get("is_contradiction", 0))).lower(),
         })
