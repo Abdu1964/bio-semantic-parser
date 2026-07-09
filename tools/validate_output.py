@@ -243,6 +243,8 @@ def check_orphan_edges(neo4j_dir: Path) -> dict:
 
 def check_metta_syntax(metta_dir: Path) -> dict:
     """Every non-comment, non-empty line in edge .metta files should be valid MeTTa."""
+    if not metta_dir.exists():
+        return {"status": "WARN", "message": f"MeTTa directory not found: {metta_dir}", "details": []}
     bad_lines: list = []
     # Valid patterns:
     #   (relation (type ID) (type ID))                  — core triple
