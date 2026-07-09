@@ -697,6 +697,13 @@ function initNetwork() {{
   }},
   edges: {{
     smooth: {{type: 'dynamic', roundness: 0.3}},
+    scaling: {{
+      label: {{
+        enabled: true,
+        drawThreshold: 0.8,
+        maxVisible: 16
+      }}
+    }}
   }},
   nodes: {{
     shape: 'dot',
@@ -708,15 +715,6 @@ function initNetwork() {{
         max: 18,
         drawThreshold: 0.4,
         maxVisible: 20
-      }}
-    }}
-  }},
-  edges: {{
-    scaling: {{
-      label: {{
-        enabled: true,
-        drawThreshold: 0.8,
-        maxVisible: 16
       }}
     }}
   }}
