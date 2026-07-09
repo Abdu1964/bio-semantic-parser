@@ -335,8 +335,8 @@ def coverage_report(neo4j_dir: Path, metta_dir: Path) -> dict:
             if doc:
                 source_papers.add(doc)
 
-    metta_edge_files = list(metta_dir.rglob("edges_*.metta"))
-    metta_node_files = list(metta_dir.rglob("nodes_*.metta"))
+    metta_edge_files = list(metta_dir.rglob("edges_*.metta")) if metta_dir.exists() else []
+    metta_node_files = list(metta_dir.rglob("nodes_*.metta")) if metta_dir.exists() else []
 
     details = [
         f"  Node types  : {len(node_counts)}",
