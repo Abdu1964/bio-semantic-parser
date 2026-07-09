@@ -38,6 +38,8 @@ def route(records: list) -> tuple:
                 reason_parts.append("semantic validation needs REVIEW")
             elif verdict == "SKIPPED":
                 reason_parts.append("semantic validation was skipped — needs manual check")
+            else:
+                reason_parts.append(f"semantic validation verdict={verdict}")
             if contra:
                 reason_parts.append("contradiction detected")
             if hard_unresolved:
