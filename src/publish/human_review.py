@@ -179,6 +179,11 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
     now = _now()
     for r in approved:
         try:
+            # Remove old flagged triple — relation may have been corrected by reviewer
+            conn.execute(
+                "DELETE FROM triples WHERE subject_name=? AND object_name=? AND flagged_for_review=1",
+                (r.get("subject_name",""), r.get("object_name",""))
+            )
             conn.execute("""
                 INSERT OR REPLACE INTO triples
                 (subject_id, subject_name, subject_type, relation,
@@ -214,8 +219,9 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
 
     # Update status in JSONL
     if queue_path.exists():
+        # Key by (subject_name, object_name) only — relation may have been corrected
         approved_keys = {
-            (r.get("subject_name",""), r.get("relation",""), r.get("object_name",""))
+            (r.get("subject_name",""), r.get("object_name",""))
             for r in approved
         }
         lines = []
@@ -223,7 +229,7 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
             entry = None
             try:
                 entry = json.loads(line)
-                key = (entry.get("subject_name",""), entry.get("relation",""), entry.get("object_name",""))
+                key = (entry.get("subject_name",""), entry.get("object_name",""))
                 if key in approved_keys:
                     entry["status"]          = "APPROVED"
                     entry["reviewed_at"]     = now
