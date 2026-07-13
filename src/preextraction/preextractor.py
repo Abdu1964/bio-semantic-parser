@@ -50,7 +50,9 @@ class Preextractor:
         """Run all loaded NER models and merge their spans, deduplicating overlaps."""
         if not self._models:
             import spacy as _sp
-            return _sp.blank("en")(text)
+            nlp = _sp.blank("en")
+            nlp.add_pipe("sentencizer")
+            return nlp(text)
 
         base_doc  = self._models[0](text)
         span_data = [(e.start_char, e.end_char, e.label_) for e in base_doc.ents]
@@ -113,7 +115,11 @@ class Preextractor:
 
     def process_batch(self, chunks: list) -> list:
         import concurrent.futures as _cf
-        workers = min(int(os.getenv("NER_CHUNK_CONCURRENCY", "4")), len(chunks))
+        try:
+            workers_env = int(os.getenv("NER_CHUNK_CONCURRENCY", "4"))
+        except ValueError:
+            workers_env = 4
+        workers = min(workers_env, len(chunks))
         if workers <= 1 or len(chunks) <= 1:
             return [self.process(chunk) for chunk in chunks]
         with _cf.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -121,6 +127,22 @@ class Preextractor:
 
 
 def _merge_entities(ensemble: list, extra: list) -> list:
-    """Merge entity lists — dedup by text, extra fills gaps not in ensemble."""
-    seen_texts = {e.get("text", "").lower() for e in ensemble}
-    return ensemble + [e for e in extra if e.get("text", "").lower() not in seen_texts]
+    """Merge entity lists by surface text. If extra has richer normalization (e.g. PubTator identifier), update the existing entry."""
+    merged = []
+    by_key = {}
+    for e in ensemble:
+        key = (e.get("text") or "").lower()
+        if not key or key in by_key:
+            continue
+        by_key[key] = e.copy()
+        merged.append(by_key[key])
+    for e in extra:
+        key = (e.get("text") or "").lower()
+        if not key:
+            continue
+        if key not in by_key:
+            by_key[key] = e.copy()
+            merged.append(by_key[key])
+        elif "identifier" in e or e.get("source") == "pubtator3":
+            by_key[key].update(e)
+    return merged
