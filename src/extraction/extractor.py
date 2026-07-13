@@ -23,7 +23,7 @@ _MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 _QUEUE_PATH  = Path(os.getenv("REJECTED_QUEUE", "data/rejected.jsonl"))
 _OUT_RESERVE      = int(os.getenv("LLM_OUTPUT_TOKENS", "2048"))
 _WALL_TIMEOUT     = int(os.getenv("LLM_WALL_TIMEOUT",  "300"))
-_COMPACT_TAXONOMY = os.getenv("LLM_COMPACT_TAXONOMY", "0").strip() in ("1", "true", "yes")
+_COMPACT_TAXONOMY = os.getenv("LLM_COMPACT_TAXONOMY", "0").strip().lower() in ("1", "true", "yes")
 _MAX_ENTITIES     = int(os.getenv("LLM_MAX_ENTITIES", "0"))
 _CACHED_SYSTEM_PROMPT: str = ""
 
@@ -217,7 +217,7 @@ def _is_truncation_error(error: str) -> bool:
     return any(s.lower() in error.lower() for s in truncation_signals)
 
 def _split_chunk(chunk: dict) -> list:
-    """Split a chunk's text in half at a sentence boundary, returning two sub-chunks(with other metadatas)."""
+    """Split a chunk's text in half at a sentence boundary, returning two sub-chunks (with other metadata)."""
     text = chunk.get("text", "")
     sentences = text.split(". ")
     mid = len(sentences) // 2
@@ -376,7 +376,7 @@ def extract_batch(chunks: list) -> list:
     _completed: dict = {}
     if _progress_path.exists():
         try:
-            for line in _progress_path.read_text().splitlines():
+            for line in _progress_path.read_text(encoding="utf-8").splitlines():
                 entry = _json.loads(line)
                 _completed[entry["chunk_index"]] = entry["result"]
         except Exception:
