@@ -1,7 +1,7 @@
 """Layer 8 — Validation Gate: routes records to auto-insert or human review."""
 
 
-def _is_hard_unresolved(entity_id: str) -> bool:
+def _is_hard_unresolved(entity_id: str | None) -> bool:
     """True for completely empty/placeholder IDs (NEEDS_REVIEW, empty, None)."""
     return entity_id in ("NEEDS_REVIEW", "", None)
 
