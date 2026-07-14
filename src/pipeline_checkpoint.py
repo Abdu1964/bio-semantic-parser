@@ -95,7 +95,7 @@ def fetch_paper_title(doc_id: str, source_name: str, url: str) -> str:
             fname_stem = _Path(url).stem if url else ""
 
             # Try CrossRef via DOI found in the paper
-            ckpt_dir   = _Path("data/checkpoints") / doc_id
+            ckpt_dir    = _ckpt_dir(doc_id)
             chunks_file = ckpt_dir / "layer3_chunks.json"
             if chunks_file.exists():
                 try:
