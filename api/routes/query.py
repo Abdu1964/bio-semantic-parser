@@ -218,27 +218,29 @@ async def entities(
     if not conn:
         return JSONResponse({"entities": []})
     try:
-        # Normalize apostrophe variants so "Alzheimer’s" matches "Alzheimer’s"
-        q_norm = q.replace("’", "’").replace("‘", "’")
+        q_norm = q.replace("‘", "’").replace("’", "’")
         like = f"%{q_norm}%"
-        type_filter = f"AND subject_type = ‘{type_}’" if type_ else ""
+        subj_type_clause = "AND subject_type = ?" if type_ else ""
+        obj_type_clause  = "AND object_type = ?"  if type_ else ""
+        params = [like, like] + ([type_] if type_ else []) + \
+                 [like, like] + ([type_] if type_ else []) + [limit]
         rows = conn.execute(f"""
             SELECT subject_id as id, subject_name as name, subject_type as type,
                    COUNT(*) as cnt
             FROM triples
             WHERE (subject_name LIKE ? OR subject_id LIKE ?)
-            {type_filter}
+            {subj_type_clause}
             GROUP BY subject_id, subject_name, subject_type
             UNION
-            SELECT object_id, object_name, object_type,
+            SELECT object_id as id, object_name as name, object_type as type,
                    COUNT(*) as cnt
             FROM triples
             WHERE (object_name LIKE ? OR object_id LIKE ?)
-            {'AND object_type = ' + repr(type_) if type_ else ''}
+            {obj_type_clause}
             GROUP BY object_id, object_name, object_type
             ORDER BY cnt DESC
             LIMIT ?
-        """, (like, like, like, like, limit)).fetchall()
+        """, params).fetchall()
         seen, result = set(), []
         for r in rows:
             key = (r["id"], r["name"])
