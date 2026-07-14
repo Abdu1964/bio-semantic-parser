@@ -181,8 +181,8 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
         try:
             # Remove old flagged triple — relation may have been corrected by reviewer
             conn.execute(
-                "DELETE FROM triples WHERE subject_name=? AND object_name=? AND flagged_for_review=1",
-                (r.get("subject_name",""), r.get("object_name",""))
+                "DELETE FROM triples WHERE subject_name=? AND relation=? AND object_name=? AND flagged_for_review=1",
+                (r.get("subject_name",""), r.get("relation",""), r.get("object_name",""))
             )
             conn.execute("""
                 INSERT OR REPLACE INTO triples
