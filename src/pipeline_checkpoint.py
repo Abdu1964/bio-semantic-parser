@@ -254,7 +254,6 @@ def completed_layers(doc_id: str) -> list[int]:
     # Keep meta.json in sync if files were found that meta didn't record
     if from_files and set(from_files) - set(from_meta):
         try:
-            _update_meta_layer.__wrapped__ if False else None  # no-op
             meta = json.loads(path.read_text()) if path.exists() else {}
             meta["completed_layers"] = merged
             meta["last_layer"]       = max(merged) if merged else None
