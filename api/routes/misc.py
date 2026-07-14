@@ -71,7 +71,7 @@ async def serve_file(path: str):
         )
         return HTMLResponse(content)
 
-    return FileResponse(str(p), media_type="text/html")
+    return FileResponse(str(p))
 
 
 @router.post("/api/discard-paper")
