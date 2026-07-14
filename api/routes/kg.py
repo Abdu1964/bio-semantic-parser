@@ -274,7 +274,7 @@ async def commit_existing_outputs(
                         except Exception: pass
                 except Exception: pass
                 try:
-                    for _other_run in (kg_root.parent).iterdir():
+                    for _other_run in kg_root.iterdir():
                         if not _other_run.is_dir() or _other_run == _run: continue
                         _other_graph = _other_run / "graph.html"
                         if not _other_graph.exists(): continue
