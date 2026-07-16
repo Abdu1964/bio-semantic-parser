@@ -310,7 +310,7 @@ function _showPreRunLayerSelector(docId, completedLayers, nextLayer, displayName
     const txtClr = isNext ? 'var(--blue)' : done ? 'var(--green)' : 'var(--text3)';
     return `<button class="fmt-chip"
       style="border-color:${clr};color:${txtClr};font-size:10px;padding:3px 9px"
-      onclick="_startFromLayer('${esc(docId)}',${n})"
+      onclick="_startFromLayer(${JSON.stringify(docId).replace(/"/g,'&quot;')},${n})"
       title="${done?'Completed':'Not run yet'} — click to start from Layer ${n}">
       L${n} ${layerNames[n]}
     </button>`;
@@ -703,9 +703,7 @@ function streamHeader(layer, message) {
   if (ind) {
     ind.style.display = 'inline';
     ind.textContent   = `L${layer}`;
-    ind.style.background = `rgba(var(--${LAYER_COLORS[layer].slice(2)},0), 0.15)`;
-    ind.style.color       = `var(${LAYER_COLORS[layer]})`;
-    ind.style.border      = `1px solid var(${LAYER_COLORS[layer]})`;
+    ind.className     = `sl-lh-${layer}`;
   }
 
   const wrap = document.createElement('div');
@@ -1066,7 +1064,7 @@ async function loadSourcesPanel() {
     </div>`).join('');
 
   const procItems = processed.slice(0,20).map(p => `
-    <div class="proc-item" onclick="reuseDoc('${esc(p.doc_id)}','${esc(p.source_name)}')">
+    <div class="proc-item" onclick="reuseDoc(${JSON.stringify(p.doc_id).replace(/"/g,'&quot;')},${JSON.stringify(p.source_name).replace(/"/g,'&quot;')})">
       <div class="proc-title">${esc(p.title||p.doc_id)}</div>
       <div class="proc-meta">
         <span>${esc(p.source_name)}</span>
