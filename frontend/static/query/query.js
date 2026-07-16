@@ -6,6 +6,7 @@
 
 (function () {
   'use strict';
+  const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
   let _db         = 'neo4j';
   let _network    = null;   // vis.js Network instance
@@ -110,13 +111,14 @@
       const entities = d.entities || [];
       if (!entities.length) { list.classList.remove('open'); return; }
 
-      list.innerHTML = entities.map(e =>
-        `<div class="query-ac-item" data-id="${e.id}" data-name="${e.name}" data-type="${e.type}">
-          <span>${e.name}</span>
-          <span class="query-ac-badge">${e.type}</span>
-          <span style="font-size:10px;color:var(--text3)">${e.id}</span>
-        </div>`
-      ).join('');
+      list.innerHTML = entities.map(e => {
+        const id = esc(e.id), name = esc(e.name), type = esc(e.type);
+        return `<div class="query-ac-item" data-id="${id}" data-name="${name}" data-type="${type}">
+          <span>${name}</span>
+          <span class="query-ac-badge">${type}</span>
+          <span style="font-size:10px;color:var(--text3)">${id}</span>
+        </div>`;
+      }).join('');
 
       list.classList.add('open');
 
@@ -136,16 +138,20 @@
   async function onEntity1Selected(name, id, type) {
     clearRelations();
     clearEntity2();
+    const entity = id || name;
     try {
-      const r = await fetch(`/api/query/relations?db=${_db}&entity=${encodeURIComponent(name)}`);
+      const r = await fetch(`/api/query/relations?db=${_db}&entity=${encodeURIComponent(entity)}`);
       const d = await r.json();
       const rels = d.relations || [];
       const sel = document.getElementById('q-relation');
       if (!sel) return;
-      sel.innerHTML = '<option value="">Any relation</option>' +
-        rels.map(r =>
-          `<option value="${r.relation}">${r.relation.replace(/_/g,' ')} (${r.direction})</option>`
-        ).join('');
+      sel.innerHTML = '<option value="">Any relation</option>';
+      rels.forEach(rel => {
+        const opt = document.createElement('option');
+        opt.value = rel.relation || '';
+        opt.textContent = `${String(rel.relation || '').replace(/_/g,' ')} (${rel.direction})`;
+        sel.appendChild(opt);
+      });
     } catch (e) { console.warn('loadRelations failed', e); }
   }
 
@@ -260,11 +266,13 @@
     const papers = (edge._source_papers || []).join(', ') || '—';
     const reason = edge._reasoning || '—';
 
+    const relLabel   = esc(String(rel).replace(/_/g,' '));
+    const reasonText = reason !== '—' ? esc(reason.length > 200 ? reason.slice(0,200) + '…' : reason) : '';
     detail.innerHTML = `
-      <div style="font-size:12px;color:var(--text1);padding:12px;background:var(--surface2);border-radius:8px;margin-top:12px;border:1px solid var(--border)">
-        <div style="font-weight:700;margin-bottom:8px">${from} → <span style="color:#F59E0B">${rel.replace(/_/g,' ')}</span> → ${to}</div>
-        <div style="color:var(--text3);font-size:11px">Confidence: <strong style="color:var(--text1)">${conf}</strong> · Papers: ${papers}</div>
-        ${reason !== '—' ? `<div style="color:var(--text3);font-size:11px;margin-top:6px">${reason.slice(0,200)}${reason.length>200?'…':''}</div>` : ''}
+      <div style="font-size:12px;color:var(--text1,#e6edf3);padding:12px;background:var(--surface2,#0d1117);border-radius:8px;margin-top:12px;border:1px solid var(--border,#30363d)">
+        <div style="font-weight:700;margin-bottom:8px">${esc(from)} → <span style="color:#F59E0B">${relLabel}</span> → ${esc(to)}</div>
+        <div style="color:var(--text3,#6e7681);font-size:11px">Confidence: <strong style="color:var(--text1,#e6edf3)">${esc(conf)}</strong> · Papers: ${esc(papers)}</div>
+        ${reasonText ? `<div style="color:var(--text3,#6e7681);font-size:11px;margin-top:6px">${reasonText}</div>` : ''}
       </div>`;
     detail.style.display = 'block';
   }
