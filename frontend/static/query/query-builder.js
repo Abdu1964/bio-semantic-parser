@@ -7,6 +7,7 @@
  */
 (function () {
   'use strict';
+  const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
   const TYPE_STYLE = {
     GENE:{'icon':'🧬','color':'#1d4ed8','bg':'#1e3a8a'},
@@ -243,14 +244,17 @@
           const d=await r.json();
           const items=d.entities||[];
           if(!items.length){acList.style.display='none';return;}
-          acList.innerHTML=items.map(e=>`<div data-name="${e.name.replace(/"/g,'&quot;')}" data-id="${e.id}"
-            style="padding:9px 12px;font-size:13px;color:#e6edf3;cursor:pointer;
-            display:flex;align-items:center;gap:8px;border-bottom:1px solid #21262d;
-            user-select:none;-webkit-user-select:none">
-            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.name}</span>
-            <span style="font-size:10px;color:#6e7681;background:#1f6feb22;padding:2px 6px;
-              border-radius:4px;white-space:nowrap;flex-shrink:0">${e.id}</span>
-          </div>`).join('');
+          acList.innerHTML=items.map(e=>{
+            const name=esc(e.name), id=esc(e.id);
+            return `<div data-name="${name}" data-id="${id}"
+              style="padding:9px 12px;font-size:13px;color:#e6edf3;cursor:pointer;
+              display:flex;align-items:center;gap:8px;border-bottom:1px solid #21262d;
+              user-select:none;-webkit-user-select:none">
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</span>
+              <span style="font-size:10px;color:#6e7681;background:#1f6feb22;padding:2px 6px;
+                border-radius:4px;white-space:nowrap;flex-shrink:0">${id}</span>
+            </div>`;
+          }).join('');
           // Position autocomplete using fixed coords so it's never clipped
           const inputRect=input.getBoundingClientRect();
           acList.style.position='fixed';
