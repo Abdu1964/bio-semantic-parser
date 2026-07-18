@@ -484,8 +484,9 @@ class TestFetcher:
     def fetcher(self):
         with patch("src.fetcher.fetcher.CorefClient") as MockCoref:
             instance = MockCoref.return_value
-            instance.health_check.return_value = False  # coref service offline
+            instance.health_check.return_value = True  # coref service online
             instance.base_url = "http://localhost:8080"
+            instance.resolve.side_effect = lambda text: text  # echo text unchanged
             f = Fetcher(coref_url="http://localhost:8080")
             f.coref_client = instance
             return f

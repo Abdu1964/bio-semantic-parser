@@ -57,9 +57,10 @@ sources:
 
     # Setup Fetcher and Mock its coref logic if needed
     fetcher = Fetcher(coref_url="http://202.181.159.222:8081")
-    # Patch coref client to just return the text
-    fetcher.coref_client.health_check = MagicMock(return_value=False)
-    
+    # Coref is a hard dependency in fetch(): stub it as online and echo text.
+    fetcher.coref_client.health_check = MagicMock(return_value=True)
+    fetcher.coref_client.resolve = MagicMock(side_effect=lambda text: text)
+
     # capture the fetched chunks
     captured_chunks = []
     original_fetch = fetcher.fetch
@@ -71,8 +72,14 @@ sources:
 
     fetcher.fetch = mock_fetch
 
-    # Run scheduler (Layer 2 & 3)
-    results = scheduler.run(fetcher)
+    # The dummy PDF isn't a real PDF — stub the PDF handler to return plain text
+    # so local-file extraction yields content instead of raising.
+    sample_text = ("SIRT1 upregulates FOXO3 expression in human cells. "
+                   "This regulation was observed consistently across experiments.")
+    with patch("src.fetcher.fetcher.PDFHandler") as MockPDF:
+        MockPDF.return_value.extract.return_value = sample_text
+        # Run scheduler (Layer 2 & 3)
+        results = scheduler.run(fetcher)
     assert results["processed"] == 1
     assert len(captured_chunks) > 0
 
