@@ -281,9 +281,9 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
             "width":  max(1.5, conf * 3.5),
             "dashes": neg,
             "arrows": {"to": {"enabled": True, "scaleFactor": 0.6}},
-            "font":   {"color": "#94A3B8", "size": 10, "align": "middle",
+            "font":   {"color": "#ffffff", "size": 11, "align": "middle",
                        "face": "Inter, sans-serif",
-                       "strokeWidth": 2, "strokeColor": "#00000088"},
+                       "strokeWidth": 3, "strokeColor": "#00000066"},
             "shadow": {"enabled": True, "color": color + "55", "size": 8, "x": 0, "y": 0},
             "_relation":     rel,
             "_subject_name": _display_name(e["source_id"], e.get("source_name", "")),
@@ -530,11 +530,40 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
   #close-panel {{ cursor: pointer; color: #8b949e; font-size: 18px; margin-left: auto; }}
   #close-panel:hover {{ color: #e6edf3; }}
   .negated-badge {{ color: #f85149; font-size: 11px; }}
+
+  /* ── Node property panel ──────────────────────────────────────────── */
+  .node-hero {{ display: flex; align-items: flex-start; gap: 14px; padding: 14px 0 16px; }}
+  .node-avatar {{ width: 50px; height: 50px; border-radius: 15px; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; color: #04121c; flex-shrink: 0; box-shadow: 0 4px 18px rgba(0,0,0,.4); }}
+  .node-hero-info {{ min-width: 0; flex: 1; padding-top: 2px; }}
+  .node-hero-name {{ font-size: 16px; font-weight: 700; color: #f1f5f9; line-height: 1.35; word-break: break-word; }}
+  .node-hero-caption {{ font-size: 11px; color: #7c94ad; margin-top: 5px; font-style: italic; line-height: 1.5; }}
+  .pill {{ display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 10px; font-weight: 700; letter-spacing: .3px; white-space: nowrap; }}
+  .pill-ok   {{ background: rgba(52,211,153,.12); color: #34d399; border: 1px solid rgba(52,211,153,.35); }}
+  .pill-warn {{ background: rgba(245,158,11,.14); color: #f59e0b; border: 1px solid rgba(245,158,11,.4); }}
+  /* Properties — a real key/value table so both columns line up and scan cleanly */
+  .prop-table-wrap {{ background: rgba(255,255,255,.03); border: 1px solid #1a3350; border-radius: 10px; overflow: hidden; margin-top: 4px; }}
+  .prop-table {{ width: 100%; border-collapse: collapse; font-size: 12.5px; }}
+  .prop-table tr {{ border-bottom: 1px solid #16283f; transition: background .15s; }}
+  .prop-table tr:last-child {{ border-bottom: none; }}
+  .prop-table tr:hover {{ background: rgba(255,255,255,.035); }}
+  .prop-table td {{ padding: 9px 12px; vertical-align: top; }}
+  .prop-table td.k {{ width: 32%; color: #4a7fa5; font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; font-weight: 700; white-space: nowrap; }}
+  .prop-table td.v {{ color: #e2e8f0; word-break: break-word; }}
+  .prop-mono {{ font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: #7dd3fc; }}
+  .copy-btn {{ cursor: pointer; opacity: .45; transition: opacity .15s, transform .15s; font-size: 12px; margin-left: 8px; }}
+  .copy-btn:hover {{ opacity: 1; transform: scale(1.15); }}
+  .source-btn {{ display: inline-flex; align-items: center; gap: 7px; background: rgba(0,201,177,.1); border: 1px solid rgba(0,201,177,.35); color: #00c9b1; padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 700; text-decoration: none; transition: all .15s; }}
+  .source-btn:hover {{ background: rgba(0,201,177,.2); transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,201,177,.18); }}
+  .chip {{ display: inline-block; background: rgba(56,189,248,.1); color: #93d6fb; border: 1px solid rgba(56,189,248,.28); border-radius: 20px; padding: 3px 11px; font-size: 11px; margin: 0 5px 5px 0; }}
+  .chip-more {{ cursor: pointer; background: rgba(255,255,255,.05); color: #8ca3bd; border: 1px dashed #3a5a7d; }}
+  .chip-more:hover {{ color: #e2e8f0; border-color: #5a86ad; }}
   #paper-filter {{ background: #0d1f2f; border: 1px solid #1a3350; border-radius: 8px; padding: 5px 10px; color: #e2e8f0; font-size: 12px; font-family: inherit; cursor: pointer; max-width: 220px; transition: border-color .2s; }}
   #paper-filter:focus {{ outline: none; border-color: #00c9b1; }}
   #paper-filter option {{ background: #0d1929; }}
   #papers-btn {{ background: rgba(0,201,177,.12); border: 1px solid rgba(0,201,177,.3); border-radius: 8px; padding: 5px 12px; color: #00c9b1; font-size: 12px; font-family: inherit; cursor: pointer; transition: all .2s; white-space: nowrap; }}
   #papers-btn:hover {{ background: rgba(0,201,177,.2); }}
+  #logo-home {{ border-radius: 8px; padding: 4px 8px; margin-left: -8px; transition: background .2s; }}
+  #logo-home:hover {{ background: rgba(0,201,177,.12); }}
   #papers-panel {{ position: fixed; top: 52px; right: 0; width: 320px; height: calc(100vh - 52px); background: linear-gradient(180deg,#0d1929 0%,#0a1421 100%); border-left: 1px solid #1a3350; overflow-y: auto; z-index: 100; transform: translateX(100%); transition: transform .3s cubic-bezier(.4,0,.2,1); box-shadow: -4px 0 24px rgba(0,0,0,.5); }}
   #papers-panel.open {{ transform: translateX(0); }}
   #papers-panel-head {{ padding: 16px 20px; border-bottom: 1px solid #1a3350; display: flex; align-items: center; justify-content: space-between; }}
@@ -551,8 +580,10 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
 <body>
 
 <div id="header">
-  <span style="font-size:20px">🧬</span>
-  <h1>{title}</h1>
+  <div id="logo-home" onclick="goHome()" title="Back to pipeline" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+    <span style="font-size:20px">🧬</span>
+    <h1>{title}</h1>
+  </div>
   {_src_badge}
   <select id="paper-filter" onchange="filterByPaper(this.value)" title="Filter by source paper">
     <option value="">📄 All papers</option>
@@ -600,6 +631,39 @@ const EDGES_DATA = {edges_json};
 
 function esc(s) {{
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}}
+
+// Collapsed-by-default "show more / less" toggle — used for long synonym
+// lists and the original full-sentence text behind a compressed node name,
+// so the properties panel stays readable without hiding the data entirely.
+let _expToggleId = 0;
+function expandable(shortHtml, fullHtml) {{
+  const id = 'exp' + (_expToggleId++);
+  return `<span id="${{id}}-s">${{shortHtml}} <a href="#" onclick="document.getElementById('${{id}}-s').style.display='none';document.getElementById('${{id}}-f').style.display='inline';return false" style="color:#58a6ff;font-size:11px;white-space:nowrap">▾ more</a></span>` +
+         `<span id="${{id}}-f" style="display:none">${{fullHtml}} <a href="#" onclick="document.getElementById('${{id}}-f').style.display='none';document.getElementById('${{id}}-s').style.display='inline';return false" style="color:#58a6ff;font-size:11px;white-space:nowrap">▴ less</a></span>`;
+}}
+
+// Copies pre-decoded text (read from a data-* attribute, never from an
+// inline-onclick string) so canonical IDs with quotes/special chars can't
+// break out of the handler.
+function copyToClipboard(el, text) {{
+  const flash = () => {{
+    const prev = el.textContent;
+    el.textContent = '✅';
+    setTimeout(() => {{ el.textContent = prev; }}, 900);
+  }};
+  if (navigator.clipboard && navigator.clipboard.writeText) {{
+    navigator.clipboard.writeText(text).then(flash).catch(flash);
+    return;
+  }}
+  try {{
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }} catch (e) {{}}
+  flash();
 }}
 
 const nodeMap = {{}};
@@ -797,49 +861,77 @@ function showNodePanel(nodeId) {{
   const typeDisp  = n._type.replace(/_/g, ' ');
   const bg        = n.color.background;
 
-  // ── Header: type badge only (name is a property, not the title) ──
+  const props    = n._props || {{}};
+  const isReview = String(props.needs_review) === 'true';
+  const initial  = (typeDisp.trim().charAt(0) || '?').toUpperCase();
+
+  // ── Hero: avatar + name (+ original full text if compressed) ──────────
   let html = `
-    <div id="panel-title">
-      <span style="width:12px;height:12px;border-radius:50%;background:${{bg}};
-                   display:inline-block;flex-shrink:0"></span>
-      <span class="badge" style="background:${{bg}}22;color:${{bg}};
-            border:1px solid ${{bg}}44;padding:2px 10px;border-radius:10px">
-        ${{typeDisp}}
-      </span>
+    <div style="display:flex;justify-content:flex-end">
       <span id="close-panel" onclick="hidePanel()">✕</span>
     </div>
-    <div style="font-size:10px;color:#4a7fa5;margin-bottom:12px;padding:6px 10px;background:rgba(0,201,177,.08);border-radius:6px;border:1px solid rgba(0,201,177,.2)">
+    <div class="node-hero">
+      <div class="node-avatar" style="background:linear-gradient(135deg, ${{bg}}, ${{bg}}bb)">${{initial}}</div>
+      <div class="node-hero-info">
+        <div class="node-hero-name">${{esc(props.name || n._name || '')}}</div>
+        ${{props.full_name ? `<div class="node-hero-caption">${{
+          expandable(esc(props.full_name.split(' ').slice(0, 6).join(' ')) + '…', esc(props.full_name))
+        }}</div>` : ''}}
+      </div>
+    </div>
+    <div style="font-size:10px;color:#4a7fa5;margin-bottom:14px;padding:6px 10px;background:rgba(0,201,177,.08);border-radius:6px;border:1px solid rgba(0,201,177,.2)">
       🔍 Showing subgraph — click node again or empty space to restore full graph
     </div>`;
 
-  // ── Properties table — every column from the CSV row ──────────────
-  const props = n._props || {{}};
-  // Preferred display order for common columns; unknowns go after
-  const ORDER = ['name','entity_type','id','id_source','needs_review'];
-  const keys  = [
-    ...ORDER.filter(k => props[k] !== undefined),
-    ...Object.keys(props).filter(k => !ORDER.includes(k)).sort()
-  ];
+  // ── Properties — one clean key/value table, easy to scan at a glance ──
+  const rows = [];
+  rows.push(['Type', `<span class="pill" style="background:${{bg}}22;color:${{bg}};border:1px solid ${{bg}}55">${{esc(typeDisp)}}</span>`]);
+  if (props.id) {{
+    rows.push(['ID', `<span class="prop-mono">${{esc(props.id)}}</span><span class="copy-btn" title="Copy ID" data-copy="${{esc(props.id)}}">📋</span>`]);
+  }}
+  if (props.id_source) {{
+    rows.push(['Source', `<span class="pill" style="background:rgba(56,189,248,.1);color:#7dd3fc;border:1px solid rgba(56,189,248,.3)">${{esc(String(props.id_source).toUpperCase())}}</span>`]);
+  }}
+  if (props.source_url) {{
+    rows.push(['Record', `<a href="${{esc(props.source_url)}}" target="_blank" rel="noopener noreferrer" class="source-btn">🔗 View source ↗</a>`]);
+  }}
+  if (props.evidence) {{
+    // The exact sentence(s) this node was extracted from — direct textual
+    // grounding, same purpose as the source-record link but for the TEXT
+    // side rather than the ontology-ID side: "does the paper actually say this."
+    const quotes = String(props.evidence).split('\\n').map(s => s.trim()).filter(Boolean);
+    const quote = q => `<div style="font-style:italic;color:#a8c5e0;padding:6px 10px;margin:0 0 4px;border-left:2px solid #2a5580;background:rgba(255,255,255,.02);border-radius:0 6px 6px 0">&ldquo;${{esc(q)}}&rdquo;</div>`;
+    const val = quotes.length > 1
+      ? expandable(quote(quotes[0]) + `<span class="chip chip-more">+${{quotes.length - 1}} more</span>`, quotes.map(quote).join(''))
+      : quote(quotes[0]);
+    rows.push(['Evidence', val]);
+  }}
+  if (props.synonyms) {{
+    const items    = String(props.synonyms).split(';').map(s => s.trim()).filter(Boolean);
+    const chip     = s => `<span class="chip">${{esc(s)}}</span>`;
+    const moreChip = `<span class="chip chip-more">+${{items.length - 2}} more</span>`;
+    const val = items.length > 2
+      ? expandable(items.slice(0, 2).map(chip).join('') + moreChip, items.map(chip).join(''))
+      : items.map(chip).join('');
+    rows.push(['Synonyms', val]);
+  }}
+  if (props.needs_review !== undefined) {{
+    rows.push(['Review', isReview ? `<span class="pill pill-warn">⚠ Needs review</span>` : `<span class="pill pill-ok">✓ Verified</span>`]);
+  }}
+  // Anything else the CSV carries that isn't already shown above
+  const shownKeys = ['name', 'full_name', 'synonyms', 'entity_type', 'id', 'id_source', 'source_url', 'needs_review', 'evidence'];
+  Object.keys(props).filter(k => !shownKeys.includes(k)).sort().forEach(k => {{
+    rows.push([esc(k.replace(/_/g, ' ')), esc(props[k])]);
+  }});
 
   html += `<div class="field-group">
     <div class="field-label">Properties</div>
-    <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:4px">
-      <colgroup><col style="width:36%"><col style="width:64%"></colgroup>`;
-
-  keys.forEach(k => {{
-    const raw   = esc(props[k]);
-    const label = esc(k.replace(/_/g,' '));
-    const mono  = ['id','id_source'].includes(k);
-    const color = mono ? '#79c0ff' : '#e6edf3';
-    const font  = mono ? 'font-family:monospace;font-size:11px' : '';
-    html += `<tr style="border-bottom:1px solid #21262d">
-      <td style="padding:5px 8px 5px 0;color:#8b949e;vertical-align:top;
-                 text-transform:capitalize">${{label}}</td>
-      <td style="padding:5px 0;color:${{color}};${{font}};
-                 word-break:break-all;vertical-align:top">${{raw}}</td>
-    </tr>`;
-  }});
-  html += `</table></div>`;
+    <div class="prop-table-wrap">
+      <table class="prop-table">
+        ${{rows.map(([k, v]) => `<tr><td class="k">${{k}}</td><td class="v">${{v}}</td></tr>`).join('')}}
+      </table>
+    </div>
+  </div>`;
 
   // ── Relations ──────────────────────────────────────────────────────
   if (outEdges.length > 0) {{
@@ -873,9 +965,12 @@ function showNodePanel(nodeId) {{
   }}
 
   document.getElementById('panel-content').innerHTML = html;
-  // Use delegated listener — avoids inline onclick scope issues in iframes/innerHTML
+  // Use delegated listeners — avoids inline onclick scope issues in iframes/innerHTML
   document.getElementById('panel-content').querySelectorAll('[data-edge-id]').forEach(el => {{
     el.addEventListener('click', () => showEdgePanel(parseInt(el.dataset.edgeId)));
+  }});
+  document.getElementById('panel-content').querySelectorAll('.copy-btn[data-copy]').forEach(el => {{
+    el.addEventListener('click', () => copyToClipboard(el, el.dataset.copy));
   }});
 }}
 
@@ -1058,12 +1153,24 @@ function hidePanel() {{
 function searchNodes(query) {{
   if (!query) {{
     nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: false}})));
+    edgesDS.update(EDGES_DATA.map(e => ({{id: e.id, hidden: false}})));
     return;
   }}
   const q = query.toLowerCase();
+  const visibleIds = new Set(
+    NODES_DATA.filter(n => n._name.toLowerCase().includes(q) || n._type.toLowerCase().includes(q))
+              .map(n => n.id)
+  );
   nodesDS.update(NODES_DATA.map(n => ({{
     id: n.id,
-    hidden: !n._name.toLowerCase().includes(q) && !n._type.toLowerCase().includes(q)
+    hidden: !visibleIds.has(n.id)
+  }})));
+  // Hide edges whose endpoints aren't both visible — otherwise an edge to a
+  // filtered-out node keeps rendering, producing the distorted/stray lines
+  // that made separate matched subgraphs look tangled/overlapping.
+  edgesDS.update(EDGES_DATA.map(e => ({{
+    id: e.id,
+    hidden: !(visibleIds.has(e.from) && visibleIds.has(e.to))
   }})));
 }}
 
@@ -1086,6 +1193,14 @@ window.addEventListener('load', function() {{
     requestAnimationFrame(initNetwork);
   }});
 }});
+
+// Home button — navigates the top-level window (not just this frame) back to
+// the pipeline dashboard, so it works whether this graph is opened standalone
+// or embedded in an iframe from the main frontend.
+function goHome() {{
+  const top = window.top || window.self;
+  top.location.href = '/';
+}}
 </script>
 </body>
 </html>"""
