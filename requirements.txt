@@ -8,6 +8,7 @@ pydantic # python data validation liburary for schema validation
 instructor==0.4.8
 spacy==3.7.5
 scispacy
+gliner
 python-dotenv
 rich
 
