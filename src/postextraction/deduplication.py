@@ -68,6 +68,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_object  ON triples(object_id)
     """)
+    # Migrate DBs created before canonical-name/source-url/synonyms/id-source columns existed.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(triples)").fetchall()}
+    for col in ("subject_canonical_name", "object_canonical_name",
+                "subject_source_url", "object_source_url",
+                "subject_synonyms", "object_synonyms",
+                "subject_id_source", "object_id_source",
+                "subject_evidence", "object_evidence"):
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE triples ADD COLUMN {col} TEXT")
+    # subject/object_needs_review: persisted so re-exports don't lose the resolver's uncertainty flag.
+    for col in ("subject_needs_review", "object_needs_review"):
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE triples ADD COLUMN {col} INTEGER DEFAULT 0")
     conn.commit()
 
 
@@ -122,28 +135,49 @@ def deduplicate(record: dict) -> dict:
             sources.append(doc_id)
         n_total  = len(sources)
         new_conf = round(n_total / (n_total + 1), 4)   # Truth_w2c(n_total)
-        conn.execute(
-            "UPDATE triples SET confidence=?, source_papers=?, updated_at=? WHERE id=?",
-            (new_conf, json.dumps(sources), now, existing["id"]),
-        )
+        # Refresh entity metadata so a resolver fix on re-run replaces stale IDs/names.
+        conn.execute("""
+            UPDATE triples SET
+                confidence=?, source_papers=?, updated_at=?,
+                subject_canonical_name=?, subject_source_url=?, subject_synonyms=?, subject_id_source=?, subject_evidence=?, subject_needs_review=?,
+                object_canonical_name=?,  object_source_url=?,  object_synonyms=?,  object_id_source=?,  object_evidence=?,  object_needs_review=?
+            WHERE id=?
+        """, (
+            new_conf, json.dumps(sources), now,
+            record.get("subject_canonical_name",""), record.get("subject_source_url",""),
+            record.get("subject_synonyms",""), record.get("subject_id_source",""), record.get("subject_evidence",""),
+            1 if record.get("subject_needs_review") else 0,
+            record.get("object_canonical_name",""),  record.get("object_source_url",""),
+            record.get("object_synonyms",""),  record.get("object_id_source",""), record.get("object_evidence",""),
+            1 if record.get("object_needs_review") else 0,
+            existing["id"],
+        ))
         conn.commit()
         conn.close()
         return {**record, "is_duplicate": True,  "triple_id": existing["id"]}
 
     cursor = conn.execute("""
         INSERT INTO triples
-            (subject_id, subject_name, subject_type,
+            (subject_id, subject_name, subject_canonical_name, subject_source_url, subject_synonyms, subject_id_source, subject_evidence, subject_needs_review, subject_type,
              relation,
-             object_id, object_name, object_type,
+             object_id, object_name, object_canonical_name, object_source_url, object_synonyms, object_id_source, object_evidence, object_needs_review, object_type,
              negated, confidence, source_papers,
              species, tissue, condition, effect_size, reasoning,
              is_contradiction, flagged_for_review, review_reason,
              created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
-        subject_id, record.get("subject_name",""), record.get("subject_type",""),
+        subject_id, record.get("subject_name",""), record.get("subject_canonical_name",""),
+        record.get("subject_source_url",""), record.get("subject_synonyms",""), record.get("subject_id_source",""),
+        record.get("subject_evidence",""),
+        1 if record.get("subject_needs_review") else 0,
+        record.get("subject_type",""),
         relation,
-        object_id,  record.get("object_name",""),  record.get("object_type",""),
+        object_id,  record.get("object_name",""),  record.get("object_canonical_name",""),
+        record.get("object_source_url",""), record.get("object_synonyms",""), record.get("object_id_source",""),
+        record.get("object_evidence",""),
+        1 if record.get("object_needs_review") else 0,
+        record.get("object_type",""),
         negated, confidence, json.dumps([doc_id]),
         record.get("species",""), record.get("tissue",""),
         record.get("condition",""), record.get("effect_size",""),
@@ -230,10 +264,23 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
                 merged   = deduped
                 n_total  = len(merged)
                 new_conf = round(n_total / (n_total + 1), 4)
-                tgt.execute(
-                    "UPDATE triples SET confidence=?, source_papers=?, updated_at=? WHERE id=?",
-                    (new_conf, json.dumps(merged), r.get("updated_at", ""), existing["id"]),
-                )
+                # Refresh entity metadata alongside confidence (same fix as deduplicate's duplicate path).
+                tgt.execute("""
+                    UPDATE triples SET
+                        confidence=?, source_papers=?, updated_at=?,
+                        subject_canonical_name=?, subject_source_url=?, subject_synonyms=?, subject_id_source=?, subject_evidence=?, subject_needs_review=?,
+                        object_canonical_name=?,  object_source_url=?,  object_synonyms=?,  object_id_source=?,  object_evidence=?,  object_needs_review=?
+                    WHERE id=?
+                """, (
+                    new_conf, json.dumps(merged), r.get("updated_at", ""),
+                    r.get("subject_canonical_name",""), r.get("subject_source_url",""),
+                    r.get("subject_synonyms",""), r.get("subject_id_source",""), r.get("subject_evidence",""),
+                    1 if r.get("subject_needs_review") else 0,
+                    r.get("object_canonical_name",""),  r.get("object_source_url",""),
+                    r.get("object_synonyms",""),  r.get("object_id_source",""),  r.get("object_evidence",""),
+                    1 if r.get("object_needs_review") else 0,
+                    existing["id"],
+                ))
             else:
                 cols = [k for k in r if k != "id"]
                 tgt.execute(
