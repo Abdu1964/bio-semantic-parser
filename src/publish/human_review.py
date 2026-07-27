@@ -38,10 +38,22 @@ def append(records: list, run_dir: Path = None, target_format: str = "both") -> 
                 "subject_name":       r.get("subject_name", ""),
                 "subject_type":       r.get("subject_type", ""),
                 "subject_id":         r.get("subject_id",   ""),
+                "subject_canonical_name": r.get("subject_canonical_name", ""),
+                "subject_source_url":     r.get("subject_source_url",     ""),
+                "subject_synonyms":       r.get("subject_synonyms",       ""),
+                "subject_id_source":      r.get("subject_id_source",      ""),
+                "subject_evidence":       r.get("subject_evidence",       ""),
+                "subject_needs_review":   r.get("subject_needs_review",   False),
                 "relation":           r.get("relation",     ""),
                 "object_name":        r.get("object_name",  ""),
                 "object_type":        r.get("object_type",  ""),
                 "object_id":          r.get("object_id",    ""),
+                "object_canonical_name": r.get("object_canonical_name", ""),
+                "object_source_url":     r.get("object_source_url",     ""),
+                "object_synonyms":       r.get("object_synonyms",       ""),
+                "object_id_source":      r.get("object_id_source",      ""),
+                "object_evidence":       r.get("object_evidence",       ""),
+                "object_needs_review":   r.get("object_needs_review",   False),
                 "negated":            r.get("negated",      False),
                 # Quality metadata
                 "confidence":         r.get("confidence",   0.0),
@@ -174,6 +186,19 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
             UNIQUE(subject_id, relation, object_id, negated)
         )
     """)
+    # Migrate DBs created before resolver-enrichment columns existed.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(triples)").fetchall()}
+    for col in ("subject_canonical_name", "object_canonical_name",
+                "subject_source_url", "object_source_url",
+                "subject_synonyms", "object_synonyms",
+                "subject_id_source", "object_id_source",
+                "subject_evidence", "object_evidence"):
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE triples ADD COLUMN {col} TEXT")
+    for col in ("subject_needs_review", "object_needs_review"):
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE triples ADD COLUMN {col} INTEGER DEFAULT 0")
+    conn.commit()
 
     count = 0
     now = _now()
@@ -186,19 +211,33 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
             )
             conn.execute("""
                 INSERT OR REPLACE INTO triples
-                (subject_id, subject_name, subject_type, relation,
-                 object_id, object_name, object_type, negated,
+                (subject_id, subject_name, subject_canonical_name, subject_source_url, subject_synonyms, subject_id_source, subject_evidence, subject_needs_review, subject_type,
+                 relation,
+                 object_id, object_name, object_canonical_name, object_source_url, object_synonyms, object_id_source, object_evidence, object_needs_review, object_type,
+                 negated,
                  confidence, source_papers, reasoning,
                  species, tissue, condition, effect_size,
                  flagged_for_review, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
             """, (
                 r.get("subject_id")  or f"TEXT:{r.get('subject_name','')}",
                 r.get("subject_name",""),
+                r.get("subject_canonical_name",""),
+                r.get("subject_source_url",""),
+                r.get("subject_synonyms",""),
+                r.get("subject_id_source",""),
+                r.get("subject_evidence",""),
+                1 if r.get("subject_needs_review") else 0,
                 r.get("subject_type",""),
                 r.get("relation",""),
                 r.get("object_id")   or f"TEXT:{r.get('object_name','')}",
                 r.get("object_name",""),
+                r.get("object_canonical_name",""),
+                r.get("object_source_url",""),
+                r.get("object_synonyms",""),
+                r.get("object_id_source",""),
+                r.get("object_evidence",""),
+                1 if r.get("object_needs_review") else 0,
                 r.get("object_type",""),
                 1 if r.get("negated") else 0,
                 r.get("confidence", 0.0),
