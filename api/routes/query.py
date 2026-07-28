@@ -481,6 +481,15 @@ async def subgraph(
             except Exception:
                 src_papers = []
 
+            # Resolve document_id: prefer the field directly, fall back to first source_paper
+            try:
+                _doc_id = r["document_id"] if r["document_id"] else (src_papers[0] if src_papers else "")
+            except Exception:
+                _doc_id = src_papers[0] if src_papers else ""
+            try:
+                _section = r["section"] or ""
+            except Exception:
+                _section = ""
             edges.append({
                 "id":    f"e{i}",
                 "from":  r["subject_id"],
@@ -491,10 +500,15 @@ async def subgraph(
                 "width": max(1.5, float(r["confidence"] or 0) * 3),
                 "arrows": {"to": {"enabled": True, "scaleFactor": 0.6}},
                 "dashes": bool(r["negated"]),
-                "_relation":   r["relation"],
-                "_confidence": r["confidence"],
+                "_relation":      r["relation"],
+                "_confidence":    r["confidence"],
                 "_source_papers": src_papers,
-                "_reasoning":  r["reasoning"] or "",
+                "_reasoning":     r["reasoning"] or "",
+                # Source grounding fields
+                "_subject_name":  r["subject_name"] or "",
+                "_object_name":   r["object_name"] or "",
+                "_doc_id":        _doc_id,
+                "_section":       _section,
             })
 
         return JSONResponse({
