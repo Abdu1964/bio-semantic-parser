@@ -495,7 +495,20 @@ async function loadUnifiedKG(fmt) {
 
   <!-- Result -->
   <div id="qb-result">
-    <div class="qb-result-meta" id="qb-result-meta"></div>
+    <div class="qb-result-meta" id="qb-result-meta">
+      <span class="qb-result-info"></span>
+      <div class="qb-export-spacer" style="flex:1"></div>
+      <div class="qb-export-dropdown" id="qb-export-dropdown">
+        <button class="qb-tool-btn qb-tool-export" id="qb-export-btn" onclick="toggleQbExportMenu(event)">
+          ⬇ Export
+          <span style="font-size:9px;margin-left:3px">▾</span>
+        </button>
+        <div class="qb-export-menu" id="qb-export-menu">
+            <button onclick="exportQueryResult('json')">JSON</button>
+            <button onclick="exportQueryResult('metta')">MeTTa (.metta)</button>
+          </div>
+      </div>
+    </div>
     <iframe id="qb-result-frame" src="about:blank"
       style="width:100%;height:540px;border:1px solid var(--border,#30363d);border-radius:10px;display:block"></iframe>
   </div>
@@ -512,6 +525,15 @@ async function loadUnifiedKG(fmt) {
     <button onclick="loadUnifiedKG()" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer">↺ Refresh</button>
 <button onclick="window.open(document.getElementById('unified-frame').src,'_blank')" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer">↗ Full screen</button>
 <button onclick="switchTab('query')" style="padding:5px 14px;background:transparent;border:1px solid #1f6feb55;border-radius:6px;color:#58a6ff;font-size:12px;cursor:pointer;font-weight:600">🔍 Query KG</button>
+    <div class="qb-export-dropdown" id="unified-export-dropdown" style="margin-left:auto">
+      <button onclick="toggleUnifiedExportMenu(event)" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer;font-weight:600">
+        ⬇ Export <span style="font-size:9px;margin-left:2px">▾</span>
+      </button>
+      <div class="qb-export-menu" id="unified-export-menu">
+        <button onclick="exportUnifiedKG('json')">JSON</button>
+        <button onclick="exportUnifiedKG('metta')">MeTTa (.metta)</button>
+      </div>
+    </div>
   </div>
   <iframe id="unified-frame" src="about:blank"
     style="flex:1;width:100%;border:none;height:calc(100vh - 160px);min-height:500px"
