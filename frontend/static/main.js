@@ -2573,7 +2573,22 @@ function exportUnifiedKG(fmt) {
   const dbSel = document.getElementById('unified-db-sel');
   const db = dbSel ? dbSel.value : 'neo4j';
   const ext = fmt === 'json' ? 'json' : fmt === 'metta' ? 'metta' : 'zip';
-  exportDownload('/api/export/unified', { db, format: fmt }, `unified_kg_${db}.${ext}`);
+  
+  let paper = '';
+  try {
+    const frame = document.getElementById('unified-frame');
+    if (frame && frame.contentWindow) {
+      const doc = frame.contentDocument || frame.contentWindow.document;
+      const filter = doc.getElementById('paper-filter');
+      if (filter && filter.value && filter.value !== 'all') {
+        paper = filter.value;
+      }
+    }
+  } catch (e) {
+    console.error('Could not read paper filter from iframe:', e);
+  }
+
+  exportDownload('/api/export/unified', { db, format: fmt, paper: paper }, `unified_kg_${db}.${ext}`);
   // Close the menu
   document.querySelectorAll('#unified-export-menu').forEach(m => m.classList.remove('open'));
 }

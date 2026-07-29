@@ -21,7 +21,9 @@ if str(_ROOT) not in sys.path:
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
-    "metta":  _ROOT / "data" / "triple_store_metta.db",
+_DB_PATHS = {
+    "neo4j": _ROOT / "data" / "triple_store_neo4j.db",
+    "metta": _ROOT / "data" / "triple_store_metta.db",
 }
 
 
@@ -188,16 +190,25 @@ async def export_unified(body: dict):
     """Export the full unified KG from the triple store."""
     db = body.get("db", "metta")
     fmt = body.get("format", "json")
+    paper = body.get("paper", "")
 
     conn = _get_conn(db)
     if not conn:
         return JSONResponse({"error": "Database not found"}, status_code=404)
 
     try:
-        rows = conn.execute(
-            "SELECT * FROM triples WHERE confidence >= 0 AND is_contradiction = 0 "
-            "ORDER BY confidence DESC"
-        ).fetchall()
+        if paper:
+            rows = conn.execute(
+                "SELECT * FROM triples WHERE confidence >= 0 AND is_contradiction = 0 "
+                "AND source_papers LIKE ? "
+                "ORDER BY confidence DESC",
+                (f"%{paper}%",)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM triples WHERE confidence >= 0 AND is_contradiction = 0 "
+                "ORDER BY confidence DESC"
+            ).fetchall()
         rows = [dict(r) for r in rows]
     finally:
         conn.close()
@@ -208,10 +219,40 @@ async def export_unified(body: dict):
     base_name = f"unified_kg_{db}"
 
     if fmt == "json":
-        clean = []
-        for r in rows:
-            clean.append({k: v for k, v in r.items() if k not in ("count", "db")})
-        payload = json.dumps({"triples": clean}, indent=2, default=str)
+        nodes: dict = {}
+        edges: list = []
+        for i, r in enumerate(rows):
+            for nid, nname in [
+                (r["subject_id"], r["subject_name"]),
+                (r["object_id"], r["object_name"]),
+            ]:
+                if nid not in nodes:
+                    nodes[nid] = {"id": nid, "label": nname or nid}
+            try:
+                src_papers = json.loads(r.get("source_papers") or "[]")
+            except Exception:
+                src_papers = []
+            edges.append({
+                "id": f"e{i}",
+                "from": r["subject_id"],
+                "to": r["object_id"],
+                "label": (r["relation"] or "").replace("_", " "),
+                "relation": r["relation"],
+                "confidence": r.get("confidence", 0),
+                "source_papers": src_papers,
+                "reasoning": r.get("reasoning", ""),
+                "from_name": r.get("subject_name", ""),
+                "to_name": r.get("object_name", ""),
+                "from_type": r.get("subject_type", ""),
+                "to_type": r.get("object_type", ""),
+                "negated": bool(r.get("negated")),
+                "species": r.get("species", ""),
+                "tissue": r.get("tissue", ""),
+                "condition": r.get("condition", ""),
+                "effect_size": r.get("effect_size", ""),
+            })
+
+        payload = json.dumps({"nodes": list(nodes.values()), "edges": edges}, indent=2)
         return StreamingResponse(
             io.BytesIO(payload.encode("utf-8")),
             media_type="application/json",
