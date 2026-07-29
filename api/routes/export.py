@@ -21,8 +21,6 @@ if str(_ROOT) not in sys.path:
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
-_DB_PATHS = {
-    "neo4j": _ROOT / "data" / "triple_store_neo4j.db",
     "metta":  _ROOT / "data" / "triple_store_metta.db",
 }
 
@@ -46,136 +44,6 @@ def _zip_dir(dir_path: Path) -> bytes:
     return buf.read()
 
 
-def _zip_neo4j(rows: list, db: str) -> bytes:
-    """Generate Neo4j-compatible CSVs + Cypher from rows and zip them."""
-    DELIMITER = "|"
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-
-        # --- Nodes ---
-        node_mentions: dict = {}
-        for r in rows:
-            for prefix in ("subject", "object"):
-                nid = r[f"{prefix}_id"] or ""
-                if not nid or nid in node_mentions:
-                    continue
-                entry = node_mentions.setdefault(nid, {
-                    "names": set(), "types": set(),
-                    "canonical_names": set(), "source_urls": set(), "synonyms": set(),
-                })
-                name = r.get(f"{prefix}_name", "") or ""
-                canon = r.get(f"{prefix}_canonical_name", "") or ""
-                url = r.get(f"{prefix}_source_url", "") or ""
-                syn = r.get(f"{prefix}_synonyms", "") or ""
-                etype = r.get(f"{prefix}_type", "") or "OTHER"
-                if name: entry["names"].add(name)
-                if canon: entry["canonical_names"].add(canon)
-                if url: entry["source_urls"].add(url)
-                if syn: entry["synonyms"].add(syn)
-                entry["types"].add(etype)
-
-        node_fields = ["id", "name", "full_name", "entity_type", "needs_review", "source_url", "synonyms"]
-        nodes_by_type: dict = {}
-        for nid, entry in node_mentions.items():
-            types = list(entry["types"])
-            etype = max(set(types), key=types.count) if types else "OTHER"
-            slug = etype.lower().replace(" ", "_")
-            nodes_by_type.setdefault(slug, []).append({
-                "id": nid,
-                "name": next(iter(entry["names"]), nid),
-                "full_name": next(iter(entry["canonical_names"]), ""),
-                "entity_type": etype,
-                "needs_review": "false",
-                "source_url": next(iter(entry["source_urls"]), ""),
-                "synonyms": "|".join(entry["synonyms"]),
-            })
-
-        node_dir = tmp_path / "nodes"
-        node_dir.mkdir()
-        for slug, nodes in nodes_by_type.items():
-            csv_path = node_dir / f"nodes_{slug}.csv"
-            with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=node_fields, delimiter=DELIMITER, extrasaction="ignore")
-                w.writeheader()
-                w.writerows(nodes)
-
-        # --- Edges ---
-        edge_fields = [
-            "source_id", "source_name", "source_type",
-            "target_id", "target_name", "target_type",
-            "relation", "confidence", "negated",
-            "species", "tissue", "condition", "effect_size",
-            "source_papers", "reasoning", "is_contradiction",
-        ]
-        edges_by_type: dict = {}
-        for r in rows:
-            s_type = (r.get("subject_type") or "other").lower().replace(" ", "_")
-            o_type = (r.get("object_type") or "other").lower().replace(" ", "_")
-            rel = (r.get("relation") or "related_to").lower().replace(" ", "_")
-            key = (s_type, rel, o_type)
-            src_papers = r.get("source_papers") or "[]"
-            try:
-                src_papers = json.dumps(json.loads(src_papers) if isinstance(src_papers, str) else src_papers)
-            except Exception:
-                src_papers = "[]"
-            edges_by_type.setdefault(key, []).append({
-                "source_id": r.get("subject_id", ""),
-                "source_name": r.get("subject_name", ""),
-                "source_type": r.get("subject_type", ""),
-                "target_id": r.get("object_id", ""),
-                "target_name": r.get("object_name", ""),
-                "target_type": r.get("object_type", ""),
-                "relation": r.get("relation", ""),
-                "confidence": r.get("confidence", 0),
-                "negated": str(bool(r.get("negated", 0))).lower(),
-                "species": r.get("species", "") or "",
-                "tissue": r.get("tissue", "") or "",
-                "condition": r.get("condition", "") or "",
-                "effect_size": r.get("effect_size", "") or "",
-                "source_papers": src_papers,
-                "reasoning": (r.get("reasoning", "") or "")[:300],
-                "is_contradiction": str(bool(r.get("is_contradiction", 0))).lower(),
-            })
-
-        edge_dir = tmp_path / "edges"
-        edge_dir.mkdir()
-        for (s_slug, rel, o_slug), edges in edges_by_type.items():
-            fname = f"edges_{s_slug}_{rel}_{o_slug}"
-            csv_path = edge_dir / f"{fname}.csv"
-            with open(csv_path, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=edge_fields, delimiter=DELIMITER, extrasaction="ignore")
-                w.writeheader()
-                w.writerows(edges)
-
-        # --- Cypher scripts ---
-        cypher_dir = tmp_path / "cypher"
-        cypher_dir.mkdir()
-        for slug in nodes_by_type:
-            rel_path = f"../nodes/nodes_{slug}.csv"
-            cypher = (
-                f"CREATE CONSTRAINT IF NOT EXISTS FOR (n:{slug}) REQUIRE n.id IS UNIQUE;\n\n"
-                f"LOAD CSV WITH HEADERS FROM 'file:///{rel_path}' AS row FIELDTERMINATOR '{DELIMITER}'\n"
-                f"MERGE (n:{slug} {{id: row.id}})\n"
-                f"SET n.name = row.name, n.full_name = row.full_name, n.entity_type = row.entity_type;\n"
-            )
-            (cypher_dir / f"nodes_{slug}.cypher").write_text(cypher, encoding="utf-8")
-
-        for (s_slug, rel, o_slug) in edges_by_type:
-            suffix = f"{s_slug}_{rel}_{o_slug}"
-            rel_path = f"../edges/edges_{suffix}.csv"
-            rel_upper = rel.upper()
-            cypher = (
-                f"LOAD CSV WITH HEADERS FROM 'file:///{rel_path}' AS row FIELDTERMINATOR '{DELIMITER}'\n"
-                f"MATCH (s:{s_slug} {{id: row.source_id}})\n"
-                f"MATCH (t:{o_slug} {{id: row.target_id}})\n"
-                f"MERGE (s)-[r:{rel_upper}]->(t)\n"
-                f"SET r.confidence = toFloat(row.confidence), r.negated = row.negated, r.species = row.species;\n"
-            )
-            (cypher_dir / f"edges_{suffix}.cypher").write_text(cypher, encoding="utf-8")
-
-        return _zip_dir(tmp_path)
-
-
 def _zip_metta(rows: list) -> bytes:
     """Generate a single .metta file with simple triples."""
     def _safe_id(cid: str) -> str:
@@ -185,7 +53,9 @@ def _zip_metta(rows: list) -> bytes:
     def _safe_name(v: str) -> str:
         import re
         v = str(v).strip() if v else ""
-        return re.sub(r"[^A-Za-z0-9_ ]", "_", v).strip() or "unknown"
+        v = re.sub(r"[^A-Za-z0-9_ ]", "_", v).strip()
+        v = re.sub(r"\s+", "_", v).strip("_")
+        return v or "unknown"
 
     lines = []
     for r in rows:
@@ -203,7 +73,7 @@ def _zip_metta(rows: list) -> bytes:
 @router.post("/subgraph")
 async def export_subgraph(body: dict):
     """Export subgraph query results in the requested format."""
-    db = body.get("db", "neo4j")
+    db = body.get("db", "metta")
     entity1 = body.get("entity1", "")
     entity2 = body.get("entity2", "")
     relation = body.get("relation", "")
@@ -301,13 +171,6 @@ async def export_subgraph(body: dict):
             headers={"Content-Disposition": f'attachment; filename="{base_name}.json"'},
         )
 
-    elif fmt == "neo4j":
-        data = _zip_neo4j(rows, db)
-        return StreamingResponse(
-            io.BytesIO(data),
-            media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{base_name}_neo4j.zip"'},
-        )
 
     elif fmt == "metta":
         data = _zip_metta(rows)
@@ -323,7 +186,7 @@ async def export_subgraph(body: dict):
 @router.post("/unified")
 async def export_unified(body: dict):
     """Export the full unified KG from the triple store."""
-    db = body.get("db", "neo4j")
+    db = body.get("db", "metta")
     fmt = body.get("format", "json")
 
     conn = _get_conn(db)
@@ -355,13 +218,6 @@ async def export_unified(body: dict):
             headers={"Content-Disposition": f'attachment; filename="{base_name}.json"'},
         )
 
-    elif fmt == "neo4j":
-        data = _zip_neo4j(rows, db)
-        return StreamingResponse(
-            io.BytesIO(data),
-            media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{base_name}_neo4j.zip"'},
-        )
 
     elif fmt == "metta":
         data = _zip_metta(rows)
