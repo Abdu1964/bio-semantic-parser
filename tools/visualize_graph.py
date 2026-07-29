@@ -896,15 +896,14 @@ function showNodePanel(nodeId) {{
     rows.push(['Record', `<a href="${{esc(props.source_url)}}" target="_blank" rel="noopener noreferrer" class="source-btn">🔗 View source ↗</a>`]);
   }}
   if (props.evidence) {{
-    // The exact sentence(s) this node was extracted from — direct textual
-    // grounding, same purpose as the source-record link but for the TEXT
-    // side rather than the ontology-ID side: "does the paper actually say this."
     const quotes = String(props.evidence).split('\\n').map(s => s.trim()).filter(Boolean);
-    const quote = q => `<div style="font-style:italic;color:#a8c5e0;padding:6px 10px;margin:0 0 4px;border-left:2px solid #2a5580;background:rgba(255,255,255,.02);border-radius:0 6px 6px 0">&ldquo;${{esc(q)}}&rdquo;</div>`;
-    const val = quotes.length > 1
-      ? expandable(quote(quotes[0]) + `<span class="chip chip-more">+${{quotes.length - 1}} more</span>`, quotes.map(quote).join(''))
-      : quote(quotes[0]);
-    rows.push(['Evidence', val]);
+    if (quotes.length) {{
+      const quote = q => `<div style="font-style:italic;color:#a8c5e0;padding:6px 10px;margin:0 0 4px;border-left:2px solid #2a5580;background:rgba(255,255,255,.02);border-radius:0 6px 6px 0">&ldquo;${{esc(q)}}&rdquo;</div>`;
+      const val = quotes.length > 1
+        ? expandable(quote(quotes[0]) + `<span class="chip chip-more">+${{quotes.length - 1}} more</span>`, quotes.map(quote).join(''))
+        : quote(quotes[0]);
+      rows.push(['Evidence', val]);
+    }}
   }}
   if (props.synonyms) {{
     const items    = String(props.synonyms).split(';').map(s => s.trim()).filter(Boolean);
