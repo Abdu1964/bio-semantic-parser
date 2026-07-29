@@ -94,6 +94,17 @@ class Preextractor:
         except Exception:
             pass   # never break the pipeline if optional tagger fails
 
+        # ── GLiNER-BioMed Base — zero-shot NER, covers most of the ~83-type
+        #    taxonomy that scispaCy's fixed label sets can't recognize at all.
+        try:
+            from src.preextraction.gliner_tagger import tag_entities as _gliner_tag, should_run as _gliner_ok
+            if _gliner_ok():
+                gliner_ents = _gliner_tag(text)
+                if gliner_ents:
+                    entities = _merge_entities(entities, gliner_ents)
+        except Exception:
+            pass   # never break the pipeline if optional tagger fails
+
         negation   = self.negation_detector.process(entities, doc)
         doi        = self.doi_extractor.extract(text)
         accessions = self.accession_detector.extract(text)

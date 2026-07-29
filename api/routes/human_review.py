@@ -59,7 +59,9 @@ async def suggest_canonical_id(name: str = "", entity_type: str = ""):
                 "source":        source,
                 "confidence":    "high",
                 "verified":      True,
-                "official_name": clean,
+                "official_name": result.get("canonical_name", "") or clean,
+                "source_url":    result.get("source_url", ""),
+                "synonyms":      result.get("synonyms", ""),
             })
 
         # Chain failed — ask LLM as last resort
@@ -84,6 +86,7 @@ async def suggest_canonical_id(name: str = "", entity_type: str = ""):
         if not data.get("id"):
             return JSONResponse({"id": None})
         data["verified"] = False
+        data["official_name"] = data.get("full_name", "")
         if data.get("confidence") not in ("low",):
             data["confidence"] = "low"
         return JSONResponse(data)
@@ -129,7 +132,7 @@ async def review_action(
                 if not _run_path.is_absolute(): _run_path = _ROOT / _run_path
 
                 if _run_path.exists() and sdb_path.exists():
-                    try: export_csvs_from_db(str(sdb_path), str(_run_path), formats="neo4j")
+                    try: export_csvs_from_db(str(sdb_path), str(_run_path), formats="both")
                     except Exception: pass
 
                 if _run_path.exists():

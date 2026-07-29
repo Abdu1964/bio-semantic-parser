@@ -19,3 +19,4 @@ websockets
 transformers
 torch --index-url https://download.pytorch.org/whl/cpu
 sentence-transformers
+gliner

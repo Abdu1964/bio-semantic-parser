@@ -1,7 +1,7 @@
 """Layer 8 — Validation Gate: routes records to auto-insert or human review."""
 
 
-def _is_hard_unresolved(entity_id: str | None) -> bool:
+def _is_hard_unresolved(entity_id: "str | None") -> bool:
     """True for completely empty/placeholder IDs (NEEDS_REVIEW, empty, None)."""
     return entity_id in ("NEEDS_REVIEW", "", None)
 
@@ -11,16 +11,23 @@ def _is_text_label(entity_id: str) -> bool:
     return isinstance(entity_id, str) and entity_id.startswith("TEXT:")
 
 
+def _is_other_type(entity_type: str) -> bool:
+    """True for the OTHER catch-all entity type — taxonomy says 'flag for review'."""
+    return entity_type == "OTHER"
+
+
 def route(records: list) -> tuple:
     """Split records into (auto_insert, human_review)."""
     auto_insert  = []
     human_review = []
 
     for r in records:
-        verdict    = r.get("validation_verdict", "SKIPPED")
-        contra     = r.get("is_contradiction",   False)
-        subject_id = r.get("subject_id", "")
-        object_id  = r.get("object_id",  "")
+        verdict     = r.get("validation_verdict", "SKIPPED")
+        contra      = r.get("is_contradiction",   False)
+        subject_id  = r.get("subject_id", "")
+        object_id   = r.get("object_id",  "")
+        subject_type = r.get("subject_type", "")
+        object_type  = r.get("object_type",  "")
 
         hard_unresolved = (
             _is_hard_unresolved(subject_id) or
@@ -30,12 +37,17 @@ def route(records: list) -> tuple:
             _is_text_label(subject_id) or
             _is_text_label(object_id)
         )
+        other_type = (
+            _is_other_type(subject_type) or
+            _is_other_type(object_type)
+        )
 
         passes = (
             verdict == "VALID"
             and not contra
             and not hard_unresolved
-            and not text_label   # TEXT: entities need canonical ID correction first
+            and not text_label       # TEXT: entities need canonical ID correction first
+            and not other_type       # OTHER entity type needs a human to assign the real type
         )
 
         if passes:

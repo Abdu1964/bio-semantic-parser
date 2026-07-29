@@ -9,6 +9,7 @@ from src.postextraction import (
     two_pass_resolution,
     semantic_validation,
     atomspace_alignment,
+    concept_alignment,
 )
 
 
@@ -157,22 +158,43 @@ def process(
     n_review   = sum(1 for r in records if r.get('subject_needs_review') or r.get('object_needs_review'))
     log(f"  → {n_resolved} fully resolved | {n_review} need review")
 
+    # ── Relation / subject-type constraint check ──────────────────────────────
+    # has_phenotype requires a molecular subject; has_symptom requires a disease/condition.
+    # Correct mismatches deterministically — taxonomy states this outright.
+    _MOLECULAR_SUBJECT_TYPES = {
+        "GENE", "GENOMIC_VARIANT", "SEQUENCE_VARIANT", "STRUCTURAL_VARIANT",
+        "TRANSCRIPT", "EXON", "NON_CODING_RNA", "PROTEIN", "HAPLOTYPE", "GENOTYPE",
+        "MICRO_RNA", "SI_RNA", "SMALL_MOLECULE", "DRUG", "TREATMENT",
+        "CLINICAL_INTERVENTION", "EXPERIMENTAL_FACTOR",
+    }
+    _CONDITION_SUBJECT_TYPES = {"DISEASE", "CANCER"}
+
+    n_relation_fixed = 0
+    for r in records:
+        rel = r.get("relation")
+        rel_val = rel.value if hasattr(rel, "value") else rel
+        subj_type = r.get("subject_type", "")
+        if rel_val == "has_phenotype" and subj_type in _CONDITION_SUBJECT_TYPES:
+            r["relation"] = "has_symptom"
+            n_relation_fixed += 1
+        elif rel_val == "has_symptom" and subj_type in _MOLECULAR_SUBJECT_TYPES:
+            r["relation"] = "has_phenotype"
+            n_relation_fixed += 1
+    if n_relation_fixed:
+        log(f"  → {n_relation_fixed} relation(s) corrected: has_phenotype/has_symptom "
+            f"didn't match subject's entity type")
+
     # ── Entity ontology gate — flag non-biomedical triples ────────────────────
     # A triple is considered non-biomedical if BOTH subject and object fail to
     # resolve to any recognized ontology (both get TEXT: slugs or NEEDS_REVIEW).
     # This catches app-analytics relations like:
     #   "number of downloads → associates_with → rating score"
     # while keeping valid triples where at least one entity has an ontology ID.
-    _ONTOLOGY_PREFIXES = (
-        "ENSEMBL:", "NCBI_GENE:", "NCBI_Gene:", "NCBI:", "NCBITaxon:",
-        "UniProtKB:", "RxNorm:", "RXCUI:", "WD:",
-        "MESH:", "GO:", "ChEBI:", "CHEBI:", "HMDB:", "PUBCHEM:",
-        "DOID:", "HP:", "MONDO:", "CL:", "UBERON:", "PR:",
-        "EFO:", "RO:", "OMIM:", "KEGG:", "REACTOME:",
-    )
-
     def _has_ontology_id(entity_id: str) -> bool:
-        return bool(entity_id) and any(entity_id.startswith(p) for p in _ONTOLOGY_PREFIXES)
+        """True for a real ontology-prefixed ID (PREFIX:value); False for TEXT:/NEEDS_REVIEW/empty."""
+        if not entity_id or entity_id == "NEEDS_REVIEW" or entity_id.startswith("TEXT:"):
+            return False
+        return ":" in entity_id
 
     n_flagged_non_bio = 0
     for r in records:
@@ -196,6 +218,12 @@ def process(
 
     if n_flagged_non_bio:
         log(f"  → {n_flagged_non_bio} triple(s) flagged: both entities lack ontology IDs")
+
+    # ── Concept alignment ───────────────────────────────────────────
+    # Merge same-concept entities that normalized to different IDs across sentences.
+    if step_cb: step_cb(1, "Entity Normalization", "aligning near-duplicate concepts")
+    log("  Concept alignment — merging same-concept entities across mentions")
+    records = concept_alignment.align_concepts(records)
 
     # ── Step 2: Deduplication ─────────────────────────────────────
     if step_cb: step_cb(2, "Deduplication", "")

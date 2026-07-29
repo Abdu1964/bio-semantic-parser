@@ -3,9 +3,14 @@ import csv
 import json
 import os
 import re
+import shutil
 from collections import defaultdict
 from pathlib import Path
 
+from .node_naming import (
+    pick_node_name, pick_node_full_name, pick_node_source_url,
+    merge_node_synonyms, pick_node_entity_type, merge_node_evidence,
+)
 
 _OUT_DIR   = Path(os.getenv("NEO4J_OUTPUT_DIR", "data/output/neo4j"))
 _DELIMITER = "|"
@@ -19,42 +24,79 @@ def _slug(text: str) -> str:
 def write(records: list, run_dir: Path = None) -> dict:
     """Write all records to Neo4j CSV and Cypher files under run_dir/neo4j/."""
     out_dir = (run_dir / "neo4j") if run_dir else _OUT_DIR
+    # Rebuilt from scratch every call — type changes between re-exports would leave orphaned files otherwise.
+    if out_dir.exists():
+        resolved = out_dir.resolve()
+        if resolved == Path("/") or resolved == Path.home() or resolved == Path.cwd():
+            raise ValueError(f"Refusing to delete unsafe output dir: {resolved}")
+        shutil.rmtree(resolved)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Collect unique nodes ──────────────────────────────────────────────────
-    # {entity_type_slug: {canonical_id: row_dict}}
-    nodes: dict = defaultdict(dict)
+    # Keyed by canonical ID only — entity_type is a majority-voted property, not a partition key.
+    node_mentions: dict = defaultdict(lambda: {
+        "names": [], "canonical_names": [], "source_urls": [], "synonyms": [],
+        "entity_types": [], "id_sources": [], "needs_reviews": [], "evidence": [],
+    })
 
     for r in records:
-        for name_key, type_key, id_key, src_key, review_key in [
-            ("subject_name", "subject_type", "subject_id",
-             "subject_id_source", "subject_needs_review"),
-            ("object_name",  "object_type",  "object_id",
-             "object_id_source", "object_needs_review"),
+        for name_key, canon_key, type_key, id_key, src_key, review_key, url_key, syn_key, ev_key in [
+            ("subject_name", "subject_canonical_name", "subject_type", "subject_id",
+             "subject_id_source", "subject_needs_review", "subject_source_url", "subject_synonyms", "subject_evidence"),
+            ("object_name",  "object_canonical_name",  "object_type",  "object_id",
+             "object_id_source", "object_needs_review", "object_source_url", "object_synonyms", "object_evidence"),
         ]:
-            cid   = r.get(id_key, "") or ""
+            cid = r.get(id_key, "") or ""
+            if not cid:
+                continue
+            entry = node_mentions[cid]
             name  = r.get(name_key, "") or ""
-            etype = r.get(type_key, "OTHER") or "OTHER"
-            slug  = _slug(etype)
+            canon = r.get(canon_key, "") or ""
+            url   = r.get(url_key, "") or ""
+            syn   = r.get(syn_key, "") or ""
+            ev    = r.get(ev_key, "") or ""
+            if name:
+                entry["names"].append(name)
+            if canon:
+                entry["canonical_names"].append(canon)
+            if url:
+                entry["source_urls"].append(url)
+            if syn:
+                entry["synonyms"].append(syn)
+            if ev:
+                entry["evidence"].append(ev)
+            entry["entity_types"].append(r.get(type_key, "OTHER") or "OTHER")
+            entry["id_sources"].append(r.get(src_key, "") or "")
+            entry["needs_reviews"].append(bool(r.get(review_key, False)))
 
-            if cid and cid not in nodes[slug]:
-                nodes[slug][cid] = {
-                    "id":           cid,
-                    "name":         name,
-                    "entity_type":  etype,
-                    "id_source":    r.get(src_key, "") or "",
-                    "needs_review": str(r.get(review_key, False)).lower(),
-                }
+    id_to_row: dict = {}
+    id_to_type_slug: dict = {}
+    for cid, entry in node_mentions.items():
+        etype = pick_node_entity_type(entry["entity_types"])
+        id_to_type_slug[cid] = _slug(etype)
+        is_uncertain = any(entry["needs_reviews"])
+        id_to_row[cid] = {
+            "id":           cid,
+            "name":         pick_node_name(entry["names"], entry["canonical_names"], is_uncertain),
+            "full_name":    pick_node_full_name(entry["names"], entry["canonical_names"], is_uncertain),
+            "entity_type":  etype,
+            "id_source":    entry["id_sources"][0]    if entry["id_sources"]    else "",
+            "needs_review": "true" if is_uncertain else "false",
+            "source_url":   pick_node_source_url(entry["source_urls"]),
+            "synonyms":     merge_node_synonyms(entry["synonyms"]),
+            "evidence":     merge_node_evidence(entry["evidence"]),
+        }
 
-    # ── Group edges by (source_type, relation, target_type) — NO duplication ────
-    # Edge goes in the SOURCE entity type's folder with a descriptive filename.
-    #   protein inhibits gene     → protein/edges_protein_inhibits_gene.csv
-    #   gene    regulates protein → gene/edges_gene_regulates_protein.csv
-    # {source_slug: {(relation_slug, target_slug): [record, ...]}}
+    nodes: dict = defaultdict(dict)
+    for cid, row in id_to_row.items():
+        nodes[id_to_type_slug[cid]][cid] = row
+
+    # Group edges by (source_type, relation, target_type); use WINNING type slug, not the triple's own tag.
     edge_groups: dict = defaultdict(lambda: defaultdict(list))
     for r in records:
-        s_slug = _slug(r.get("subject_type", "OTHER") or "OTHER")
-        o_slug = _slug(r.get("object_type",  "OTHER") or "OTHER")
+        s_id   = r.get("subject_id", "") or ""
+        o_id   = r.get("object_id",  "") or ""
+        s_slug = id_to_type_slug.get(s_id) or _slug(r.get("subject_type", "OTHER") or "OTHER")
+        o_slug = id_to_type_slug.get(o_id) or _slug(r.get("object_type",  "OTHER") or "OTHER")
         rel    = _slug(r.get("relation", "related_to") or "related_to")
         edge_groups[s_slug][(rel, o_slug)].append(r)
 
@@ -62,7 +104,7 @@ def write(records: list, run_dir: Path = None) -> dict:
     # neo4j/{entity_type}/
     #   nodes_{entity_type}.csv       ← all nodes of this type
     #   edges_{relation}.csv          ← edges where THIS type is the source
-    node_fields = ["id", "name", "entity_type", "id_source", "needs_review"]
+    node_fields = ["id", "name", "full_name", "entity_type", "id_source", "needs_review", "source_url", "synonyms", "evidence"]
     edge_fields = [
         "source_id", "source_name", "source_type",
         "target_id", "target_name", "target_type",
@@ -113,10 +155,10 @@ def write(records: list, run_dir: Path = None) -> dict:
                     w.writerow({
                         "source_id":           s_id,
                         "source_name":         r.get("subject_name", ""),
-                        "source_type":         r.get("subject_type", ""),
+                        "source_type":         id_to_row.get(s_id, {}).get("entity_type") or r.get("subject_type", ""),
                         "target_id":           o_id,
                         "target_name":         r.get("object_name",  ""),
-                        "target_type":         r.get("object_type",  ""),
+                        "target_type":         id_to_row.get(o_id, {}).get("entity_type") or r.get("object_type",  ""),
                         "relation":            r.get("relation",     "") or rel,
                         "confidence":          r.get("confidence",   0.0),
                         "negated":             str(r.get("negated", False)).lower(),
@@ -167,9 +209,13 @@ CALL apoc.periodic.iterate(
     "LOAD CSV WITH HEADERS FROM 'file:///{relative}' AS row FIELDTERMINATOR '{_DELIMITER}' RETURN row",
     "MERGE (n:{label} {{id: row.id}})
      SET n.name         = row.name,
+         n.full_name    = row.full_name,
          n.entity_type  = row.entity_type,
          n.id_source    = row.id_source,
-         n.needs_review = row.needs_review",
+         n.needs_review = row.needs_review,
+         n.source_url   = row.source_url,
+         n.synonyms     = row.synonyms,
+         n.evidence     = row.evidence",
     {{batchSize: 1000, parallel: true}}
 )
 YIELD batches, total

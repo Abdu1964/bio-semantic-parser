@@ -28,8 +28,8 @@ under multiple labels in the knowledge graph.
 
 File structure (8 sections)
 ────────────────────────────
-  1. RelationType enum     — 87 approved types organised into 22 categories
-  2. EntityType enum       — 39 node types (BioCypher + Biolink aligned)
+  1. RelationType enum     — 96 approved types organised into 24 categories
+  2. EntityType enum       — 85 node types (BioCypher + Biolink aligned)
   3. SectionLabel enum     — document section tags
   4. TAXONOMY dict         — definition + example + not_this for every type
   5. SYNONYM_MAP           — empty stub (moved to tools/build_taxonomy.py)
@@ -155,8 +155,10 @@ class RelationType(str, Enum):
     # ── Category 10: Disease / Phenotype ──────────────────────────────────────
     # Hetionet: DpS (Disease-presents-Symptom)
     # OpenBioLink: DISEASE_PHENOTYPE, GENE_PHENOTYPE
-    HAS_SYMPTOM      = "has_symptom"        # disease clinically presents with symptom B
-    HAS_PHENOTYPE    = "has_phenotype"      # gene/variant/intervention produces phenotype B
+    HAS_SYMPTOM           = "has_symptom"           # disease clinically presents with symptom B
+    HAS_PHENOTYPE         = "has_phenotype"         # gene/variant/intervention produces phenotype B
+    HAS_INHERITANCE_MODE  = "has_inheritance_mode"  # disease/condition follows inheritance pattern B
+    HAS_BIOMARKER         = "has_biomarker"         # disease/condition has measurable biological marker B
 
     # ── Category 11: Longevity-Specific (domain extension) ────────────────────
     # Not present in BioNLP / Hetionet / OpenBioLink — added for longevity domain.
@@ -246,6 +248,17 @@ class RelationType(str, Enum):
     AMELIORATES                   = "ameliorates"                   # treatment / gene mitigates severity without curing (weaker than treats)
     EXACERBATES                   = "exacerbates"                   # gene / compound worsens or accelerates a disease or condition
     IN_TAXON                      = "in_taxon"                      # biological entity belongs to / is found in this organism taxon
+
+    # ── Category 24: BioCypher genomics-schema gap-fill (2nd pass) ──────────────
+    # Found by diffing against rejuve-bio/biocypher-kg's hsa_schema_config.yaml —
+    # narrative phrasing common in GWAS/genetics and disease-model literature that
+    # the existing predicates above don't precisely capture.
+    IN_LINKAGE_DISEQUILIBRIUM_WITH = "in_linkage_disequilibrium_with" # two genetic variants are statistically co-inherited more often than by chance (biocypher: topld_in_linkage_disequilibrium_with)
+    MODEL_OF                      = "model_of"                      # an organism, cell line, or experimental system is used as a model to study a disease or condition (biocypher: gene_to_disease_model/marker_association)
+    IMPLICATED_IN                 = "implicated_in"                  # gene/variant is suspected to play a mechanistic role in a disease, weaker than CAUSES and more specific than ASSOCIATES_WITH (biocypher: gene_implicated_via_orthology_disease)
+    IS_INPUT_OF                   = "is_input_of"                    # molecule/protein is consumed as a substrate/input by a reaction or pathway (biocypher: input_role_protein_to_pathway/reaction_association)
+    PRODUCED_BY                   = "produced_by"                    # molecule/protein is generated as an output by a reaction or pathway (biocypher: output_role_protein_to_pathway/reaction_association)
+    AFFECTS                       = "affects"                        # A has a demonstrated effect on B without a specified direction or mechanism — weaker/vaguer than REGULATES (biocypher: snp_to_motif_association, activity_by_contact)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -377,6 +390,10 @@ class EntityType(str, Enum):
     EVENT                       = "EVENT"                       # biolink:Event — something that happens at a given place and time (biological or clinical event)
     PHENOMENON                  = "PHENOMENON"                  # biolink:Phenomenon — an observed fact or situation whose cause may be under investigation
     ENVIRONMENTAL_PROCESS       = "ENVIRONMENTAL_PROCESS"       # biolink:EnvironmentalProcess — a process that occurs within or involves components of an environmental system
+
+    # ── BioCypher genomics-schema gap-fill (2nd pass) ─────────────────────────
+    CHROMOSOME                  = "CHROMOSOME"                  # biolink:GenomicEntity — a whole chromosome named as an entity (e.g. "chromosome 21", "the X chromosome"), distinct from a variant/region on it
+    SEQUENCE_TYPE                = "SEQUENCE_TYPE"               # biolink:OntologyClass — a Sequence Ontology (SO) classification of a sequence feature, not an instance of the feature itself
 
     # ── Catch-all ─────────────────────────────────────────────────────────────
     OTHER                       = "OTHER"                       # does not fit above — flag for review
@@ -681,12 +698,22 @@ TAXONOMY: Dict[RelationType, dict] = {
     RelationType.HAS_SYMPTOM: {
         "definition": "Disease or condition A clinically presents with observable symptom or clinical sign B in patients.",
         "example": "Werner syndrome presents with premature ageing symptoms including bilateral cataracts and atherosclerosis.",
-        "not_this": "Use HAS_PHENOTYPE if B is a molecular or cellular phenotype rather than a clinical symptom. Use CAUSES if the mechanism by which A produces B is described.",
+        "not_this": "Use HAS_PHENOTYPE if B is a molecular or cellular phenotype rather than a clinical symptom. Use CAUSES if the mechanism by which A produces B is described. Match ontology term to the text's specificity — if the paper says 'facial phenotype', map to a broad HPO ancestor, not a specific child term.",
     },
     RelationType.HAS_PHENOTYPE: {
         "definition": "Gene, variant, or experimental intervention A produces a reproducible molecular, cellular, or organismal phenotype B.",
         "example": "SIRT1 knockout mice exhibit a phenotype of accelerated metabolic ageing and increased fat accumulation.",
-        "not_this": "Use HAS_SYMPTOM if B is a clinical symptom in a patient context. Use CAUSES if the mechanism of phenotype production is described.",
+        "not_this": "Use HAS_SYMPTOM if B is a clinical symptom in a patient context. Use CAUSES if the mechanism of phenotype production is described. Match ontology term to the text's specificity — vague text maps to a broad ancestor, not a specific child term.",
+    },
+    RelationType.HAS_INHERITANCE_MODE: {
+        "definition": "Disease or condition A is transmitted via inheritance pattern B.",
+        "example": "Hyperphosphatasia-mental retardation syndrome has_inheritance_mode autosomal recessive. Huntington disease has_inheritance_mode autosomal dominant.",
+        "not_this": "Use CAUSES for gene→disease. Use HAS_SYMPTOM for clinical features. Only fire when text explicitly states the pattern — object is the pattern name, not the gene.",
+    },
+    RelationType.HAS_BIOMARKER: {
+        "definition": "Disease or condition A has measurable diagnostic/monitoring marker B — a lab value, molecule, or physiological measurement.",
+        "example": "Hyperphosphatasia-mental retardation syndrome has_biomarker elevated serum alkaline phosphatase. Diabetes mellitus has_biomarker HbA1c. Myocardial infarction has_biomarker elevated troponin I.",
+        "not_this": "Use HAS_SYMPTOM for clinical symptoms the patient experiences. Use ASSOCIATES_WITH if the correlation is statistical only. Use BIOMARKER_FOR if B predicts A (reverse direction).",
     },
 
     # ── Category 11: Longevity-Specific ──────────────────────────────────────
@@ -944,6 +971,521 @@ TAXONOMY: Dict[RelationType, dict] = {
         "example": "BRCA1 pathogenic variant is associated_with_likelihood_of breast cancer.",
         "not_this": "Use PREDISPOSES if there is a known mechanistic or risk pathway. Use ASSOCIATES_WITH for generic statistical co-occurrence without a probabilistic framing. Use CAUSES for direct causal relationships.",
     },
+
+    # ── Category 24: BioCypher genomics-schema gap-fill (2nd pass) ─────────────
+
+    RelationType.IN_LINKAGE_DISEQUILIBRIUM_WITH: {
+        "definition": "Genetic variant A and variant B are statistically co-inherited more often than expected by chance — a population-genetics measure of non-random association between alleles at different loci.",
+        "example": "rs429358 is in linkage disequilibrium with rs7412 in the APOE region across European populations.",
+        "not_this": "Use ASSOCIATES_WITH for a variant-to-disease/phenotype statistical link, not variant-to-variant co-inheritance. Use IS_VARIANT_OF for a variant's relationship to its parent gene.",
+    },
+    RelationType.MODEL_OF: {
+        "definition": "An organism, cell line, or experimental system A is used by researchers as a model to study disease or condition B — A is not itself B, but reproduces some aspect of it for study.",
+        "example": "The SAMP8 mouse strain is a model of accelerated aging and age-related cognitive decline.",
+        "not_this": "Use RESEMBLES if the finding is phenotypic similarity without formal use as a research model. Use CAUSES/HAS_PHENOTYPE if describing what the model itself causes or exhibits, not its status as a model.",
+    },
+    RelationType.IMPLICATED_IN: {
+        "definition": "Gene, variant, or molecule A is suspected or shown to play a mechanistic role in disease or condition B, based on evidence such as genetic association, expression change, or pathway involvement — weaker than an established causal claim.",
+        "example": "Mutations in GBA are implicated in the pathogenesis of Parkinson's disease.",
+        "not_this": "Use CAUSES if causality is experimentally or epidemiologically established. Use ASSOCIATES_WITH for a purely statistical co-occurrence with no suggested mechanism. Use PREDISPOSES if A is framed as a risk factor rather than a mechanistic contributor.",
+    },
+    RelationType.IS_INPUT_OF: {
+        "definition": "Molecule or protein A is consumed as a substrate or input by reaction or pathway B.",
+        "example": "Glucose is an input of the glycolysis pathway.",
+        "not_this": "Use PRODUCED_BY if A is generated as an output rather than consumed. Use PARTICIPATES_IN if A's role (input vs. output) is not specified. Use CONVERTS_TO for the specific substrate-to-product transformation.",
+    },
+    RelationType.PRODUCED_BY: {
+        "definition": "Molecule or protein A is generated as an output by reaction or pathway B.",
+        "example": "Pyruvate is produced by the glycolysis pathway.",
+        "not_this": "Use IS_INPUT_OF if A is consumed rather than generated. Use PARTICIPATES_IN if A's role (input vs. output) is not specified. Use CONVERTS_TO for the specific substrate-to-product transformation.",
+    },
+    RelationType.AFFECTS: {
+        "definition": "A has a demonstrated effect on B without a specified direction, magnitude, or mechanism — the loosest causal-adjacent predicate in the taxonomy, used only when nothing more specific applies.",
+        "example": "The rs1042522 variant affects binding of the transcription factor at the TP53 promoter.",
+        "not_this": "Use REGULATES/ACTIVATES/INHIBITS/UPREGULATES/DOWNREGULATES whenever the direction or mechanism of the effect is known — AFFECTS should be rare, not a default for vague findings.",
+    },
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 4B — ENTITY_TAXONOMY: definitions given to the LLM in the extraction
+# prompt, same purpose and shape as TAXONOMY above but keyed by EntityType.
+# Without this, the model only ever saw a bare list of ~80 opaque enum names
+# with no way to distinguish similar ones — a major driver of over-use of OTHER.
+# ══════════════════════════════════════════════════════════════════════════════
+
+ENTITY_TAXONOMY: Dict[EntityType, dict] = {
+
+    # ── Coding / sequence elements ────────────────────────────────────────────
+    EntityType.GENE: {
+        "definition": "A specific gene, identified by symbol or full name — the DNA locus, not its RNA or protein product.",
+        "example": "TP53, BRCA1, the FOXO3 gene.",
+        "not_this": "Use PROTEIN if the text is clearly discussing the protein product's structure/function/activity. Use NON_CODING_RNA/TRANSCRIPT if the text is specifically about the RNA molecule, not the gene locus.",
+    },
+    EntityType.PROTEIN: {
+        "definition": "A specific protein or protein product, identified by name — its structure, abundance, activity, or modification.",
+        "example": "the AKT1 protein, p53 protein, insulin (as a protein, not the gene).",
+        "not_this": "Use GENE if the text is about the gene/DNA locus rather than the protein product. Use MACROMOLECULAR_COMPLEX if the text describes a multi-protein assembly (e.g. the ribosome), not a single protein.",
+    },
+    EntityType.TRANSCRIPT: {
+        "definition": "A specific mRNA transcript or transcript isoform of a gene.",
+        "example": "the BRCA1-201 transcript, an alternatively spliced SIRT1 transcript.",
+        "not_this": "Use GENE for the DNA locus. Use NON_CODING_RNA if the transcript is non-coding (miRNA, lncRNA, circRNA, piRNA) rather than a coding mRNA.",
+    },
+    EntityType.EXON: {
+        "definition": "A specific exon within a gene or transcript.",
+        "example": "exon 9 of the CFTR gene.",
+        "not_this": "Use TRANSCRIPT for the whole spliced RNA product, not one exon.",
+    },
+    EntityType.NON_CODING_RNA: {
+        "definition": "A non-coding RNA molecule — general or unspecified subtype (lncRNA, circRNA, piRNA, snoRNA, etc.).",
+        "example": "the lncRNA HOTAIR, a circular RNA (circRNA) implicated in cardiac fibrosis.",
+        "not_this": "Use MICRO_RNA specifically for a named miRNA (e.g. miR-21) — it has its own more specific type. Use TRANSCRIPT if the RNA is a coding mRNA.",
+    },
+
+    # ── Genomic variation ─────────────────────────────────────────────────────
+    EntityType.GENOMIC_VARIANT: {
+        "definition": "A small sequence variant identified by an rsID/SNP or generically described point mutation/SNP without a specific pathogenicity database entry.",
+        "example": "rs429358, a SNP in the APOE gene.",
+        "not_this": "Use SEQUENCE_VARIANT if the variant is a specific characterized alteration with a clinical database entry (e.g. ClinVar). Use STRUCTURAL_VARIANT for large rearrangements (CNV, indel >50bp, translocation).",
+    },
+    EntityType.SEQUENCE_VARIANT: {
+        "definition": "A specific, named DNA sequence alteration with clinical/functional characterization — e.g. a ClinVar-style variant description.",
+        "example": "BRCA1 c.68_69delAG, a pathogenic frameshift variant.",
+        "not_this": "Use GENOMIC_VARIANT for a bare rsID/SNP with no further characterization. Use STRUCTURAL_VARIANT for large-scale rearrangements rather than a point alteration.",
+    },
+    EntityType.STRUCTURAL_VARIANT: {
+        "definition": "A large-scale genomic rearrangement: copy number variant (CNV), structural variant (SV), or indel larger than ~50bp.",
+        "example": "a 1.5Mb duplication at 17p11.2, a chromosomal translocation t(9;22).",
+        "not_this": "Use GENOMIC_VARIANT or SEQUENCE_VARIANT for small point variants/SNPs, not large rearrangements.",
+    },
+
+    # ── Regulatory & epigenomic elements ─────────────────────────────────────
+    EntityType.REGULATORY_REGION: {
+        "definition": "A general/unspecified regulatory DNA region not further characterized as an enhancer, promoter, or TFBS.",
+        "example": "a regulatory region upstream of MYC.",
+        "not_this": "Use ENHANCER, PROMOTER, or TRANSCRIPTION_FACTOR_BINDING_SITE if the specific regulatory element type is named.",
+    },
+    EntityType.ENHANCER: {
+        "definition": "A specific enhancer element that increases transcription of a target gene.",
+        "example": "a distal enhancer regulating SHH expression in limb development.",
+        "not_this": "Use SUPER_ENHANCER if the text specifically describes a large cluster of enhancers with high transcription-factor occupancy. Use PROMOTER for a promoter element instead.",
+    },
+    EntityType.SUPER_ENHANCER: {
+        "definition": "A large cluster of enhancers with unusually high transcription factor/co-activator occupancy, typically driving cell-identity genes.",
+        "example": "a super-enhancer driving MYC expression in leukemia cells.",
+        "not_this": "Use ENHANCER for a single, ordinary enhancer element.",
+    },
+    EntityType.PROMOTER: {
+        "definition": "A promoter region driving transcription initiation of a specific gene.",
+        "example": "the CDKN2A promoter, hypermethylated in the tumor.",
+        "not_this": "Use ENHANCER for a distal regulatory element rather than the core promoter region.",
+    },
+    EntityType.TRANSCRIPTION_FACTOR_BINDING_SITE: {
+        "definition": "A specific DNA sequence bound by a transcription factor (TFBS).",
+        "example": "an NF-κB binding site in the IL6 promoter.",
+        "not_this": "Use MOTIF for the general sequence pattern/PWM a TF recognizes, rather than one specific genomic binding site.",
+    },
+    EntityType.EPIGENOMIC_FEATURE: {
+        "definition": "A specific epigenetic modification or chromatin state region (e.g. a histone mark or DNA methylation site), not itself a gene-regulatory element like a promoter/enhancer.",
+        "example": "an H3K27ac peak at the FOXO3 locus, a CpG island methylation site.",
+        "not_this": "Use PROMOTER/ENHANCER if the region is being described as a regulatory element rather than the modification itself.",
+    },
+    EntityType.MOTIF: {
+        "definition": "A general transcription factor binding sequence pattern (position weight matrix), not one specific genomic location.",
+        "example": "the E-box motif (CANNTG) bound by MYC.",
+        "not_this": "Use TRANSCRIPTION_FACTOR_BINDING_SITE for one specific, located binding site rather than the general sequence pattern.",
+    },
+    EntityType.TAD: {
+        "definition": "A Topologically Associating Domain — a self-interacting 3D chromatin region identified by Hi-C.",
+        "example": "a TAD boundary disruption linked to limb malformation.",
+        "not_this": "Use THREE_D_GENOME_STRUCTURE for other 3D chromatin features (loops, compartments) that aren't a TAD specifically.",
+    },
+
+    # ── Chemistry & molecules ─────────────────────────────────────────────────
+    EntityType.SMALL_MOLECULE: {
+        "definition": "A small-molecule chemical: drug compound, metabolite, or other compound resolvable to a ChEBI/PubChem/RxNorm entry.",
+        "example": "rapamycin, glucose, resveratrol, metformin.",
+        "not_this": "Use DRUG only if the text specifically frames it as a therapeutic product/biologic rather than the chemical entity itself — in practice, most named compounds and drugs should use SMALL_MOLECULE. Use FOOD for a whole food/dietary item rather than a specific chemical compound.",
+    },
+    EntityType.MOLECULAR_INTERACTION: {
+        "definition": "A specific, documented molecular interaction or complex-formation event between named molecules (e.g. an IntAct/BioGRID interaction record).",
+        "example": "the p53–MDM2 protein-protein interaction.",
+        "not_this": "Use MACROMOLECULAR_COMPLEX if the text is naming the resulting stable complex/assembly itself rather than the interaction event.",
+    },
+    EntityType.MACROMOLECULAR_COMPLEX: {
+        "definition": "A stable, named multi-molecule complex (protein-protein or protein-nucleic acid).",
+        "example": "the ribosome, the PRC2 complex, the proteasome.",
+        "not_this": "Use PROTEIN for a single protein rather than a named multi-subunit assembly.",
+    },
+
+    # ── Genetic composition ───────────────────────────────────────────────────
+    EntityType.HAPLOTYPE: {
+        "definition": "A set of co-inherited alleles/variants on one chromosome, inherited together as a unit.",
+        "example": "the APOE ε4 haplotype.",
+        "not_this": "Use GENOTYPE for an individual's full combination of alleles across loci, not one co-inherited block.",
+    },
+    EntityType.GENOTYPE: {
+        "definition": "The full genetic makeup (specific allele combination) of an individual or strain at one or more loci.",
+        "example": "an APOE ε3/ε4 genotype.",
+        "not_this": "Use HAPLOTYPE for one co-inherited allele block rather than the individual's overall genetic makeup.",
+    },
+
+    # ── Disease & phenotype ───────────────────────────────────────────────────
+    EntityType.DISEASE: {
+        "definition": "A named disease or disorder (non-cancer), resolvable to MeSH/OMIM/DOID/MONDO.",
+        "example": "type 2 diabetes, Alzheimer's disease, asthma.",
+        "not_this": "Use CANCER for a named cancer/tumor subtype specifically. Use SYMPTOM for a single clinical symptom rather than the diagnosed disease itself. Use PHENOTYPE for a specific observable trait (HPO term) rather than a diagnosed disease.",
+    },
+    EntityType.CANCER: {
+        "definition": "A specific cancer or tumor subtype.",
+        "example": "triple-negative breast cancer, glioblastoma, acute myeloid leukemia.",
+        "not_this": "Use DISEASE for a non-cancer disorder.",
+    },
+    EntityType.PHENOTYPE: {
+        "definition": "A specific observable trait or phenotypic feature, typically resolvable to an HPO term — narrower/more specific than a diagnosed disease.",
+        "example": "microcephaly, short stature, insulin resistance (as a trait, not the diagnosis).",
+        "not_this": "Use DISEASE for a named diagnosed disorder. Use SYMPTOM for a subjective/reported clinical symptom rather than a measured/observed trait.",
+    },
+    EntityType.SYMPTOM: {
+        "definition": "A clinical symptom the patient experiences or reports.",
+        "example": "fatigue, nausea, shortness of breath.",
+        "not_this": "Use PHENOTYPE for a measured/observed trait rather than a subjectively reported symptom. Use DISEASE for the underlying diagnosis.",
+    },
+
+    # ── Biological processes & functions ─────────────────────────────────────
+    EntityType.PATHWAY: {
+        "definition": "A named biological pathway, resolvable to Reactome/KEGG — a coordinated multi-step process/network.",
+        "example": "the mTOR signaling pathway, the glycolysis pathway.",
+        "not_this": "Use BIOLOGICAL_PROCESS for a single GO biological-process term rather than a named curated pathway. Use REACTION for one specific biochemical reaction step within a pathway.",
+    },
+    EntityType.REACTION: {
+        "definition": "One specific biochemical reaction (a Reactome reaction step), not the whole pathway.",
+        "example": "the conversion of glucose-6-phosphate to fructose-6-phosphate.",
+        "not_this": "Use PATHWAY for the overall multi-step process rather than one reaction step.",
+    },
+    EntityType.BIOLOGICAL_PROCESS: {
+        "definition": "A GO Biological Process term — a general biological process or objective, not a specific named curated pathway.",
+        "example": "apoptosis, DNA repair, autophagy.",
+        "not_this": "Use PATHWAY if the text names a specific curated pathway (Reactome/KEGG) rather than a general GO process term. Use PHYSIOLOGICAL_PROCESS for whole-organism physiological function (e.g. blood pressure regulation) rather than a cellular/molecular GO process.",
+    },
+    EntityType.MOLECULAR_FUNCTION: {
+        "definition": "A GO Molecular Function term — what a gene product does at the molecular level (catalytic activity, binding, etc.).",
+        "example": "ATP binding, kinase activity, transcription factor activity.",
+        "not_this": "Use BIOLOGICAL_PROCESS for the broader process the molecule participates in, not its specific molecular activity.",
+    },
+    EntityType.CELLULAR_COMPONENT: {
+        "definition": "A GO Cellular Component term — a subcellular location or structure.",
+        "example": "mitochondrion, nucleus, endoplasmic reticulum.",
+        "not_this": "Use ANATOMY/TISSUE for organ/tissue-level structures rather than subcellular components. Use MACROMOLECULAR_COMPLEX for a specific named complex rather than a general subcellular compartment.",
+    },
+
+    # ── Anatomy & cell biology ────────────────────────────────────────────────
+    EntityType.ANATOMY: {
+        "definition": "A general anatomical entity or body region, resolvable to UBERON, not more specifically a gross organ/limb structure.",
+        "example": "the hippocampus, the epidermis.",
+        "not_this": "Use GROSS_ANATOMICAL_STRUCTURE specifically for a whole organ/limb/gland. Use TISSUE for a tissue-type term (BTO) rather than an anatomical structure.",
+    },
+    EntityType.TISSUE: {
+        "definition": "A tissue type, resolvable to BTO — the tissue context of an experiment or finding.",
+        "example": "skeletal muscle, liver tissue, adipose tissue.",
+        "not_this": "Use ANATOMY/GROSS_ANATOMICAL_STRUCTURE for a whole organ/structure rather than a tissue type.",
+    },
+    EntityType.CELL_TYPE: {
+        "definition": "A specific cell type, resolvable to the Cell Ontology (CL).",
+        "example": "CD8+ T cells, hepatocytes, neurons.",
+        "not_this": "Use CELL_LINE for a specific immortalized/cultured cell line (e.g. HEK293), not a general cell type.",
+    },
+    EntityType.CELL_LINE: {
+        "definition": "A specific named, cultured cell line.",
+        "example": "HEK293 cells, HeLa cells, MCF-7 cells.",
+        "not_this": "Use CELL_TYPE for a general biological cell type rather than one specific cultured line.",
+    },
+    EntityType.DEVELOPMENTAL_STAGE: {
+        "definition": "A developmental/life stage of an organism (not a human clinical life stage).",
+        "example": "embryonic day 10.5, the larval stage.",
+        "not_this": "Use LIFE_STAGE for a human clinical life stage (e.g. elderly, adolescent) instead.",
+    },
+
+    # ── Experimental context ──────────────────────────────────────────────────
+    EntityType.EXPERIMENTAL_FACTOR: {
+        "definition": "An experimental condition or treatment variable, resolvable to EFO — the independent variable of a study design.",
+        "example": "caloric restriction (as a study condition/factor), a drug-dose treatment arm.",
+        "not_this": "Use TREATMENT/CLINICAL_INTERVENTION if the text is describing a clinical treatment given to patients rather than a study design variable.",
+    },
+    EntityType.THREE_D_GENOME_STRUCTURE: {
+        "definition": "A 3D chromatin organization feature identified by Hi-C — a compartment or loop, not a TAD specifically.",
+        "example": "an A/B compartment switch, a chromatin loop anchor.",
+        "not_this": "Use TAD specifically for a Topologically Associating Domain.",
+    },
+
+    # ── Taxonomy ──────────────────────────────────────────────────────────────
+    EntityType.ORGANISM: {
+        "definition": "A species or organism, resolvable to NCBI Taxonomy.",
+        "example": "Homo sapiens, Mus musculus, Caenorhabditis elegans.",
+        "not_this": "Use VIRUS specifically for a virus organism. Use ORGANISM_TAXON only if the text is explicitly about the taxonomic classification/rank rather than the organism itself.",
+    },
+
+    # ── Clinical entities (biolink:ClinicalEntity hierarchy) ──────────────────
+    EntityType.CLINICAL_ENTITY: {
+        "definition": "A clinical-domain entity that doesn't fit a more specific clinical type below — use only when none of CLINICAL_INTERVENTION/CLINICAL_FINDING/PROCEDURE/DEVICE/DIAGNOSTIC_AID/TREATMENT/DRUG apply.",
+        "example": "a general clinical concept not covered by the more specific clinical types.",
+        "not_this": "Prefer a more specific clinical type below whenever one applies — this is a last resort within the clinical hierarchy, not a general catch-all for the whole taxonomy (use OTHER for that).",
+    },
+    EntityType.CLINICAL_INTERVENTION: {
+        "definition": "A medical procedure, treatment, or action taken to modify the course of a disease.",
+        "example": "surgery, home blood-pressure monitoring, physical therapy.",
+        "not_this": "Use TREATMENT if the text frames it specifically as a therapy targeted at a disease/phenotype (may involve drugs). Use PROCEDURE for a more general series of actions, medical or experimental.",
+    },
+    EntityType.CLINICAL_FINDING: {
+        "definition": "A clinical observation, lab measurement, or biological feature observed in a patient — the finding itself, from a clinical exam or workup.",
+        "example": "an abnormal chest X-ray finding, elevated liver enzymes on a panel.",
+        "not_this": "Use CLINICAL_MEASUREMENT if the text is specifically a quantified lab/clinical measurement value. Use SYMPTOM for a patient-reported symptom rather than an observed clinical finding.",
+    },
+    EntityType.PROCEDURE: {
+        "definition": "A series of actions conducted in a certain order or manner — medical or experimental — more general than CLINICAL_INTERVENTION.",
+        "example": "a biopsy procedure, an experimental protocol step.",
+        "not_this": "Use CLINICAL_INTERVENTION specifically for a treatment/procedure intended to modify disease course.",
+    },
+    EntityType.DEVICE: {
+        "definition": "A piece of mechanical or electronic equipment used for a specific purpose.",
+        "example": "a pacemaker, a continuous glucose monitor, an implant.",
+        "not_this": "Use DIAGNOSTIC_AID if the device/substance's purpose is specifically diagnostic.",
+    },
+    EntityType.DIAGNOSTIC_AID: {
+        "definition": "A device or substance used specifically to help diagnose disease or injury.",
+        "example": "a contrast agent for imaging, a rapid antigen test.",
+        "not_this": "Use DEVICE for equipment with a broader purpose than diagnosis specifically.",
+    },
+    EntityType.TREATMENT: {
+        "definition": "A treatment targeted at a disease or phenotype — may involve drugs, procedures, or behavioral interventions; the therapeutic intent is the key feature.",
+        "example": "chemotherapy, cognitive behavioral therapy, a treatment regimen.",
+        "not_this": "Use DRUG for the specific pharmaceutical product itself rather than the treatment/regimen. Use CLINICAL_INTERVENTION for a specific procedure/action rather than a therapy program.",
+    },
+    EntityType.DRUG: {
+        "definition": "A named pharmaceutical/therapeutic product, broader than SMALL_MOLECULE — includes biologics (e.g. antibody therapeutics, insulin as a drug product).",
+        "example": "a monoclonal antibody therapeutic, insulin (as a prescribed drug product).",
+        "not_this": "Use SMALL_MOLECULE for the great majority of named chemical drugs/compounds (this is the default for small-molecule drugs) — reserve DRUG specifically for biologics or when the text frames it as a commercial/prescribed product rather than the chemical entity.",
+    },
+
+    # ── Exposure & environment ────────────────────────────────────────────────
+    EntityType.EXPOSURE_EVENT: {
+        "definition": "A general/unspecified exposure incidence affecting an organism (chemical, behavioral, or geographic) — use when no more specific exposure subtype applies.",
+        "example": "an occupational exposure event.",
+        "not_this": "Use CHEMICAL_EXPOSURE/BEHAVIORAL_EXPOSURE/ENVIRONMENTAL_EXPOSURE when the exposure category is specified.",
+    },
+    EntityType.CHEMICAL_EXPOSURE: {
+        "definition": "Intake of or exposure to a particular chemical entity.",
+        "example": "lead exposure, exposure to secondhand smoke.",
+        "not_this": "Use SMALL_MOLECULE for the chemical entity itself rather than the exposure event. Use ENVIRONMENTAL_EXPOSURE for a broader abiotic environmental factor.",
+    },
+    EntityType.BEHAVIORAL_EXPOSURE: {
+        "definition": "A behavioral factor that constitutes an exposure impacting an individual.",
+        "example": "smoking history, sedentary behavior as an exposure factor.",
+        "not_this": "Use BEHAVIOR for the behavior itself as a general concept rather than framing it as an exposure. Use CHEMICAL_EXPOSURE if the behavior is specifically substance intake.",
+    },
+    EntityType.ENVIRONMENTAL_EXPOSURE: {
+        "definition": "Exposure to an abiotic environmental process/factor.",
+        "example": "air pollution exposure, UV radiation exposure.",
+        "not_this": "Use ENVIRONMENTAL_FEATURE for the environmental entity/system itself rather than the exposure event.",
+    },
+    EntityType.ENVIRONMENTAL_FEATURE: {
+        "definition": "A system or entity in the natural (abiotic) environment.",
+        "example": "ambient temperature, altitude.",
+        "not_this": "Use ENVIRONMENTAL_EXPOSURE if the text frames it as an exposure event affecting an organism rather than the environmental feature itself.",
+    },
+    EntityType.FOOD: {
+        "definition": "A food or dietary item consumed for nutritional support.",
+        "example": "a low-sodium diet, processed food, a Mediterranean diet.",
+        "not_this": "Use SMALL_MOLECULE for a specific chemical/nutrient/compound rather than a whole food or diet.",
+    },
+
+    # ── Behavior & activity ───────────────────────────────────────────────────
+    EntityType.ACTIVITY: {
+        "definition": "Something that occurs over a period of time and acts upon entities — includes studies, trials, or clinical activities as processes.",
+        "example": "a clinical trial's treatment activity, a laboratory assay run.",
+        "not_this": "Use STUDY/CLINICAL_TRIAL for the study as an entity itself rather than the activity/process occurring within it.",
+    },
+    EntityType.BEHAVIOR: {
+        "definition": "The internally coordinated response of an organism to internal or external stimuli — lifestyle or adherence behavior.",
+        "example": "exercise adherence, dietary compliance.",
+        "not_this": "Use BEHAVIORAL_FEATURE if the text frames it as a phenotypic trait rather than an active behavior. Use BEHAVIORAL_EXPOSURE if framed as an exposure factor.",
+    },
+    EntityType.BEHAVIORAL_FEATURE: {
+        "definition": "A phenotypic feature that is behavioral in nature.",
+        "example": "impulsivity, a behavioral phenotype in a mouse model.",
+        "not_this": "Use BEHAVIOR for an active behavior/lifestyle factor rather than a phenotypic trait.",
+    },
+
+    # ── Physiological & pathological processes ────────────────────────────────
+    EntityType.PHYSIOLOGICAL_PROCESS: {
+        "definition": "A biological or chemical function within a living organism at the whole-organism/system level.",
+        "example": "blood pressure regulation, thermoregulation.",
+        "not_this": "Use BIOLOGICAL_PROCESS for a cellular/molecular GO process term rather than whole-organism physiology. Use PATHOLOGICAL_PROCESS if the function is abnormal/deleterious rather than normal physiology.",
+    },
+    EntityType.PATHOLOGICAL_PROCESS: {
+        "definition": "A biologic function having an abnormal or deleterious effect at the subcellular or organismal level.",
+        "example": "fibrosis, oxidative stress, inflammation as a pathological process.",
+        "not_this": "Use PHYSIOLOGICAL_PROCESS for normal (non-deleterious) function. Use DISEASE for the diagnosed condition itself rather than the underlying pathological process.",
+    },
+
+    # ── Population & study ───────────────────────────────────────────────────
+    EntityType.POPULATION: {
+        "definition": "A collection of individuals from the same taxonomic class — a general population group, e.g. a patient cohort description.",
+        "example": "the elderly population, a diabetic patient population.",
+        "not_this": "Use COHORT/STUDY_POPULATION specifically when the text frames it as participants of a particular study.",
+    },
+    EntityType.COHORT: {
+        "definition": "A group of individuals treated as a group, sharing common characteristics, in the context of a study.",
+        "example": "the Framingham Heart Study cohort.",
+        "not_this": "Use STUDY_POPULATION for participants specifically enrolled in one research study. Use POPULATION for a general demographic group not tied to a specific study.",
+    },
+    EntityType.STUDY: {
+        "definition": "A detailed investigation and/or analysis — the study itself as an entity (not a clinical trial specifically).",
+        "example": "a case-control study, a longitudinal cohort study.",
+        "not_this": "Use CLINICAL_TRIAL specifically for an interventional trial that assigns participants to interventions.",
+    },
+    EntityType.CLINICAL_TRIAL: {
+        "definition": "A research study that prospectively assigns participants to interventions.",
+        "example": "a randomized controlled trial (RCT) of a new drug.",
+        "not_this": "Use STUDY for an observational study with no assigned intervention.",
+    },
+
+    # ── Organism ─────────────────────────────────────────────────────────────
+    EntityType.LIFE_STAGE: {
+        "definition": "A human clinical life stage — a stage of development/growth, including post-natal adult stages.",
+        "example": "elderly, adolescent, neonate.",
+        "not_this": "Use DEVELOPMENTAL_STAGE for a non-human/model-organism developmental stage (e.g. embryonic day, larval stage).",
+    },
+    EntityType.INDIVIDUAL_ORGANISM: {
+        "definition": "A single instance of an organism — one specific patient or model animal, not the species.",
+        "example": "the index patient, a single treated mouse.",
+        "not_this": "Use ORGANISM for the species itself rather than one individual instance. Use CASE if the text specifically frames the individual as a clinical case.",
+    },
+
+    # ── Clinical attributes & outcomes (biolink:Attribute subclasses) ────────
+    EntityType.CLINICAL_MEASUREMENT: {
+        "definition": "A quantified lab or clinical observation result.",
+        "example": "a blood pressure reading, BMI, HbA1c level.",
+        "not_this": "Use CLINICAL_ATTRIBUTE for a general clinical attribute that isn't a specific quantified measurement. Use CLINICAL_FINDING for a qualitative clinical observation rather than a quantified value.",
+    },
+    EntityType.CLINICAL_ATTRIBUTE: {
+        "definition": "A general attribute relating to a clinical manifestation, not itself a specific quantified measurement.",
+        "example": "disease severity grade, a general clinical characteristic.",
+        "not_this": "Use CLINICAL_MEASUREMENT for a specific quantified lab/clinical value.",
+    },
+    EntityType.ONSET: {
+        "definition": "The age group or time point at which disease symptoms first appear.",
+        "example": "early-onset (before age 40), adult-onset.",
+        "not_this": "Use DISEASE_OUTCOME/EPIDEMIOLOGICAL_OUTCOME for downstream outcomes rather than the timing of first symptom appearance.",
+    },
+    EntityType.EPIDEMIOLOGICAL_OUTCOME: {
+        "definition": "A societal or population-level outcome such as disease burden, incidence rate, or mortality at the population level.",
+        "example": "annual incidence rate, disease prevalence in a population.",
+        "not_this": "Use MORTALITY_OUTCOME specifically for a death-related outcome. Use DISEASE_OUTCOME for an individual physiological outcome rather than a population-level statistic.",
+    },
+    EntityType.MORTALITY_OUTCOME: {
+        "definition": "An outcome of death resulting from an exposure event or disease.",
+        "example": "5-year mortality rate, death from cardiac arrest.",
+        "not_this": "Use EPIDEMIOLOGICAL_OUTCOME for broader population statistics not specific to death.",
+    },
+    EntityType.BEHAVIORAL_OUTCOME: {
+        "definition": "An outcome resulting from an exposure event, manifested as human behavior.",
+        "example": "smoking cessation as a trial outcome, medication adherence rate.",
+        "not_this": "Use BEHAVIOR/BEHAVIORAL_FEATURE for the behavior itself rather than framing it as a measured trial/study outcome.",
+    },
+    EntityType.DISEASE_OUTCOME: {
+        "definition": "A physiological outcome resulting from an exposure event — disease or phenotypic-feature outcome, at the individual level.",
+        "example": "progression to type 2 diabetes as a study outcome.",
+        "not_this": "Use DISEASE for the diagnosed condition itself, not the outcome framing. Use EPIDEMIOLOGICAL_OUTCOME for population-level rather than individual outcomes.",
+    },
+
+    # ── Clinical patient ──────────────────────────────────────────────────────
+    EntityType.CASE: {
+        "definition": "An individual human organism with a patient role in a clinical context — a specific clinical case.",
+        "example": "a 45-year-old male case presenting with chest pain.",
+        "not_this": "Use INDIVIDUAL_ORGANISM for a non-clinical individual instance (e.g. a research animal).",
+    },
+
+    # ── Specific anatomical / genomic ─────────────────────────────────────────
+    EntityType.GROSS_ANATOMICAL_STRUCTURE: {
+        "definition": "An anatomical structure with more than one cell — an organ, limb, or gland specifically.",
+        "example": "the liver, the femur, the thyroid gland.",
+        "not_this": "Use ANATOMY for a more general/unspecified anatomical entity or region rather than a specific whole organ/structure.",
+    },
+    EntityType.GENOME: {
+        "definition": "The sum of genetic material within a cell or virion — the whole genome as an entity.",
+        "example": "the human genome, the viral genome of SARS-CoV-2.",
+        "not_this": "Use GENE for one specific gene locus rather than the whole genome.",
+    },
+    EntityType.GENETIC_INHERITANCE: {
+        "definition": "The pattern or mode by which a genetic trait or disorder is passed across generations.",
+        "example": "autosomal dominant inheritance, X-linked recessive inheritance.",
+        "not_this": "Use GENOTYPE/HAPLOTYPE for the specific genetic makeup rather than the inheritance pattern/mode itself.",
+    },
+    EntityType.VIRUS: {
+        "definition": "A virus organism — for virology/infectious disease contexts specifically.",
+        "example": "SARS-CoV-2, HIV, influenza A virus.",
+        "not_this": "Use ORGANISM for non-viral organisms (host species, model organisms).",
+    },
+    EntityType.MICRO_RNA: {
+        "definition": "A specific, named microRNA (~22nt) that regulates gene expression post-transcriptionally.",
+        "example": "miR-21, miR-34a.",
+        "not_this": "Use NON_CODING_RNA for other non-coding RNA subtypes (lncRNA, circRNA, piRNA) that aren't a miRNA.",
+    },
+    EntityType.SI_RNA: {
+        "definition": "A small interfering RNA (siRNA) used in gene-silencing experiments, from exogenous or endogenous dsRNA.",
+        "example": "an siRNA targeting SIRT1 used for knockdown.",
+        "not_this": "Use MICRO_RNA for an endogenous regulatory miRNA rather than an experimental siRNA reagent.",
+    },
+
+    # ── Population & study subtypes ───────────────────────────────────────────
+    EntityType.STUDY_POPULATION: {
+        "definition": "A group of people treated as participants specifically enrolled in a research study.",
+        "example": "the 500 participants enrolled in the trial.",
+        "not_this": "Use COHORT for a named, ongoing cohort study group. Use POPULATION for a general demographic group not tied to one study's enrollment.",
+    },
+    EntityType.ORGANISM_TAXON: {
+        "definition": "A taxonomic classification/rank itself, not the organism instance.",
+        "example": "NCBITaxon:9606 (Homo sapiens) as a taxonomic classification.",
+        "not_this": "Use ORGANISM for the species/organism as a biological entity in the normal sense — ORGANISM_TAXON is rarely the right choice; prefer ORGANISM unless the text is explicitly about taxonomic rank/classification.",
+    },
+
+    # ── Events & phenomena ────────────────────────────────────────────────────
+    EntityType.EVENT: {
+        "definition": "Something that happens at a given place and time — a biological or clinical event.",
+        "example": "a stroke event, a cardiac arrest event.",
+        "not_this": "Use ACTIVITY for an ongoing process/activity rather than a discrete event. Use PHENOMENON for an observed fact/situation under investigation rather than a discrete happening.",
+    },
+    EntityType.PHENOMENON: {
+        "definition": "An observed fact or situation whose cause may be under investigation.",
+        "example": "the observed phenomenon of accelerated aging in progeria.",
+        "not_this": "Use EVENT for a discrete happening at a specific time/place. Use BIOLOGICAL_PROCESS/PHYSIOLOGICAL_PROCESS if a specific mechanism/process is already named rather than an open phenomenon.",
+    },
+    EntityType.ENVIRONMENTAL_PROCESS: {
+        "definition": "A process that occurs within or involves components of an environmental system (abiotic).",
+        "example": "climate warming, ecosystem nutrient cycling.",
+        "not_this": "Use ENVIRONMENTAL_FEATURE for a static environmental entity rather than an ongoing process.",
+    },
+
+    # ── BioCypher genomics-schema gap-fill (2nd pass) ─────────────────────────
+    EntityType.CHROMOSOME: {
+        "definition": "A whole chromosome named as an entity in its own right, not a specific variant or region on it.",
+        "example": "chromosome 21, the X chromosome, chromosome 17q.",
+        "not_this": "Use GENOMIC_VARIANT/STRUCTURAL_VARIANT/SEQUENCE_VARIANT for a specific variant located on a chromosome. Use ANATOMY for gross anatomical structures, not genomic ones.",
+    },
+    EntityType.SEQUENCE_TYPE: {
+        "definition": "A Sequence Ontology (SO) classification of a kind of sequence feature — an ontology class, not an instance of the feature itself.",
+        "example": "SO:0000704 (gene, as a sequence-feature class), SO:0000147 (exon, as a class).",
+        "not_this": "Use GENE/EXON/TRANSCRIPT/etc. for an actual instance of a sequence feature found in the text, not its ontological classification.",
+    },
+
+    # ── Catch-all ─────────────────────────────────────────────────────────────
+    EntityType.OTHER: {
+        "definition": "Genuinely does not fit any type above after checking definitions carefully. Rare — most biomedical entities fit one of the specific types.",
+        "example": "an entity with no clear biomedical category.",
+        "not_this": "Do not use as a default when unsure — check the specific candidate types above first (especially near-miss categories) before concluding nothing fits.",
+    },
 }
 
 
@@ -1054,6 +1596,14 @@ CROSS_SCHEMA_MAP: Dict[RelationType, dict] = {
     RelationType.PREDISPOSES:                     {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:predisposes (RO:0003302)"},
     RelationType.MANIFESTATION_OF:                {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:manifestation_of (RO:0002452)"},
     RelationType.ASSOCIATED_WITH_LIKELIHOOD_OF:   {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:associated_with_likelihood_of"},
+    # Category 24: BioCypher genomics-schema gap-fill (2nd pass) — all six
+    # confirmed as real Biolink Model predicates (not just biocypher-specific).
+    RelationType.IN_LINKAGE_DISEQUILIBRIUM_WITH:   {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:in_linkage_disequilibrium_with", "biocypher": "topld_in_linkage_disequilibrium_with"},
+    RelationType.MODEL_OF:                         {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:model_of", "biocypher": "gene_to_disease_model_association / gene_to_disease_marker_association"},
+    RelationType.IMPLICATED_IN:                    {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:implicated_in", "biocypher": "gene_implicated_via_orthology_disease / gene_is_implicated_in_disease"},
+    RelationType.IS_INPUT_OF:                      {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:is_input_of", "biocypher": "input_role_protein_to_pathway/reaction_association"},
+    RelationType.PRODUCED_BY:                      {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:produced_by", "biocypher": "output_role_protein_to_pathway/reaction_association"},
+    RelationType.AFFECTS:                          {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:affects", "biocypher": "snp_to_motif_association / activity_by_contact"},
 }
 
 
@@ -1110,8 +1660,10 @@ BIOLINK_MAPPING: Dict[RelationType, str] = {
     RelationType.CORRELATES_WITH:  "biolink:correlated_with",
     RelationType.RESEMBLES:        "biolink:similar_to",
     RelationType.PREDICTS:         "biolink:associated_with",
-    RelationType.HAS_SYMPTOM:      "biolink:has_phenotype",
-    RelationType.HAS_PHENOTYPE:    "biolink:has_phenotype",
+    RelationType.HAS_SYMPTOM:           "biolink:has_phenotype",
+    RelationType.HAS_PHENOTYPE:         "biolink:has_phenotype",
+    RelationType.HAS_INHERITANCE_MODE:  "biolink:has_attribute",
+    RelationType.HAS_BIOMARKER:         "biolink:has_biomarker",
     RelationType.SECRETES:          "biolink:produces",
     RelationType.EXTENDS_LIFESPAN:  "biolink:related_to",
     RelationType.REDUCES_LIFESPAN:  "biolink:related_to",
@@ -1155,6 +1707,14 @@ BIOLINK_MAPPING: Dict[RelationType, str] = {
     RelationType.PREDISPOSES:                       "biolink:predisposes",
     RelationType.MANIFESTATION_OF:                  "biolink:manifestation_of",
     RelationType.ASSOCIATED_WITH_LIKELIHOOD_OF:     "biolink:associated_with_likelihood_of",
+    # Category 24: BioCypher genomics-schema gap-fill (2nd pass) — all six
+    # confirmed as real Biolink Model predicates (not just biocypher-specific).
+    RelationType.IN_LINKAGE_DISEQUILIBRIUM_WITH:    "biolink:in_linkage_disequilibrium_with",
+    RelationType.MODEL_OF:                          "biolink:model_of",
+    RelationType.IMPLICATED_IN:                     "biolink:implicated_in",
+    RelationType.IS_INPUT_OF:                       "biolink:is_input_of",
+    RelationType.PRODUCED_BY:                       "biolink:produced_by",
+    RelationType.AFFECTS:                           "biolink:affects",
 }
 
 
