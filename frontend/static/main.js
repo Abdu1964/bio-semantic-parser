@@ -74,6 +74,10 @@ async function _pollCommitRebuild(jobId, attempt = 0) {
     const r = await fetch(`/api/commit-status?job_id=${encodeURIComponent(jobId)}`);
     const d = await r.json();
     if (d.status === 'done') {
+      if (d.error) {
+        if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = `⚠ Rebuild failed: ${esc(d.error)}`; }
+        return;
+      }
       if (statusEl) statusEl.remove();
       rebuildComparePages(d);
       return;
