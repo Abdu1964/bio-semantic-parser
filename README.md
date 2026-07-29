@@ -1,15 +1,35 @@
 # Bio-Semantic Parser
 
-**Bio-Semantic Parser** is a biomedical knowledge graph construction pipeline built at Rejuve.Bio / SingularityNET. It reads scientific papers — PDFs, PubMed, PMC — and extracts structured biological relations (genes, proteins, diseases, drugs and the relations between them) into a Neo4j graph database and a MeTTa AtomSpace.
+**Bio-Semantic Parser** is a biomedical knowledge graph construction pipeline built at Rejuve.Bio / SingularityNET. It reads scientific papers from multiple sources — PubMed, PMC, GEO, ClinicalTrials.gov, bioRxiv, medRxiv, PDFs, and any URL — and extracts structured biological relations into a Neo4j graph database and a MeTTa/Hyperon AtomSpace.
+
+---
+
+## Quick Start
+
+```bash
+cd bio-semantic-parser
+docker compose up -d --build
+```
+
+The web UI will be available at **http://localhost:8020** once the containers are healthy.  
+The API runs on port **8024** internally (proxied through nginx).
+
+> **First run only:** the entrypoint script downloads NLP models (scispaCy, HuggingFace NER, GLiNER) into the Docker volume cache. This takes a few minutes. Watch progress with:
+> ```bash
+> docker logs deploy-api-1 -f
+> ```
 
 ---
 
 ## What it does
 
-Takes scientific papers (PDFs, PubMed, PMC, GEO) as input and produces:
-- **Neo4j knowledge graph** — nodes and edges as CSV + Cypher files
-- **MeTTa AtomSpace** — structured biological triples
-- **Verification reports** — Precision, Recall, F1 per paper
+Takes a paper identifier or file as input and produces:
+
+- **Neo4j knowledge graph** — nodes and edges as CSV + Cypher import files
+- **MeTTa AtomSpace** — structured biological triples with probabilistic truth values
+- **Interactive graph** — `graph.html` per run, rendered with vis.js
+- **Verification reports** — per-triple source verification and confidence breakdown
+- **Human review queue** — flagged triples surfaced in the UI for biologist approval
 
 ---
 
@@ -17,66 +37,99 @@ Takes scientific papers (PDFs, PubMed, PMC, GEO) as input and produces:
 
 | Layer | Name | What it does |
 |---|---|---|
-| 1 | **Registry** | Manages paper sources — `sources.yaml`, APIs, local files |
-| 2 | **Scheduler** | Polls sources, deduplicates via SHA256, queues new papers |
-| 3 | **Fetcher** | Fetches full text — PMC XML, PubMed, PDFs — splits into 512-token chunks |
-| 4 | **Pre-Extraction** | NER tagging, DOI extraction, PubTator3 annotation, negation detection |
-| 5 | **Schema / Taxonomy** | 87 relation types + 39 entity types from Biolink, Hetionet, GO, SO |
-| 6 | **LLM Extraction** | Gemma 4 extracts triples per chunk, Pydantic validation, 3× self-correction |
-| 7 | **Post-Extraction** | Entity normalization → deduplication → cross-chunk linking → two-pass resolution → semantic validation → contradiction detection |
-| 8 | **Publish** | Validation gate → Neo4j CSV + MeTTa output → human review queue |
+| 1 | **Source Registry** | YAML-configured sources — PubMed, PMC, GEO, ClinicalTrials.gov, bioRxiv, medRxiv, PDF, HTML/URL. Add a new source with one YAML entry, no code change. |
+| 2 | **Scheduler** | Weekly trigger per source, SHA-256 / standard ID deduplication, crash-safe (ID written before dispatch) |
+| 3 | **Fetcher** | 7 steps: format detection → raw fetch → text cleaning → coreference resolution → section splitting → context-window chunking → metadata attachment |
+| 4 | **Pre-Extraction** | 4-tagger NER ensemble (scispaCy × 5, PubTator3, HuggingFace clinical NER, GLiNER-BioMed) + NLI negation detector |
+| 5 | **Schema** | 96 relation types × 85 entity types — closed taxonomy, Pydantic model, Instructor constrained decoding |
+| 6 | **Extraction Engine** | Local LLM (OpenAI-compatible) with leaky-bucket concurrency, mandatory reasoning trace, Pydantic retry loop (max 3) |
+| 7 | **Post-Extraction** | 8 steps: entity normalization → concept alignment → deduplication → contradiction detection → cross-chunk linking → two-pass resolution → semantic validation → confidence scoring |
+| 8 | **Validation Gate + Publish** | Auto-insert or human review routing → Neo4j CSV writer + MeTTa writer + vis.js graph → unified triple store on commit |
 
 ---
 
-## Entity Normalization — 8 Standard Databases
+## Running a Paper
 
-Entity types resolve to canonical IDs using this priority chain:
+1. Open **http://localhost:8020**
+2. Enter a PMID, PMC ID, DOI, URL, or upload a PDF
+3. Select output format: Neo4j, MeTTa, or both
+4. Click **Run** — progress streams live over WebSocket
 
-| Priority | Database | Entity types | ID format |
-|---|---|---|---|
-| 1 | PubTator3 | All (pre-annotated) | Various |
-| 2 | Ensembl REST API | Gene, Transcript | `ENSEMBL:ENSG...` |
-| 3 | OLS4 / EBI | All ontology types | `MONDO:`, `GO:`, `CHEBI:` |
-| 4 | UniProt | Protein | `P12345` |
-| 5 | RxNorm | Small molecule (drugs) | `RXCUI:...` |
-| 6 | HMDB | Small molecule (metabolites) | `HMDB:...` |
-| 7 | NCBI eSearch | Gene fallback, Variant, Organism | `NCBI_GENE:`, `rs...` |
-| 8 | PubChem | Small molecule fallback | `PUBCHEM:...` |
-| 9 | Wikidata | Broad fallback | `WD:Q...` |
-
-Gene IDs use **Ensembl by default** to align with the BioCypher approach
-(team decision 2026-06-23, replacing NCBI Gene IDs).
+After the run completes, review extracted triples in the graph view, approve or reject flagged items in the human review queue, then click **Commit** to add the paper to the unified knowledge graph.
 
 ---
 
-## Taxonomy — 87 Relation Types
+## NER Ensemble — Layer 4
 
-Sourced from four official ontologies:
+Four taggers run on every chunk and their spans are merged before the LLM sees the text:
 
-| Source | Types | Examples |
+| Tagger | Model | Covers |
 |---|---|---|
-| Biolink Model | 56 | `causes`, `regulates`, `associates_with` |
-| Hetionet | 5 | `binds_to`, `expressed_in` |
-| Gene Ontology | 19 | PTM relation types |
-| Sequence Ontology | 3 | Sequence feature relations |
-| Longevity extensions | 7 | Custom Rejuve.Bio types |
+| scispaCy ensemble | 5 models: `en_core_sci_lg`, `bc5cdr`, `jnlpba`, `bionlp13cg`, `craft` | Genes, proteins, chemicals, diseases, cell lines |
+| PubTator3 | NCBI annotation service (PubMed papers only) | Pre-canonical NCBI Gene + MeSH IDs, Priority 1 in entity normalization |
+| HuggingFace clinical NER | `d4data/biomedical-ner-all` | PROCEDURE, DRUG, SYMPTOM, CLINICAL_MEASUREMENT — clinical types scispaCy misses |
+| GLiNER-BioMed Base | `Ihor/gliner-biomed-base-v1.0` | 38 zero-shot label categories covering the full ~83-type schema (TADs, enhancers, motifs, epigenomics, 3D genome structures, etc.) |
+
+Negation is detected by an NLI cross-encoder (`cross-encoder/nli-MiniLM2-L6-H768`) that isolates each entity's sub-clause at contrastive conjunctions and classifies contradiction probability.
 
 ---
 
-## Quick Start
+## Entity Normalization — Layer 7, Step 1
+
+11-priority resolver chain per entity mention:
+
+| Priority | Source | ID format |
+|---|---|---|
+| 1 | PubTator3 (pre-annotated) | Various |
+| 2 | Embedded ID patterns | `rs…`, `ENSG…`, `UniProtKB:…` |
+| 3 | Ensembl REST API | `ENSEMBL:ENSG…` |
+| 4 | UniProt | `UniProtKB:P…` |
+| 5 | OLS4 / EBI (type-scoped) | `MONDO:`, `CHEBI:`, `HP:`, `GO:`, … |
+| 6 | Context expansion (LLM abbreviation resolution) | — |
+| 7 | Ensembl cross-reference via NCBI Gene | `ENSEMBL:ENSG…` |
+| 8 | NCBI eSearch (gene, variant, taxonomy) | `NCBI_GENE:`, `rs…`, `NCBITaxon:` |
+| 9 | OLS4 broad (no ontology filter) | Any prefix |
+| 10 | Composite decomposition | — |
+| 11 | Wikidata | `WD:Q…` |
+
+Gene IDs resolve to **Ensembl by default** (team decision, aligns with BioCypher approach). NCBI Gene IDs are bridged back to Ensembl when found.
+
+---
+
+## Taxonomy — 96 Relation Types × 85 Entity Types
+
+| Source | Contribution |
+|---|---|
+| Biolink Model v4.4.2 | Core predicate ontology |
+| Hetionet v1.0 | Network medicine edge types |
+| OpenBioLink | Large-scale KG benchmark types |
+| BioNLP Shared Tasks | GE, EPI, BB task relation types |
+| BioCypher primer | Regulatory and genomic edge types |
+| Longevity extensions | `extends_lifespan`, `reduces_lifespan`, `extends_healthspan`, `reduces_healthspan`, `reprograms` |
+
+The full taxonomy is defined in `src/schema/taxonomy.py` — single source of truth for the LLM prompt, Pydantic validation, contradiction detection, and graph output.
+
+---
+
+## Configuration
+
+Key environment variables (set in `.env.docker`):
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# LLM endpoint (OpenAI-compatible)
+LLM_BASE_URL=http://your-ollama-or-vllm:11434/v1
+LLM_MODEL=gemma2:27b
+LLM_API_KEY=ollama
 
-# Add a paper source
-vi config/sources.yaml
+# Coreference resolution
+COREF_SERVICE_URL=http://your-coref-server:8081
 
-# Run the pipeline
-python tests/demo_showcase.py
+# NER toggles
+HF_NER_ENABLED=true
+GLINER_ENABLED=true
 
-# Evaluate accuracy (Precision / Recall / F1)
-python tools/evaluate_kg.py --recall
+# Optional features
+ENABLE_PLN=false
 ```
 
 ---
@@ -86,37 +139,20 @@ python tools/evaluate_kg.py --recall
 ```
 data/
   kg_output/
-    2026-06-23_10-50-04_PDF_6079125b777b/   ← per-paper run (timestamped)
-      neo4j/                                ← CSV + Cypher files
-      metta/                                ← MeTTa AtomSpace files
-      graph.html                            ← interactive graph
-      verification_report.html              ← triple verification
-      compare_neo4j.html                    ← this paper vs unified KG
-    unified_neo4j/                          ← all committed papers combined
+    2026-07-01_10-50-04_PMID_12345678/    ← per-paper run (timestamped)
+      neo4j/                              ← CSV + Cypher files per entity type
+      metta/                              ← .metta files per entity type
+      graph.html                          ← interactive vis.js graph
+      verification_report.html            ← per-triple source verification
+      compare_neo4j.html                  ← this paper vs unified KG diff
+      human_review.jsonl                  ← flagged triples for approval
+    unified_neo4j/                        ← all committed papers combined
     unified_metta/
-  triple_store_neo4j.db                     ← unified Neo4j SQLite
-  triple_store_metta.db                     ← unified MeTTa SQLite
-  checkpoints/                              ← per-layer resumable checkpoints
+  triple_store_neo4j.db                   ← unified SQLite store (Neo4j)
+  triple_store_metta.db                   ← unified SQLite store (MeTTa)
+  checkpoints/                            ← per-layer resumable checkpoints
+  staging/                                ← per-run staging DBs (pre-commit)
 ```
-
----
-
-## Key Design Decisions
-
-- **Closed taxonomy** — LLM can only use the 87 defined relation types, preventing hallucinated relation labels
-- **Ensembl IDs for genes** — aligns with BioCypher approach (team decision 2026-06-23)
-- **Human review gate** — triples that fail semantic validation go to `human_review.jsonl` for manual approval before entering the KG
-- **Timestamped runs** — each paper processing creates a new folder, previous runs are never overwritten
-
----
-
-## Documentation
-
-| Doc | Description |
-|---|---|
-| [docs/todo/future_improvements.md](docs/todo/future_improvements.md) | Planned improvements per layer |
-| [docs/architecture/pipeline_overview.svg](docs/architecture/pipeline_overview.svg) | Full pipeline diagram |
-| [src/schema/data/sources.md](src/schema/data/sources.md) | Taxonomy source files and download commands |
 
 ---
 
@@ -124,12 +160,20 @@ data/
 
 | Component | Technology |
 |---|---|
-| LLM extraction | Gemma 4 via vLLM / Ollama (OpenAI-compatible API) |
-| Schema validation | Pydantic |
-| NER | spaCy + scispaCy |
-| Entity annotation | PubTator3 |
-| Graph output | Neo4j CSV + MeTTa |
-| Frontend | FastAPI + Rich CLI |
+| LLM extraction | Any OpenAI-compatible endpoint (Ollama / vLLM) — default `gemma2:27b` |
+| Schema validation | Pydantic + Instructor (constrained decoding) |
+| NER | scispaCy (5 models) + HuggingFace `d4data/biomedical-ner-all` + GLiNER `Ihor/gliner-biomed-base-v1.0` |
+| Entity annotation | PubTator3 (NCBI) |
+| Negation detection | `cross-encoder/nli-MiniLM2-L6-H768` |
+| Coreference resolution | s2e-coref / LingMess (external service) |
+| Graph output | Neo4j CSV + MeTTa/Hyperon AtomSpace |
+| Graph visualization | vis.js (rendered server-side) |
+| API | FastAPI + WebSocket (live progress streaming) |
+| Frontend | Nginx + vanilla JS single-page app |
+| Infrastructure | Docker Compose (two services: `api`, `frontend`) |
 
 ---
 
+## Architecture Diagram
+
+![Pipeline Architecture](bio-semantic-parser-architecture.svg)
