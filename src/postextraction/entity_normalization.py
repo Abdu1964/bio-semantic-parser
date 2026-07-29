@@ -833,13 +833,20 @@ def _build_source_url(canonical_id: str, id_source: str, ontology_prefix: str, i
         if re.match(r"^rs\d+$", canonical_id, re.I):
             return f"https://www.ncbi.nlm.nih.gov/snp/{canonical_id}"
         if re.match(r"^ENS[A-Z]*[GT]\d+$", canonical_id):
-            # Generic /id/ redirect resolves species server-side for any organism.
             return f"https://www.ensembl.org/id/{canonical_id}"
+        if canonical_id.startswith("ENSEMBL:"):
+            return f"https://www.ensembl.org/id/{canonical_id.split(':', 1)[1]}"
         if re.match(r"^P\d{5}$", canonical_id):
             return f"https://www.uniprot.org/uniprotkb/{canonical_id}/entry"
+        if canonical_id.startswith("UniProtKB:"):
+            return f"https://www.uniprot.org/uniprotkb/{canonical_id.split(':', 1)[1]}/entry"
+        if canonical_id.startswith("NCBI_GENE:"):
+            return f"https://www.ncbi.nlm.nih.gov/gene/{canonical_id.split(':', 1)[1]}"
+        if canonical_id.startswith("PUBCHEM:"):
+            return f"https://pubchem.ncbi.nlm.nih.gov/compound/{canonical_id.split(':', 1)[1]}"
+        if canonical_id.startswith("RxNorm:"):
+            return f"https://mor.nlm.nih.gov/RxNav/search?searchBy=RXCUI&searchTerm={canonical_id.split(':', 1)[1]}"
         if ":" in canonical_id:
-            # Some other ontology-style ID (GO:, CHEBI:, ...) — best-effort
-            # OLS4 search, since we have no IRI to build a direct link from here.
             prefix, bare_id = canonical_id.split(":", 1)
             return f"https://www.ebi.ac.uk/ols4/search?q={bare_id}&ontology={prefix.lower()}"
         return ""
