@@ -347,18 +347,21 @@ def _run_unified_rebuild(job_id: str, output_format: str) -> None:
     the commit response doesn't block on it."""
     kg_root = _ROOT / "data" / "kg_output"
     neo4j_html = metta_html = neo4j_ver = metta_ver = ""
+    import os as _os
+    _old = _os.getcwd()
     try:
-        import os as _os
-        _old = _os.getcwd(); _os.chdir(str(_ROOT))
+        _os.chdir(str(_ROOT))
         from tools.export_unified import run_export
         run_export(generate_html=True, formats=output_format)
-        _os.chdir(_old)
         nh = kg_root / "unified_neo4j" / "graph.html"
         mh = kg_root / "unified_metta"  / "graph.html"
         if nh.exists(): neo4j_html = str(nh)
         if mh.exists(): metta_html = str(mh)
-    except Exception:
-        pass
+    except Exception as e:
+        _commit_jobs[job_id] = {"status": "done", "error": f"Unified export failed: {e}"}
+        return
+    finally:
+        _os.chdir(_old)
 
     try:
         from tools.verify_kg import run_verification
