@@ -446,7 +446,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
                        "#6b7280"
         _open_link   = f"href='{_paper_url}' target='_blank'" if _paper_url else ""
         _src_badge   = (
-            f"<a {_open_link} style='display:inline-flex;align-items:center;gap:6px;"
+            f"<a id='src-badge' {_open_link} style='display:inline-flex;align-items:center;gap:6px;"
             f"background:{_badge_color}18;border:1px solid {_badge_color}44;"
             f"border-radius:6px;padding:4px 10px;text-decoration:none;color:{_badge_color};"
             f"font-size:11px;font-weight:600;font-family:monospace;transition:all .15s;' "
@@ -709,8 +709,80 @@ function paperLabel(p) {{
   }});
 }})();
 
+// ── Dynamic paper badge ────────────────────────────────────────────────────
+// The header badge used to be static (always pointing at the first paper).
+// Rebuild it from edge data whenever the paper filter changes.
+const PAPER_URLS = {{}};
+function urlForPaperId(id) {{
+  const v = (id || '').trim();
+  if (!v) return '';
+  if (/^https?:/i.test(v)) return v;
+  if (/^PMC\d+$/i.test(v)) return 'https://www.ncbi.nlm.nih.gov/pmc/articles/' + v.toUpperCase() + '/';
+  if (/^\d{{6,9}}$/.test(v)) return 'https://pubmed.ncbi.nlm.nih.gov/' + v + '/';
+  if (v.startsWith('10.')) return 'https://doi.org/' + v;
+  if (/^GSE\d+$/i.test(v)) return 'https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=' + v;
+  if (/^NCT\d+$/i.test(v)) return 'https://clinicaltrials.gov/study/' + v;
+  return '';  // SHA256 = local PDF — no external URL
+}}
+function regPaperUrl(id, url) {{
+  id = (id || '').trim();
+  if (!id) return;
+  const u = url || urlForPaperId(id);
+  if (!u) return;
+  PAPER_URLS[id] = u;              // by raw ID
+  PAPER_URLS[paperLabel(id)] = u;  // by display label (dropdown value)
+}}
+EDGES_DATA.forEach(e => {{
+  const url = e._paper_url || '';
+  const p = e._paper || '';
+  const ids = p.startsWith('[') ? (()=>{{ try{{return JSON.parse(p)}}catch(x){{return [p]}} }})() : [p];
+  ids.forEach(id => regPaperUrl(id, url));
+}});
+const DEFAULT_BADGE = document.getElementById('src-badge') ? document.getElementById('src-badge').outerHTML : '';
+
+function badgeColorForUrl(url) {{
+  const u = (url || '').toLowerCase();
+  if (u.includes('pmc')) return '#2563eb';
+  if (u.includes('pubmed')) return '#059669';
+  if (u.includes('doi.org')) return '#7c3aed';
+  if (u.includes('/geo/')) return '#0284c7';
+  if (u.includes('clinicaltrials')) return '#d97706';
+  return '#6b7280';
+}}
+
+function badgeSrcName(url) {{
+  const u = (url || '').toLowerCase();
+  if (u.includes('pmc')) return 'PMC';
+  if (u.includes('pubmed')) return 'PMID';
+  if (u.includes('doi.org')) return 'DOI';
+  if (u.includes('/geo/')) return 'GEO';
+  if (u.includes('clinicaltrials')) return 'NCT';
+  return 'PAPER';
+}}
+
+function badgeForPaper(paperId) {{
+  if (!paperId) return DEFAULT_BADGE;
+  const url = PAPER_URLS[paperId] || PAPER_URLS[paperLabel(paperId)] || '';
+  if (!url) return DEFAULT_BADGE;
+  const color = badgeColorForUrl(url);
+  return '<a id="src-badge" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" ' +
+    'style="display:inline-flex;align-items:center;gap:6px;' +
+    'background:' + color + '18;border:1px solid ' + color + '44;' +
+    'border-radius:6px;padding:4px 10px;text-decoration:none;color:' + color + ';' +
+    'font-size:11px;font-weight:600;font-family:monospace;transition:all .15s;">' +
+    '<span style="opacity:.7">' + badgeSrcName(url) + '</span>' +
+    '<span>' + esc(paperLabel(paperId)) + '</span>&nbsp;🔗</a>';
+}}
+
+function updatePaperBadge(paperId) {{
+  const el = document.getElementById('src-badge');
+  if (!el) return;
+  el.outerHTML = badgeForPaper(paperId);
+}}
+
 function filterByPaper(paperId) {{
   _focusedNode = null;
+  updatePaperBadge(paperId);
   if (!paperId) {{
     // Show all
     nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: false}})));
