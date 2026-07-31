@@ -23,34 +23,70 @@ async function commitToAtomspace() {
   if (!_stagingDb) { alert('No staging data to commit.'); return; }
   const btn = document.getElementById('commit-btn');
   btn.disabled = true; btn.textContent = '⟳ Committing…';
-
-  const fd = new FormData();
-  fd.append('staging_db',    _stagingDb);
-  fd.append('output_format', _commitFormat);
-  fd.append('doc_id',        _docId);
-  const resp = await fetch('/api/commit', { method:'POST', body:fd });
-  const d    = await resp.json();
-
   const res = document.getElementById('commit-result');
-  res.style.display = 'block';
-  if (d.ok) {
-    const newN = d.new || 0;
-    const updN = d.updated || 0;
-    res.innerHTML = `<div style="color:var(--green);font-size:13px;font-weight:600;margin-bottom:10px">
-      ✓ ${newN} new triple(s) committed${updN > 0 ? ` · ${updN} updated` : ''} — unified ${d.format} atomspace
-    </div>`;
-    btn.textContent = '✓ Committed';
 
-    // Rebuild compare pages then show just the Compare buttons
-    if (_stagingDb) rebuildComparePages(d);
-    // Show PLN commit step after successful KG commit — only if PLN is enabled
-    if (_PLN_ENABLED) document.getElementById('pln-commit-step').style.display = 'block';
-    // Persist commit result — buttons are added by rebuildComparePages after async call
-    AppState.saveCommit(_commitFormat, d, '');
-  } else {
-    res.innerHTML = `<div style="color:var(--red);font-size:12px">Error: ${d.error||'Unknown error'}</div>`;
+  try {
+    const fd = new FormData();
+    fd.append('staging_db',    _stagingDb);
+    fd.append('output_format', _commitFormat);
+    fd.append('doc_id',        _docId);
+    const resp = await fetch('/api/commit', { method:'POST', body:fd });
+    const d    = await resp.json();
+
+    res.style.display = 'block';
+    if (d.ok) {
+      const newN = d.new || 0;
+      const updN = d.updated || 0;
+      // The DB commit (what actually matters for correctness) is done at
+      // this point — the unified graph.html/verification rebuild is slow
+      // (scales with EVERY triple ever committed, not just this one) and
+      // keeps running in the background; poll for it instead of blocking
+      // the button on it.
+      res.innerHTML = `<div style="color:var(--green);font-size:13px;font-weight:600;margin-bottom:10px">
+        ✓ ${newN} new triple(s) committed${updN > 0 ? ` · ${updN} updated` : ''} — unified ${d.format} atomspace
+      </div>
+      <div id="commit-rebuild-status" style="color:var(--text3);font-size:12px">⟳ Rebuilding unified graph + verification report…</div>`;
+      btn.textContent = '✓ Committed';
+
+      if (_PLN_ENABLED) document.getElementById('pln-commit-step').style.display = 'block';
+      AppState.saveCommit(_commitFormat, d, '');
+
+      if (d.job_id) _pollCommitRebuild(d.job_id);
+      else if (_stagingDb) rebuildComparePages(d);   // no job_id — fall back to old synchronous path
+    } else {
+      res.innerHTML = `<div style="color:var(--red);font-size:12px">Error: ${d.error||'Unknown error'}</div>`;
+      btn.disabled = false; btn.textContent = '✓ Commit to Unified KG';
+    }
+  } catch (e) {
+    // Without this, a network error or unparseable response left the button
+    // stuck on "⟳ Committing…" forever — the exact symptom reported live.
+    if (res) {
+      res.style.display = 'block';
+      res.innerHTML = `<div style="color:var(--red);font-size:12px">Error: ${e.message||'commit request failed'}</div>`;
+    }
     btn.disabled = false; btn.textContent = '✓ Commit to Unified KG';
   }
+}
+
+async function _pollCommitRebuild(jobId, attempt = 0) {
+  const statusEl = document.getElementById('commit-rebuild-status');
+  try {
+    const r = await fetch(`/api/commit-status?job_id=${encodeURIComponent(jobId)}`);
+    const d = await r.json();
+    if (d.status === 'done') {
+      if (d.error) {
+        if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = `⚠ Rebuild failed: ${esc(d.error)}`; }
+        return;
+      }
+      if (statusEl) statusEl.remove();
+      rebuildComparePages(d);
+      return;
+    }
+  } catch (_) { /* transient — keep polling */ }
+  // Backs off from 2s up to 10s so a multi-minute rebuild (large unified KG)
+  // doesn't hammer the server with fast polls the whole time.
+  const delay = Math.min(2000 + attempt * 1000, 10000);
+  setTimeout(() => _pollCommitRebuild(jobId, attempt + 1), delay);
 }
 
 // PLN commit — triggers Layer 9 PLN reasoning and writes to unified_metta/pln/
@@ -1311,14 +1347,32 @@ function _connectWs(run_id) {
   _activeSocket = socket;
   _enableStop();
 
+  let _lastMsgTime = Date.now();
+
   let _pingInterval = setInterval(() => {
     if (socket.readyState === WebSocket.OPEN) socket.send('ping');
   }, 30000);
 
-  socket.onmessage = e => handle(JSON.parse(e.data));
+  // Watchdog: the server sends a keepalive event at least every ~15s while a
+  // run is active, but a dead connection (idle NAT/proxy drop, laptop sleep)
+  // can leave `onclose` never firing on either side — the socket just stops
+  // receiving anything. If nothing arrives for way longer than the server's
+  // own keepalive interval, treat the connection as dead and force a close
+  // ourselves so the reconnect logic below actually gets a chance to run.
+  const STALE_MS = 45000;
+  let _staleCheck = setInterval(() => {
+    if (_pipelineComplete || _activeRunId !== run_id) return;
+    if (Date.now() - _lastMsgTime > STALE_MS) {
+      console.warn(`[ws] no message in ${STALE_MS}ms — assuming dead connection, forcing reconnect`);
+      socket.close();
+    }
+  }, 10000);
+
+  socket.onmessage = e => { _lastMsgTime = Date.now(); handle(JSON.parse(e.data)); };
   socket.onerror   = () => {};   // onclose fires too — let that handle UI
   socket.onclose   = () => {
     clearInterval(_pingInterval);
+    clearInterval(_staleCheck);
     _activeSocket = null;
     if (_pipelineComplete || _activeRunId !== run_id) {
       // Normal close after completion or a new run started — clean up
@@ -1614,11 +1668,14 @@ async function loadHumanReview(runDir, stagingDb) {
     const verdict = r.validation_verdict || 'REVIEW';
     const displayVerdict = (isTextEntity && verdict === 'VALID') ? 'ID?' : verdict;
     const vcolor  = displayVerdict === 'ID?' ? '#f59e0b'
-                  : verdict === 'REVIEW'     ? 'var(--yellow)' : 'var(--red)';
+                  : verdict === 'REVIEW'     ? 'var(--yellow)'
+                  : verdict === 'VALID'      ? 'var(--green)' : 'var(--red)';
     const vNote   = displayVerdict === 'ID?'
       ? 'Entity ID not resolved — enter a canonical ID below then approve to commit'
       : verdict === 'REVIEW'
       ? 'Uncertain — relation label may be imprecise for what the text states'
+      : verdict === 'VALID'
+      ? 'Relation is semantically valid — flagged for a different reason, see below'
       : 'Semantic validator found a clear error — relation label does not match the text';
     const rawReason = r.review_reason || r.reasoning || '';
     const parts = rawReason.replace(/SEMANTIC_REVIEW:|SEMANTIC_REJECT:/g,'').split('|').map(s=>s.trim()).filter(Boolean);
@@ -1627,18 +1684,24 @@ async function loadHumanReview(runDir, stagingDb) {
     const suggestPart = parts.find(p=>p.startsWith('Suggest')) || '';
     const fullReason  = r.reasoning || '';
     const suggestText = suggestPart.replace(/^Suggested?:\s*/i,'');
-    const suggRelMatch = suggestText.match(/['"]?([A-Z][A-Z0-9_]{2,})['"]?/);
-    const suggestedRelation = suggRelMatch ? suggRelMatch[1] : '';
+    // The LLM's suggestion is free text but consistently uses "Subject: X;
+    // Relation: Y; Object: Z" — parse all three fields, not just the
+    // relation, so "Apply suggestion" can actually rename a misidentified
+    // subject/object (e.g. "low-sodium" → "sodium intake"), not just relabel
+    // the edge.
+    const suggFields = _parseSuggestionFields(suggestText);
+    const suggestedRelation = suggFields.relation || '';
+    const suggDataAttr = JSON.stringify(suggFields).replace(/'/g,"&#39;");
     const recJson = JSON.stringify(r).replace(/'/g,"&#39;");
     // First card open, rest collapsed
     const bodyDisplay = i === 0 ? 'block' : 'none';
     const chevron     = i === 0 ? '▲' : '▼';
-    return `<div style="background:var(--bg2);border:1px solid ${vcolor}55;border-radius:12px;margin-bottom:8px;overflow:hidden" id="rc-${i}" data-orig-rel="${esc(r.relation||'')}" data-verdict="${displayVerdict}">
+    return `<div style="background:var(--bg2);border:1px solid ${vcolor}55;border-radius:12px;margin-bottom:8px;overflow:hidden" id="rc-${i}" data-orig-rel="${esc(r.relation||'')}" data-verdict="${displayVerdict}" data-had-text-subj="${hasTextSubj?'1':'0'}" data-had-text-obj="${hasTextObj?'1':'0'}">
       <!-- Collapsible header — always visible -->
       <div onclick="toggleReviewCard(${i})" style="display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;user-select:none">
         <span style="color:${vcolor};font-size:10px;font-weight:700;border:1px solid ${vcolor};padding:1px 8px;border-radius:8px;flex-shrink:0">${displayVerdict}</span>
         <span style="font-size:13px;font-weight:600;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-          ${esc(r.subject_name||'')} <span id="rel-display-${i}" style="color:var(--blue)">→${esc(r.relation||'')}→</span> ${esc(r.object_name||'')}
+          <span id="subj-name-${i}">${esc(r.subject_name||'')}</span> <span id="rel-display-${i}" style="color:var(--blue)">→${esc(r.relation||'')}→</span> <span id="obj-name-${i}">${esc(r.object_name||'')}</span>
         </span>
         <span id="rc-chevron-${i}" style="color:var(--text3);font-size:11px;flex-shrink:0">${chevron}</span>
       </div>
@@ -1649,33 +1712,33 @@ async function loadHumanReview(runDir, stagingDb) {
         ${issuePart  ? `<div style="margin-bottom:4px"><span style="color:var(--text3);font-size:10px;font-weight:600;text-transform:uppercase">Issue</span><div style="color:var(--text2);font-size:12px;margin-top:2px">${esc(issuePart.replace(/^Issues?:\s*/i,''))}</div></div>` : ''}
         ${suggestPart ? `<div style="margin-bottom:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <div><span style="color:var(--blue);font-size:10px;font-weight:600;text-transform:uppercase">Suggestion</span><div style="color:var(--blue);font-size:12px;margin-top:2px">${esc(suggestText)}</div></div>
-          ${suggestedRelation ? `<button id="sugg-btn-${i}" onclick="event.stopPropagation();applySuggestion(${i},'${suggestedRelation}')"
+          ${(suggFields.relation || suggFields.subject || suggFields.object) ? `<button id="sugg-btn-${i}" data-sugg='${suggDataAttr}' onclick="event.stopPropagation();applySuggestion(${i})"
             style="background:rgba(56,189,248,.15);border:1px solid var(--blue);border-radius:6px;padding:3px 12px;color:var(--blue);font-size:11px;cursor:pointer;font-family:var(--font);font-weight:600;white-space:nowrap;align-self:flex-end">
             ↕ Apply suggestion</button>` : ''}
         </div>` : ''}
-        ${isTextEntity ? `<div style="margin-top:6px;padding:8px 10px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:8px">
+        <div id="id-correction-${i}" style="margin-top:6px;padding:8px 10px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:8px;display:${isTextEntity ? 'block' : 'none'}">
           <div style="color:#f59e0b;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:6px">Canonical ID Correction</div>
-          ${hasTextSubj ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+          <div id="subj-id-row-${i}" style="display:${hasTextSubj ? 'flex' : 'none'};align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
             <span style="font-size:11px;color:var(--text3);min-width:52px">Subject:</span>
-            <span style="font-size:12px;color:var(--text2)">${esc(r.subject_name||'')}</span>
+            <span id="subj-id-name-${i}" style="font-size:12px;color:var(--text2)">${esc(r.subject_name||'')}</span>
             <div style="display:flex;flex-direction:column;gap:2px">
               <input id="subj-id-${i}" type="text" value="" placeholder="Looking up…"
                 style="background:var(--bg3);border:1px solid #f59e0b88;border-radius:4px;padding:3px 8px;
                        color:var(--text);font-size:11px;font-family:var(--font);width:200px;outline:none"/>
               <span id="subj-id-hint-${i}" style="font-size:10px;color:var(--text3);padding-left:2px"></span>
             </div>
-          </div>` : ''}
-          ${hasTextObj ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          </div>
+          <div id="obj-id-row-${i}" style="display:${hasTextObj ? 'flex' : 'none'};align-items:center;gap:8px;flex-wrap:wrap">
             <span style="font-size:11px;color:var(--text3);min-width:52px">Object:</span>
-            <span style="font-size:12px;color:var(--text2)">${esc(r.object_name||'')}</span>
+            <span id="obj-id-name-${i}" style="font-size:12px;color:var(--text2)">${esc(r.object_name||'')}</span>
             <div style="display:flex;flex-direction:column;gap:2px">
               <input id="obj-id-${i}" type="text" value="" placeholder="Looking up…"
                 style="background:var(--bg3);border:1px solid #f59e0b88;border-radius:4px;padding:3px 8px;
                        color:var(--text);font-size:11px;font-family:var(--font);width:200px;outline:none"/>
               <span id="obj-id-hint-${i}" style="font-size:10px;color:var(--text3);padding-left:2px"></span>
             </div>
-          </div>` : ''}
-        </div>` : ''}
+          </div>
+        </div>
         ${fullReason ? `<details style="margin-top:6px"><summary style="color:var(--text3);font-size:11px;cursor:pointer">▸ Full LLM reasoning</summary><div style="color:var(--text2);font-size:12px;font-style:italic;margin-top:4px;padding:8px;background:var(--bg3);border-radius:6px">"${esc(fullReason)}"</div></details>` : ''}
         <div style="display:flex;gap:8px;margin-top:10px">
           <button id="approve-btn-${i}" onclick="reviewAction(${i},this,'approve')" data-rec='${recJson}' data-rundir="${esc(runDir)}" data-sdb="${esc(stagingDb)}"
@@ -1726,6 +1789,15 @@ async function _fetchCanonicalId(entityName, entityType, cardIdx, role) {
           hintEl.innerHTML = `<span style="color:var(--yellow)">⚠ Unverified${src}</span>`;
         }
       }
+      // Stash so reviewAction() can refresh canonical_name/id_source on
+      // approve — without this, approving keeps whatever stale enrichment
+      // was in the record (or none), even though a fresh ID was just found.
+      window._suggResolved = window._suggResolved || {};
+      window._suggResolved[cardIdx] = window._suggResolved[cardIdx] || {};
+      window._suggResolved[cardIdx][role] = {
+        id: data.id, name: data.official_name || '', source: data.source || '',
+        source_url: data.source_url || '', synonyms: data.synonyms || '',
+      };
     } else {
       if (inputEl.placeholder === 'Looking up…') inputEl.placeholder = 'e.g. hgnc:1234';
       if (hintEl) hintEl.textContent = 'No suggestion — enter manually';
@@ -1784,25 +1856,132 @@ function toggleReviewCard(i) {
   if (chevron) chevron.textContent = open ? '▼' : '▲';
 }
 
-function applySuggestion(idx, suggestedRelation) {
+function applySuggestion(idx) {
   const card    = document.getElementById(`rc-${idx}`);
   const suggBtn = document.getElementById(`sugg-btn-${idx}`);
   const relSpan = document.getElementById(`rel-display-${idx}`);
   if (!card || !suggBtn || !relSpan) return;
 
+  const sugg = JSON.parse((suggBtn.dataset.sugg || '{}').replace(/&#39;/g,"'"));
   const isApplied = card.dataset.suggApplied === '1';
   const origRel   = card.dataset.origRel || '';
-  const newRel    = isApplied ? origRel : suggestedRelation;
+  const newRel    = isApplied ? origRel : (sugg.relation || origRel);
+
+  const origSubject = card.dataset.origSubjectData ? JSON.parse(card.dataset.origSubjectData) : null;
+  const origObject  = card.dataset.origObjectData  ? JSON.parse(card.dataset.origObjectData)  : null;
+
+  // The LLM's "suggested correction" often only actually changes ONE side —
+  // the other is echoed back verbatim (e.g. correcting "low-sodium" while
+  // repeating the already-correct object "BP" unchanged). Only treat a side
+  // as needing correction if the suggested text actually DIFFERS from what
+  // was there originally — otherwise this would needlessly clear an
+  // already-correct resolution and re-fetch a fresh (possibly worse) one.
+  // Computed ONCE on the first apply (when rec still holds true originals)
+  // and persisted, since on undo the current rec no longer reflects them.
+  let subjChanged, objChanged;
+  if (!isApplied) {
+    const firstRec = JSON.parse(card.querySelector('[data-rec]').dataset.rec.replace(/&#39;/g,"'"));
+    subjChanged = !!sugg.subject && sugg.subject.trim().toLowerCase() !== (firstRec.subject_name || '').trim().toLowerCase();
+    objChanged  = !!sugg.object  && sugg.object.trim().toLowerCase()  !== (firstRec.object_name  || '').trim().toLowerCase();
+    card.dataset.subjSuggChanged = subjChanged ? '1' : '0';
+    card.dataset.objSuggChanged  = objChanged  ? '1' : '0';
+  } else {
+    subjChanged = card.dataset.subjSuggChanged === '1';
+    objChanged  = card.dataset.objSuggChanged  === '1';
+  }
 
   // Patch data-rec on both Approve and Reject buttons
   card.querySelectorAll('[data-rec]').forEach(b => {
     const rec = JSON.parse(b.dataset.rec.replace(/&#39;/g,"'"));
     rec.relation = newRel;
+
+    if (subjChanged) {
+      if (!isApplied) {
+        // Stash the full original entity (name + resolved ID/enrichment) so
+        // "Undo suggestion" can restore it exactly, not just the name.
+        card.dataset.origSubjectData = JSON.stringify({
+          subject_name: rec.subject_name, subject_id: rec.subject_id,
+          subject_canonical_name: rec.subject_canonical_name, subject_source_url: rec.subject_source_url,
+          subject_synonyms: rec.subject_synonyms, subject_id_source: rec.subject_id_source,
+          subject_needs_review: rec.subject_needs_review,
+        });
+        rec.subject_name = sugg.subject;
+        // The old subject_id/canonical_name/etc. were resolved against the
+        // OLD (wrong) subject text — they no longer describe this entity,
+        // so clear them rather than silently publishing a mismatched ID.
+        rec.subject_id             = '';
+        rec.subject_canonical_name = '';
+        rec.subject_source_url     = '';
+        rec.subject_synonyms       = '';
+        rec.subject_id_source      = '';
+        rec.subject_needs_review   = true;
+      } else if (origSubject) {
+        Object.assign(rec, origSubject);
+      }
+    }
+    if (objChanged) {
+      if (!isApplied) {
+        card.dataset.origObjectData = JSON.stringify({
+          object_name: rec.object_name, object_id: rec.object_id,
+          object_canonical_name: rec.object_canonical_name, object_source_url: rec.object_source_url,
+          object_synonyms: rec.object_synonyms, object_id_source: rec.object_id_source,
+          object_needs_review: rec.object_needs_review,
+        });
+        rec.object_name = sugg.object;
+        rec.object_id             = '';
+        rec.object_canonical_name = '';
+        rec.object_source_url     = '';
+        rec.object_synonyms       = '';
+        rec.object_id_source      = '';
+        rec.object_needs_review   = true;
+      } else if (origObject) {
+        Object.assign(rec, origObject);
+      }
+    }
     b.dataset.rec = JSON.stringify(rec).replace(/'/g,"&#39;");
   });
 
   // Update the relation display in the triple header
   relSpan.textContent = `→${newRel}→`;
+
+  // Update subject/object name display + trigger a fresh canonical-ID lookup
+  // for whichever side was renamed (reusing the same /api/suggest-id flow
+  // already built for TEXT: entities — a renamed entity needs the identical
+  // treatment even if it wasn't originally unresolved).
+  const applySide = (role, origData, nameKey, idKey, typeKey) => {
+    const nameSpan = document.getElementById(`${role}-name-${idx}`);
+    const rowEl    = document.getElementById(`${role}-id-row-${idx}`);
+    const wrapEl   = document.getElementById(`id-correction-${idx}`);
+    const lblEl    = document.getElementById(`${role}-id-name-${idx}`);
+    const inputEl  = document.getElementById(`${role}-id-${idx}`);
+    const hintEl   = document.getElementById(`${role}-id-hint-${idx}`);
+    const hadText  = card.dataset[`hadText${role === 'subj' ? 'Subj' : 'Obj'}`] === '1';
+
+    if (!isApplied) {
+      const newName = sugg[role === 'subj' ? 'subject' : 'object'];
+      if (nameSpan) nameSpan.textContent = newName;
+      if (wrapEl) wrapEl.style.display = 'block';
+      if (rowEl)  rowEl.style.display  = 'flex';
+      if (lblEl)  lblEl.textContent    = newName;
+      if (inputEl) { inputEl.value = ''; inputEl.placeholder = 'Looking up…'; inputEl.style.borderColor = '#f59e0b88'; }
+      if (hintEl)  hintEl.textContent  = '';
+      const anyRec = JSON.parse(card.querySelector('[data-rec]').dataset.rec.replace(/&#39;/g,"'"));
+      _fetchCanonicalId(newName, anyRec[typeKey] || '', idx, role);
+    } else if (origData) {
+      const origName = origData[nameKey] || '';
+      if (nameSpan) nameSpan.textContent = origName;
+      if (lblEl)    lblEl.textContent    = origName;
+      if (inputEl)  inputEl.value        = (origData[idKey] || '').startsWith('TEXT:') ? '' : (origData[idKey] || '');
+      if (hintEl)   hintEl.textContent   = '';
+      if (!hadText) {
+        if (rowEl) rowEl.style.display = 'none';
+        const bothHidden = card.dataset.hadTextSubj !== '1' && card.dataset.hadTextObj !== '1';
+        if (wrapEl && bothHidden) wrapEl.style.display = 'none';
+      }
+    }
+  };
+  if (subjChanged) applySide('subj', origSubject, 'subject_name', 'subject_id', 'subject_type');
+  if (objChanged)  applySide('obj',  origObject,  'object_name',  'object_id',  'object_type');
 
   // Toggle button label and applied state
   card.dataset.suggApplied = isApplied ? '0' : '1';
@@ -1822,8 +2001,27 @@ async function reviewAction(idx, btn, action) {
   if (action === 'approve') {
     const subjIn = document.getElementById(`subj-id-${idx}`);
     const objIn  = document.getElementById(`obj-id-${idx}`);
-    if (subjIn && subjIn.value.trim()) rec.subject_id = subjIn.value.trim();
-    if (objIn  && objIn.value.trim())  rec.object_id  = objIn.value.trim();
+    const resolved = window._suggResolved && window._suggResolved[idx];
+    if (subjIn && subjIn.value.trim()) {
+      rec.subject_id = subjIn.value.trim();
+      // Only trust the auto-resolved canonical_name/id_source if the ID
+      // wasn't hand-edited to something else after the lookup ran.
+      if (resolved && resolved.subj && resolved.subj.id === rec.subject_id) {
+        rec.subject_canonical_name = resolved.subj.name;
+        rec.subject_id_source      = resolved.subj.source;
+        rec.subject_source_url     = resolved.subj.source_url || '';
+        rec.subject_synonyms       = resolved.subj.synonyms   || '';
+      }
+    }
+    if (objIn && objIn.value.trim()) {
+      rec.object_id = objIn.value.trim();
+      if (resolved && resolved.obj && resolved.obj.id === rec.object_id) {
+        rec.object_canonical_name = resolved.obj.name;
+        rec.object_id_source      = resolved.obj.source;
+        rec.object_source_url     = resolved.obj.source_url || '';
+        rec.object_synonyms       = resolved.obj.synonyms   || '';
+      }
+    }
   }
 
   const fd = new FormData();
@@ -2227,6 +2425,32 @@ function logLineClass(msg) {
 }
 
 function esc(s) { if(!s)return''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// Parses the LLM's free-text suggested_correction ("Subject: X; Relation: Y;
+// Object: Z" — any subset, any order) into individual fields. The validator
+// doesn't always suggest all three, so each field is optional.
+function _parseSuggestionFields(text) {
+  const out = {};
+  const grab = (label) => {
+    const m = text.match(new RegExp(label + '\\s*:\\s*([^;]+?)(?=;\\s*(?:Subject|Relation|Object)\\s*:|$)', 'i'));
+    return m ? m[1].trim() : '';
+  };
+  const subj = grab('Subject');
+  const rel  = grab('Relation');
+  const obj  = grab('Object');
+  if (subj) out.subject  = subj;
+  if (obj)  out.object   = obj;
+  if (rel) {
+    const relMatch = rel.match(/([A-Z][A-Z0-9_]{2,})/);
+    // Lowercase to match the taxonomy's canonical RelationType.value form
+    // ("regulates", not "REGULATES") — every other code path (extraction,
+    // dedup's exact-match SQL constraint, concept alignment's clustering)
+    // stores/compares relation strings in that lowercase form, so leaving
+    // this uppercase silently breaks case-sensitive matches downstream.
+    out.relation = relMatch ? relMatch[1].toLowerCase() : '';
+  }
+  return out;
+}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 // ── Expose functions globally for inline onclick attrs (dynamically injected HTML) ──

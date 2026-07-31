@@ -52,5 +52,30 @@ fi
 
 _hf_ensure "cross-encoder/nli-MiniLM2-L6-H768" "Negation model (cross-encoder/nli-MiniLM2-L6-H768)"
 
+# GLiNER uses its own from_pretrained(), not transformers' Auto* classes.
+_gliner_ensure() {
+    local model="$1"
+    local label="$2"
+    if python -c "
+from gliner import GLiNER
+GLiNER.from_pretrained('${model}', local_files_only=True)
+" 2>/dev/null; then
+        echo "  ✓ ${label} cached"
+    elif [ "${TRANSFORMERS_OFFLINE:-0}" = "1" ]; then
+        echo "  ⚠ TRANSFORMERS_OFFLINE=1 but ${label} not cached — will fail at runtime"
+    else
+        echo "  ↓ Downloading ${label}..."
+        python -c "
+from gliner import GLiNER
+GLiNER.from_pretrained('${model}')
+"
+        echo "  ✓ ${label} ready"
+    fi
+}
+
+if [ "${GLINER_ENABLED:-true}" = "true" ]; then
+    _gliner_ensure "${GLINER_MODEL:-Ihor/gliner-biomed-base-v1.0}" "GLiNER-BioMed Base"
+fi
+
 echo "=== Models ready — starting server ==="
 exec "$@"

@@ -12,6 +12,8 @@ if str(_ROOT) not in sys.path:
 
 router = APIRouter()
 
+_commit_jobs: dict = {}  # in-memory job status for background unified-KG rebuild from /api/commit
+
 
 @router.post("/api/rebuild-all-compare")
 async def rebuild_all_compare():
@@ -338,14 +340,70 @@ async def commit_existing_outputs(
         return {"ok": False, "error": str(exc), "trace": traceback.format_exc()[:400]}
 
 
+def _run_unified_rebuild(job_id: str, output_format: str) -> None:
+    """The slow part — regenerates the unified graph.html and re-verifies
+    (with live source-text fetches) EVERY triple in the accumulated unified
+    store, not just what this commit added. Runs in a background thread so
+    the commit response doesn't block on it."""
+    kg_root = _ROOT / "data" / "kg_output"
+    neo4j_html = metta_html = neo4j_ver = metta_ver = ""
+    import os as _os
+    _old = _os.getcwd()
+    try:
+        _os.chdir(str(_ROOT))
+        from tools.export_unified import run_export
+        run_export(generate_html=True, formats=output_format)
+        nh = kg_root / "unified_neo4j" / "graph.html"
+        mh = kg_root / "unified_metta"  / "graph.html"
+        if nh.exists(): neo4j_html = str(nh)
+        if mh.exists(): metta_html = str(mh)
+    except Exception as e:
+        _commit_jobs[job_id] = {"status": "done", "error": f"Unified export failed: {e}"}
+        return
+    finally:
+        _os.chdir(_old)
+
+    try:
+        from tools.verify_kg import run_verification
+        if output_format in ("neo4j", "both"):
+            _vr_dir = kg_root / "unified_neo4j"
+            _vr_dir.mkdir(parents=True, exist_ok=True)
+            _vh = _vr_dir / "verification_report.html"
+            _vj = _vr_dir / "verification_report.json"
+            run_verification(fetch_text=True, formats="neo4j", out_html=_vh, out_json=_vj)
+            if _vh.exists(): neo4j_ver = str(_vh)
+        if output_format in ("metta", "both"):
+            _vr_dir = kg_root / "unified_metta"
+            _vr_dir.mkdir(parents=True, exist_ok=True)
+            _vh = _vr_dir / "verification_report.html"
+            _vj = _vr_dir / "verification_report.json"
+            run_verification(fetch_text=True, formats="metta", out_html=_vh, out_json=_vj)
+            if _vh.exists(): metta_ver = str(_vh)
+    except Exception:
+        pass
+
+    _commit_jobs[job_id] = {
+        "status":     "done",
+        "neo4j_html": neo4j_html,
+        "metta_html": metta_html,
+        "neo4j_ver":  neo4j_ver,
+        "metta_ver":  metta_ver,
+    }
+
+
 @router.post("/api/commit")
 async def commit_to_atomspace(
     staging_db:    str = Form(...),
     output_format: str = Form("both"),
     doc_id:        str = Form(""),
 ):
-    """Commit staging triples to the permanent unified atomspace."""
-    import traceback as _tb
+    """Commit staging triples to the permanent unified atomspace. Returns as
+    soon as the (fast, size-independent) DB commit is done — the unified
+    graph.html rebuild and full re-verification (slow: scales with total
+    accumulated unified-KG size, not with this commit) continue in the
+    background; poll /api/commit-status with the returned job_id."""
+    import threading as _thr
+    import uuid as _uuid
     try:
         _sdb = Path(staging_db)
         if not _sdb.is_absolute(): _sdb = _ROOT / _sdb
@@ -356,52 +414,30 @@ async def commit_to_atomspace(
         _raw   = commit_staging_to_main(str(_sdb), formats=output_format)
         result = _raw if isinstance(_raw, dict) else {"new": 0, "updated": 0, "total": 0}
 
-        neo4j_html = metta_html = neo4j_ver = metta_ver = ""
-        kg_root    = _ROOT / "data" / "kg_output"
-
-        try:
-            import os as _os
-            _old = _os.getcwd(); _os.chdir(str(_ROOT))
-            from tools.export_unified import run_export
-            run_export(generate_html=True, formats=output_format)
-            _os.chdir(_old)
-            nh = kg_root / "unified_neo4j" / "graph.html"
-            mh = kg_root / "unified_metta"  / "graph.html"
-            if nh.exists(): neo4j_html = str(nh)
-            if mh.exists(): metta_html = str(mh)
-        except Exception: pass
-
-        try:
-            from tools.verify_kg import run_verification
-            if output_format in ("neo4j", "both"):
-                _vr_dir = kg_root / "unified_neo4j"
-                _vr_dir.mkdir(parents=True, exist_ok=True)
-                _vh = _vr_dir / "verification_report.html"
-                _vj = _vr_dir / "verification_report.json"
-                run_verification(fetch_text=True, formats="neo4j", out_html=_vh, out_json=_vj)
-                if _vh.exists(): neo4j_ver = str(_vh)
-            if output_format in ("metta", "both"):
-                _vr_dir = kg_root / "unified_metta"
-                _vr_dir.mkdir(parents=True, exist_ok=True)
-                _vh = _vr_dir / "verification_report.html"
-                _vj = _vr_dir / "verification_report.json"
-                run_verification(fetch_text=True, formats="metta", out_html=_vh, out_json=_vj)
-                if _vh.exists(): metta_ver = str(_vh)
-        except Exception: pass
+        job_id = _uuid.uuid4().hex
+        _commit_jobs[job_id] = {"status": "pending"}
+        _thr.Thread(target=_run_unified_rebuild, args=(job_id, output_format), daemon=True).start()
 
         return JSONResponse({
-            "ok":         True,
-            "new":        result.get("new", 0),
-            "updated":    result.get("updated", 0),
-            "total":      result.get("total", 0),
-            "format":     output_format,
-            "neo4j_html": neo4j_html,
-            "metta_html": metta_html,
-            "neo4j_ver":  neo4j_ver,
-            "metta_ver":  metta_ver,
+            "ok":      True,
+            "new":     result.get("new", 0),
+            "updated": result.get("updated", 0),
+            "total":   result.get("total", 0),
+            "format":  output_format,
+            "job_id":  job_id,
         })
     except Exception as e:
+        import traceback as _tb
         return JSONResponse({"ok": False, "error": str(e), "trace": _tb.format_exc()[-600:]}, status_code=500)
+
+
+@router.get("/api/commit-status")
+async def commit_status(job_id: str = ""):
+    """Poll the background unified-graph rebuild kicked off by /api/commit."""
+    job = _commit_jobs.get(job_id)
+    if not job:
+        return JSONResponse({"status": "unknown"})
+    return JSONResponse(job)
 
 
 @router.post("/api/rebuild-compare")

@@ -6,6 +6,7 @@ from . import (
     two_pass_resolution,
     semantic_validation,
     atomspace_alignment,
+    concept_alignment,
 )
 from .postextractor import process, process_batch
 
@@ -17,6 +18,7 @@ __all__ = [
     "two_pass_resolution",
     "semantic_validation",
     "atomspace_alignment",
+    "concept_alignment",
     "process",
     "process_batch",
 ]

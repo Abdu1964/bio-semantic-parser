@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from openai import OpenAI
 import httpx
 
-from src.schema.taxonomy import TAXONOMY, RelationType, EntityType
+from src.schema.taxonomy import TAXONOMY, ENTITY_TAXONOMY, RelationType, EntityType
 from src.schema.pydantic_model import BiologicalRelation, ExtractionResult
 
 # ── Config from .env ──────────────────────────────────────────────────────────
@@ -108,6 +108,23 @@ def _taxonomy_block() -> str:
     return "\n".join(lines)
 
 
+def _entity_taxonomy_block() -> str:
+    lines = ["ENTITY TYPES — use ONLY values from this list:\n"]
+    for etype, entry in ENTITY_TAXONOMY.items():
+        if _COMPACT_TAXONOMY:
+            not_this = entry.get("not_this", "")
+            not_clause = f" [NOT: {not_this}]" if not_this else ""
+            lines.append(f"  {etype.value}: {entry['definition']}{not_clause}")
+        else:
+            lines.append(
+                f"  {etype.value}\n"
+                f"    → {entry['definition']}\n"
+                f"    EXAMPLE: {entry['example']}\n"
+                f"    NOT THIS: {entry['not_this']}\n"
+            )
+    return "\n".join(lines)
+
+
 # ── Full system prompt ────────────────────────────────────────────────────────
 # Shape the LLM's strategy before it starts —
 # how to think about the task, not just what to put in each field.
@@ -116,6 +133,8 @@ def _system_prompt() -> str:
         "You are a biomedical relation extraction expert.\n"
         "Extract biological relations from text and return ONLY valid JSON.\n\n"
         + _taxonomy_block()
+        + "\n"
+        + _entity_taxonomy_block()
         + f"\nVALID relation values: {_RELATION_VALUES}\n"
         + f"VALID entity type values: {_ENTITY_VALUES}\n\n"
         + _JSON_SCHEMA
@@ -139,7 +158,29 @@ def _system_prompt() -> str:
         "   Do NOT add species prefixes ('mammalian', 'human') unless the text says so.\n"
         "4. Produce exactly one JSON object per distinct subject–relation–object triple. "
         "   Do not merge different triples into one.\n"
-        "5. Return ONLY the JSON — no explanation, no markdown fences, no extra text."
+        "5. Return ONLY the JSON — no explanation, no markdown fences, no extra text.\n"
+        "6. subject_type and object_type MUST be one of the VALID entity type values above, chosen "
+        "   by checking the ENTITY TYPES definitions — not by guessing from the bare name. "
+        "   Each pre-tagged entity below shows a 'type=' hint from Layer 4 NER — use it as a signal, "
+        "   but it may use different vocabulary than the entity types above (e.g. it might say "
+        "   'CHEMICAL' or 'Gene' instead of a listed value); when it doesn't exactly match a VALID "
+        "   entity type value, translate it to the closest fitting type using the definitions, don't "
+        "   copy it verbatim. Only use OTHER after checking every definition above and genuinely "
+        "   finding no match — it should be rare, not a default for uncertainty.\n"
+        "7. When the text attributes an effect to a gene generically — 'mutations of GENE', "
+        "   'variants in GENE', 'GENE deficiency' — and does NOT name one specific, identifiable "
+        "   variant (an rsID, HGVS notation like c.467G>A, or a specific named mutation), use GENE "
+        "   itself as the subject/object with entity_type=GENE. Do not invent a separate collective "
+        "   entity like 'GENE mutations' typed as GENOMIC_VARIANT — that type is for one specific, "
+        "   identifiable variant, not a generic reference to the class of mutations affecting a gene. "
+        "   Only use GENOMIC_VARIANT/SEQUENCE_VARIANT when a specific variant is actually named.\n"
+        "8. HAS_INHERITANCE_MODE exception to Rule 3: when the text states an inheritance pattern "
+        "   ('autosomal recessive', 'autosomal dominant', 'X-linked', 'mitochondrial', etc.), produce "
+        "   the triple even if the pattern is not in PRE-TAGGED ENTITIES. Subject=disease, "
+        "   object=pattern phrase from text, entity_type=PHENOTYPE.\n"
+        "9. Do not collapse similar clinical terms — 'developmental delay' and 'intellectual disability' "
+        "   are distinct. Extract each named entity separately; never suppress a triple because a "
+        "   similar one already exists.\n"
     )
 
 

@@ -33,6 +33,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.publish.node_naming import (
+    pick_node_name, pick_node_full_name, pick_node_source_url,
+    merge_node_synonyms, pick_node_entity_type, merge_node_evidence,
+)
+
 _DB_PATH = Path("data/triple_store.db")
 
 
@@ -98,27 +103,68 @@ def write_neo4j(triples: list, out_dir: Path) -> dict:
     import csv
 
     DELIMITER = "|"
-    nodes: dict = defaultdict(dict)    # {type_slug: {id: row}}
+    # Keyed by canonical ID only — entity_type is a majority-voted property, not a partition key.
+    node_mentions: dict = defaultdict(lambda: {
+        "names": [], "canonical_names": [], "source_urls": [], "synonyms": [],
+        "entity_types": [], "evidence": [], "needs_reviews": [],
+    })
     edges: dict = defaultdict(list)    # {(s_slug, rel, o_slug): [rows]}
 
     for t in triples:
-        s_slug = _slug(t.get("subject_type", "other"))
-        o_slug = _slug(t.get("object_type",  "other"))
-        rel    = _slug(t.get("relation",      "related_to"))
-
-        # Collect unique nodes
-        for id_key, name_key, type_key, slug in [
-            ("subject_id", "subject_name", "subject_type", s_slug),
-            ("object_id",  "object_name",  "object_type",  o_slug),
+        for id_key, name_key, canon_key, type_key, url_key, syn_key, ev_key, review_key in [
+            ("subject_id", "subject_name", "subject_canonical_name", "subject_type", "subject_source_url", "subject_synonyms", "subject_evidence", "subject_needs_review"),
+            ("object_id",  "object_name",  "object_canonical_name",  "object_type",  "object_source_url",  "object_synonyms",  "object_evidence",  "object_needs_review"),
         ]:
             cid = t.get(id_key, "") or ""
-            if cid and cid not in nodes[slug]:
-                nodes[slug][cid] = {
-                    "id":          cid,
-                    "name":        t.get(name_key, ""),
-                    "entity_type": t.get(type_key, "OTHER"),
-                    "id_source":   "",
-                }
+            if not cid:
+                continue
+            entry = node_mentions[cid]
+            name  = t.get(name_key, "") or ""
+            canon = t.get(canon_key, "") or ""
+            url   = t.get(url_key, "") or ""
+            syn   = t.get(syn_key, "") or ""
+            ev    = t.get(ev_key, "") or ""
+            if name:
+                entry["names"].append(name)
+            if canon:
+                entry["canonical_names"].append(canon)
+            if url:
+                entry["source_urls"].append(url)
+            if syn:
+                entry["synonyms"].append(syn)
+            if ev:
+                entry["evidence"].append(ev)
+            entry["entity_types"].append(t.get(type_key, "OTHER") or "OTHER")
+            entry["needs_reviews"].append(bool(t.get(review_key, False)))
+
+    id_to_row: dict = {}
+    id_to_type_slug: dict = {}
+    for cid, entry in node_mentions.items():
+        etype = pick_node_entity_type(entry["entity_types"])
+        id_to_type_slug[cid] = _slug(etype)
+        is_uncertain = any(entry["needs_reviews"])
+        id_to_row[cid] = {
+            "id":          cid,
+            "name":        pick_node_name(entry["names"], entry["canonical_names"], is_uncertain),
+            "full_name":   pick_node_full_name(entry["names"], entry["canonical_names"], is_uncertain),
+            "entity_type": etype,
+            "id_source":   "",
+            "needs_review": "true" if is_uncertain else "false",
+            "source_url":  pick_node_source_url(entry["source_urls"]),
+            "synonyms":    merge_node_synonyms(entry["synonyms"]),
+            "evidence":    merge_node_evidence(entry["evidence"]),
+        }
+
+    nodes: dict = defaultdict(dict)    # {type_slug: {id: row}}
+    for cid, row in id_to_row.items():
+        nodes[id_to_type_slug[cid]][cid] = row
+
+    for t in triples:
+        s_id   = t.get("subject_id", "") or ""
+        o_id   = t.get("object_id",  "") or ""
+        s_slug = id_to_type_slug.get(s_id) or _slug(t.get("subject_type", "other"))
+        o_slug = id_to_type_slug.get(o_id) or _slug(t.get("object_type",  "other"))
+        rel    = _slug(t.get("relation",      "related_to"))
 
         sources = []
         try:
@@ -126,13 +172,13 @@ def write_neo4j(triples: list, out_dir: Path) -> dict:
         except Exception:
             sources = [t.get("source_papers", "")]
         edges[(s_slug, rel, o_slug)].append({
-            "source_id":     t.get("subject_id", ""),
+            "source_id":     s_id,
             "source_name":   t.get("subject_name", ""),
-            "target_id":     t.get("object_id", ""),
+            "target_id":     o_id,
             "target_name":   t.get("object_name", ""),
             "relation":      t.get("relation", ""),
-            "source_type":   t.get("subject_type", ""),
-            "target_type":   t.get("object_type", ""),
+            "source_type":   id_to_row.get(s_id, {}).get("entity_type") or t.get("subject_type", ""),
+            "target_type":   id_to_row.get(o_id, {}).get("entity_type") or t.get("object_type", ""),
             "confidence":    t.get("confidence", 0.0),
             "negated":       str(bool(t.get("negated", 0))).lower(),
             "species":       t.get("species", "") or "",
@@ -147,7 +193,7 @@ def write_neo4j(triples: list, out_dir: Path) -> dict:
     node_files, edge_files = [], []
 
     # ── Node files: {entity_type}/nodes_{entity_type}.csv ──────────────
-    node_fields = ["id", "name", "entity_type", "id_source"]
+    node_fields = ["id", "name", "full_name", "entity_type", "id_source", "needs_review", "source_url", "synonyms", "evidence"]
     for slug, node_map in nodes.items():
         type_dir = out_dir / slug
         type_dir.mkdir(parents=True, exist_ok=True)
@@ -199,7 +245,7 @@ def _write_node_cypher(label: str, csv_path: Path, out_dir: Path, delim: str) ->
 CALL apoc.periodic.iterate(
     "LOAD CSV WITH HEADERS FROM 'file:///{rel}' AS row FIELDTERMINATOR '{delim}' RETURN row",
     "MERGE (n:{label} {{id: row.id}})
-     SET n.name = row.name, n.entity_type = row.entity_type",
+     SET n.name = row.name, n.full_name = row.full_name, n.entity_type = row.entity_type",
     {{batchSize: 1000, parallel: true}}
 ) YIELD batches, total RETURN batches, total;
 """
@@ -229,28 +275,71 @@ def _write_edge_cypher(relation: str, s: str, o: str,
 
 def write_metta(triples: list, out_dir: Path) -> dict:
     """Write unified MeTTa files from all triples."""
-    nodes_by_type: dict  = defaultdict(dict)
+    # Keyed by canonical ID only — entity_type is a majority-voted property, not a partition key.
+    node_mentions: dict  = defaultdict(lambda: {
+        "names": [], "canonical_names": [], "source_urls": [], "synonyms": [],
+        "slugs": [], "evidence": [], "needs_reviews": [],
+    })
     edges_by_type: dict  = defaultdict(list)
 
     for t in triples:
-        s_slug = _slug(t.get("subject_type", "other"))
-        o_slug = _slug(t.get("object_type",  "other"))
-        rel    = _slug(t.get("relation",      "related_to"))
-
         s_id  = _metta_id(t.get("subject_id", ""))
         o_id  = _metta_id(t.get("object_id",  ""))
-        s_name= t.get("subject_name", "")
-        o_name= t.get("object_name",  "")
 
-        if s_id and s_id not in nodes_by_type[s_slug]:
-            nodes_by_type[s_slug][s_id] = {"name": s_name, "slug": s_slug}
-        if o_id and o_id not in nodes_by_type[o_slug]:
-            nodes_by_type[o_slug][o_id] = {"name": o_name, "slug": o_slug}
+        for mid, name_key, canon_key, url_key, syn_key, type_key, ev_key, review_key in [
+            (s_id, "subject_name", "subject_canonical_name", "subject_source_url", "subject_synonyms", "subject_type", "subject_evidence", "subject_needs_review"),
+            (o_id, "object_name",  "object_canonical_name",  "object_source_url",  "object_synonyms",  "object_type",  "object_evidence",  "object_needs_review"),
+        ]:
+            if not mid:
+                continue
+            entry = node_mentions[mid]
+            name  = t.get(name_key, "") or ""
+            canon = t.get(canon_key, "") or ""
+            url   = t.get(url_key, "") or ""
+            syn   = t.get(syn_key, "") or ""
+            ev    = t.get(ev_key, "") or ""
+            if name:
+                entry["names"].append(name)
+            if canon:
+                entry["canonical_names"].append(canon)
+            if url:
+                entry["source_urls"].append(url)
+            if syn:
+                entry["synonyms"].append(syn)
+            if ev:
+                entry["evidence"].append(ev)
+            entry["slugs"].append(_slug(t.get(type_key, "other") or "other"))
+            entry["needs_reviews"].append(bool(t.get(review_key, False)))
 
+    id_to_row: dict = {}
+    id_to_slug: dict = {}
+    for mid, entry in node_mentions.items():
+        slug = pick_node_entity_type(entry["slugs"])   # slugs are already slug-cased; vote works the same
+        id_to_slug[mid] = slug
+        is_uncertain = any(entry["needs_reviews"])
+        id_to_row[mid] = {
+            "name": pick_node_name(entry["names"], entry["canonical_names"], is_uncertain),
+            "full_name": pick_node_full_name(entry["names"], entry["canonical_names"], is_uncertain),
+            "slug": slug,
+            "source_url": pick_node_source_url(entry["source_urls"]),
+            "synonyms": merge_node_synonyms(entry["synonyms"]),
+            "evidence": merge_node_evidence(entry["evidence"]),
+        }
+
+    for t in triples:
+        s_id   = _metta_id(t.get("subject_id", ""))
+        o_id   = _metta_id(t.get("object_id",  ""))
+        s_slug = id_to_slug.get(s_id) or _slug(t.get("subject_type", "other"))
+        o_slug = id_to_slug.get(o_id) or _slug(t.get("object_type",  "other"))
+        rel    = _slug(t.get("relation", "related_to"))
         edges_by_type[(s_slug, rel, o_slug)].append({
             "triple": f"({rel} ({s_slug} {s_id}) ({o_slug} {o_id}))",
             "t": t,
         })
+
+    nodes_by_type: dict = defaultdict(dict)
+    for mid, row in id_to_row.items():
+        nodes_by_type[id_to_slug[mid]][mid] = row
 
     node_files, edge_files = [], []
 
@@ -264,6 +353,14 @@ def write_metta(triples: list, out_dir: Path) -> dict:
                 f.write(f"({props['slug']} {mid})\n")
                 if props["name"]:
                     f.write(f'(name ({props["slug"]} {mid}) {_metta_val(props["name"])})\n')
+                if props.get("full_name"):
+                    f.write(f'(full_name ({props["slug"]} {mid}) {_metta_val(props["full_name"])})\n')
+                if props.get("source_url"):
+                    f.write(f'(node_source_url ({props["slug"]} {mid}) {_metta_val(props["source_url"])})\n')
+                if props.get("synonyms"):
+                    f.write(f'(synonyms ({props["slug"]} {mid}) {_metta_val(props["synonyms"])})\n')
+                if props.get("evidence"):
+                    f.write(f'(evidence ({props["slug"]} {mid}) {_metta_val(props["evidence"])})\n')
             f.write("\n")
         node_files.append(str(path))
 

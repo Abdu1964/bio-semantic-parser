@@ -21,8 +21,8 @@
 
 <!-- ── Header ── -->
 <header>
-  <img src="/static/logo.svg" width="36" height="42" alt="Bio Semantic Parser Logo" style="flex-shrink:0;display:block"/>
-  <span class="logo">Bio Semantic Parser</span>
+  <img src="/static/logo.svg" width="36" height="42" alt="Bio Semantic Parser Logo" style="flex-shrink:0;display:block;cursor:pointer" onclick="switchTab('pipeline')" title="Home"/>
+  <span class="logo" style="cursor:pointer" onclick="switchTab('pipeline')" title="Home">Bio Semantic Parser</span>
   <div class="header-right">
     <!-- Quick source chips in header -->
     <div id="header-sources" style="display:flex;align-items:center;gap:6px"></div>
@@ -75,12 +75,9 @@ function switchTab(tab) {
 async function loadUnifiedKG(fmt) {
   const sel = document.getElementById('unified-db-sel');
   if (!fmt) fmt = sel ? sel.value : 'neo4j';
-  // Sync selector to match
   if (sel && sel.value !== fmt) sel.value = fmt;
   const frame = document.getElementById('unified-frame');
   if (!frame) return;
-
-  // Find most recent compare_{fmt}.html across all run folders
   try {
     const r = await fetch(`/api/query/latest-compare?fmt=${fmt}`);
     const d = await r.json();
@@ -89,8 +86,6 @@ async function loadUnifiedKG(fmt) {
       return;
     }
   } catch(e) {}
-
-  // Fallback to unified graph.html
   const fallback = { neo4j: 'data/kg_output/unified_neo4j/graph.html', metta: 'data/kg_output/unified_metta/graph.html' };
   frame.src = '/api/file?path=' + encodeURIComponent(fallback[fmt]);
 }
@@ -516,43 +511,18 @@ async function loadUnifiedKG(fmt) {
     </select>
     <button onclick="loadUnifiedKG()" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer">↺ Refresh</button>
 <button onclick="window.open(document.getElementById('unified-frame').src,'_blank')" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer">↗ Full screen</button>
-    <button onclick="switchTab('query')" style="padding:5px 14px;background:transparent;border:1px solid #1f6feb55;border-radius:6px;color:#58a6ff;font-size:12px;cursor:pointer;font-weight:600">🔍 Query KG</button>
+<button onclick="switchTab('query')" style="padding:5px 14px;background:transparent;border:1px solid #1f6feb55;border-radius:6px;color:#58a6ff;font-size:12px;cursor:pointer;font-weight:600">🔍 Query KG</button>
   </div>
   <iframe id="unified-frame" src="about:blank"
     style="flex:1;width:100%;border:none;height:calc(100vh - 160px);min-height:500px"
     onload="
       try {
         const win = this.contentWindow;
-        const doc = win.document;
         setTimeout(() => {
           try {
-            // Find and click the Unified KG tab by text content (reliable across all papers)
-            const tabs = Array.from(doc.querySelectorAll('button.tab, .tab'));
-            const utab = tabs.find(t =>
-              t.textContent && t.textContent.trim().includes('Unified') &&
-              !t.textContent.includes('Verification') &&
-              !t.textContent.includes('PLN')
-            );
-            if (utab) {
-              utab.click();
-            } else if (typeof win.show === 'function') {
-              // Fallback: try show(2), show(3), show(4) until one shows "Unified"
-              for (let i = 2; i <= 5; i++) {
-                win.show(i);
-                const active = doc.querySelector('.tab.active');
-                if (active && active.textContent.includes('Unified') && !active.textContent.includes('Verification')) break;
-              }
-            }
+            if (win.network && typeof win.network.fit === 'function') win.network.fit();
           } catch(e){}
-          // Fit all vis.js networks after tab switch
-          setTimeout(() => {
-            try {
-              [win._network, win.network, win._unifiedNetwork].forEach(n => {
-                try { if(n && typeof n.fit==='function') n.fit(); } catch(e){}
-              });
-            } catch(e){}
-          }, 600);
-        }, 800);
+        }, 500);
       } catch(e){}
     "></iframe>
 </div>
