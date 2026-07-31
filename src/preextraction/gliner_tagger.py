@@ -86,17 +86,19 @@ def _get_model():
     """Lazy-load GLiNER-BioMed Base (cached after first call)."""
     global _model, _model_id
     model_id = os.getenv("GLINER_MODEL", "Ihor/gliner-biomed-base-v1.0")
-    if _model is None or _model_id != model_id:
+    if _model is not None and _model_id == model_id:
+        return _model
+    with _model_lock:
+        if _model is not None and _model_id == model_id:
+            return _model
         import torch
         from gliner import GLiNER
 
         model = GLiNER.from_pretrained(model_id)
         if torch.cuda.is_available():
             model = model.to("cuda")
-
-        with _model_lock:
-            _model    = model
-            _model_id = model_id
+        _model    = model
+        _model_id = model_id
     return _model
 
 

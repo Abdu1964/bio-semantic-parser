@@ -26,7 +26,10 @@ def write(records: list, run_dir: Path = None) -> dict:
     out_dir = (run_dir / "neo4j") if run_dir else _OUT_DIR
     # Rebuilt from scratch every call — type changes between re-exports would leave orphaned files otherwise.
     if out_dir.exists():
-        shutil.rmtree(out_dir)
+        resolved = out_dir.resolve()
+        if resolved == Path("/") or resolved == Path.home() or resolved == Path.cwd():
+            raise ValueError(f"Refusing to delete unsafe output dir: {resolved}")
+        shutil.rmtree(resolved)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Keyed by canonical ID only — entity_type is a majority-voted property, not a partition key.

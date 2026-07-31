@@ -74,6 +74,10 @@ async function _pollCommitRebuild(jobId, attempt = 0) {
     const r = await fetch(`/api/commit-status?job_id=${encodeURIComponent(jobId)}`);
     const d = await r.json();
     if (d.status === 'done') {
+      if (d.error) {
+        if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = `⚠ Rebuild failed: ${esc(d.error)}`; }
+        return;
+      }
       if (statusEl) statusEl.remove();
       rebuildComparePages(d);
       return;
@@ -2513,6 +2517,10 @@ window.openViewer             = openViewer;
 window.discardRun             = discardRun;
 window.commitPLN              = commitPLN;
 window.clearAndReset          = AppState.clearAndReset;
+window.exportDownload         = exportDownload;
+window.toggleQbExportMenu     = toggleQbExportMenu;
+window.toggleUnifiedExportMenu = toggleUnifiedExportMenu;
+window.exportUnifiedKG        = exportUnifiedKG;
 
 // ── Feature flag: PLN optional sidecar ──────────────────────────────────────
 // Loaded once at page init from /api/config. Hides all PLN UI when false.
@@ -2570,4 +2578,76 @@ window.addEventListener('load', async () => {
 
 window.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeModal();
+  // Close any open export menus on Escape
+  document.querySelectorAll('.qb-export-menu').forEach(m => m.classList.remove('open'));
 });
+
+// ── Export helpers ─────────────────────────────────────────────────────────────
+
+async function exportDownload(url, body, filename) {
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: 'Export failed' }));
+      alert(err.error || `Export failed (${resp.status})`);
+      return;
+    }
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  }
+}
+
+function toggleQbExportMenu(e) {
+  e.stopPropagation();
+  const menu = document.getElementById('qb-export-menu');
+  if (menu) menu.classList.toggle('open');
+}
+
+function toggleUnifiedExportMenu(e) {
+  e.stopPropagation();
+  const menu = document.getElementById('unified-export-menu');
+  if (menu) menu.classList.toggle('open');
+}
+
+// Close export menus on outside click
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.qb-export-dropdown')) {
+    document.querySelectorAll('.qb-export-menu').forEach(m => m.classList.remove('open'));
+  }
+});
+
+function exportUnifiedKG(fmt) {
+  const dbSel = document.getElementById('unified-db-sel');
+  const db = dbSel ? dbSel.value : 'neo4j';
+  const ext = fmt === 'json' ? 'json' : fmt === 'metta' ? 'metta' : 'zip';
+  
+  let paper = '';
+  try {
+    const frame = document.getElementById('unified-frame');
+    if (frame && frame.contentWindow) {
+      const doc = frame.contentDocument || frame.contentWindow.document;
+      const filter = doc.getElementById('paper-filter');
+      if (filter && filter.value && filter.value !== 'all') {
+        paper = filter.value;
+      }
+    }
+  } catch (e) {
+    console.error('Could not read paper filter from iframe:', e);
+  }
+
+  exportDownload('/api/export/unified', { db, format: fmt, paper: paper }, `unified_kg_${db}.${ext}`);
+  // Close the menu
+  document.querySelectorAll('#unified-export-menu').forEach(m => m.classList.remove('open'));
+}

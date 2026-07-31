@@ -21,6 +21,7 @@ from api.routes.human_review import router as _hr_router
 from api.routes.kg                import router as _kg_router
 from api.routes.source_grounding  import router as _sg_router
 from api.routes.misc              import router as _misc_router
+from api.routes.export       import router as _export_router
 
 
 @asynccontextmanager
@@ -42,3 +43,4 @@ app.include_router(_hr_router)
 app.include_router(_kg_router)
 app.include_router(_sg_router)
 app.include_router(_misc_router)
+app.include_router(_export_router)
