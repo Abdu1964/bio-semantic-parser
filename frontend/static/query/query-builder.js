@@ -32,6 +32,7 @@
 
   let _db='neo4j', _nodes=[], _edges=[], _network=null;
   let _drag=null, _connect=null, _nid=0, _eid=0;
+  let _lastQueryParams = null;   // stored after a successful query for export
 
   async function initBuilder(){
     bindDB();
@@ -557,6 +558,16 @@
     namedNodes.slice(2).forEach((n,i)=>params.append('entity_extra', n.name));
     if(relations[0]) params.set('relation', relations[0]);
 
+    // Store params for export
+    _lastQueryParams = {
+      db: _db,
+      entity1: namedNodes[0]?.name || '',
+      entity2: namedNodes[1]?.name || '',
+      relation: relations[0] || '',
+      entity_extra: namedNodes.slice(2).map(n => n.name),
+      limit: 150,
+    };
+
     const result=document.getElementById('qb-result');
     const frame=document.getElementById('qb-result-frame');
     const meta=document.getElementById('qb-result-meta');
@@ -564,11 +575,15 @@
     try{
       frame.src=`/api/query/subgraph-html?${params}`;
       result.classList.add('show');
-      if(meta) meta.innerHTML=`DB: <strong>${_db.toUpperCase()}</strong> &nbsp;·&nbsp;
-        ${_nodes.map(n=>`<span style="color:${ts(n.type).color}">${n.name||n.type}</span>`).join(' → ')}
-        <button onclick="window.open('/api/query/subgraph-html?${params}','_blank')"
-          style="margin-left:12px;padding:4px 10px;background:transparent;border:1px solid var(--border,#30363d);
-          border-radius:5px;color:var(--text2,#8b949e);font-size:11px;cursor:pointer">↗ Full screen</button>`;
+      if(meta) {
+        const info = meta.querySelector('.qb-result-info');
+        const spacer = meta.querySelector('.qb-export-spacer');
+        if(info) info.innerHTML=`DB: <strong>${_db.toUpperCase()}</strong> &nbsp;·&nbsp;
+          ${_nodes.map(n=>`<span style="color:${ts(n.type).color}">${n.name||n.type}</span>`).join(' → ')}
+          <button onclick="window.open('/api/query/subgraph-html?${params}','_blank')"
+            style="margin-left:12px;padding:4px 10px;background:transparent;border:1px solid var(--border,#30363d);
+            border-radius:5px;color:var(--text2,#8b949e);font-size:11px;cursor:pointer">↗ Full screen</button>`;
+      }
       result.scrollIntoView({behavior:'smooth',block:'start'});
     }catch(e){ alert('Query failed: '+e.message); }
     finally{ btn.disabled=false; btn.textContent='▶ Run Query'; }
@@ -585,6 +600,9 @@
     if(c)c.querySelectorAll('.qb-node,.qb-node-edit,.qb-rel-picker').forEach(el=>el.remove());
     redrawEdges();showHint();
     document.getElementById('qb-result')?.classList.remove('show');
+    const info = document.querySelector('.qb-result-info');
+    if(info) info.innerHTML = '';
+    _lastQueryParams = null;
     if(_network){_network.destroy();_network=null;}
   }
   function showHint(){const h=document.getElementById('qb-canvas-hint');if(h)h.style.display='';}
@@ -609,4 +627,21 @@
   };
 
   window.initQueryBuilder=initBuilder;
+
+  // ── Export query results ──────────────────────────────────────────────────
+  window.exportQueryResult = function(fmt) {
+    if (!_lastQueryParams) {
+      alert('Run a query first before exporting.');
+      return;
+    }
+    const ext = fmt === 'json' ? 'json' : fmt === 'metta' ? 'metta' : 'zip';
+    const nameParts = ['query'];
+    if (_lastQueryParams.entity1) nameParts.push(_lastQueryParams.entity1.replace(/\s+/g, '_'));
+    if (_lastQueryParams.relation) nameParts.push(_lastQueryParams.relation);
+    if (_lastQueryParams.entity2) nameParts.push(_lastQueryParams.entity2.replace(/\s+/g, '_'));
+    const baseName = nameParts.join('_').slice(0, 60);
+    exportDownload('/api/export/subgraph', { ..._lastQueryParams, format: fmt }, `${baseName}.${ext}`);
+    // Close the menu
+    document.querySelectorAll('#qb-export-menu').forEach(m => m.classList.remove('open'));
+  };
 })();

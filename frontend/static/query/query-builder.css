@@ -237,6 +237,59 @@
 
 .qb-tool-clear:hover { border-color: var(--text2); color: var(--text1, #e6edf3); }
 
+/* ── Export dropdown ── */
+.qb-export-dropdown {
+  position: relative;
+}
+
+.qb-tool-export {
+  background: transparent;
+  border: 1px solid var(--border, #30363d);
+  color: var(--text2, #8b949e);
+  display: flex;
+  align-items: center;
+}
+.qb-tool-export:hover { border-color: var(--text2); color: var(--text1, #e6edf3); }
+
+.qb-export-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 180px;
+  background: #161b22;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  padding: 4px;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.qb-export-menu.open {
+  display: block;
+}
+
+.qb-export-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text1, #e6edf3);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+  font-family: inherit;
+  transition: background 0.1s;
+  white-space: nowrap;
+}
+.qb-export-menu button:hover {
+  background: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+}
+
 /* ── Node edit popup ── */
 .qb-node-edit {
   position: fixed;   /* fixed = viewport-relative, never clipped */
