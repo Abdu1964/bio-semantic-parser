@@ -9,10 +9,13 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+_FRONTEND = _ROOT / "frontend" / "static"
 
 from api.routes.query        import router as _query_router
 from api.routes.sources      import router as _sources_router
@@ -40,3 +43,7 @@ app.include_router(_pipeline_router)
 app.include_router(_hr_router)
 app.include_router(_kg_router)
 app.include_router(_misc_router)
+
+if _FRONTEND.is_dir():
+    app.mount("/static", StaticFiles(directory=_FRONTEND), name="static")
+    app.mount("/", StaticFiles(directory=_FRONTEND, html=True), name="frontend")
