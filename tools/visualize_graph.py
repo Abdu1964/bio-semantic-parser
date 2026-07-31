@@ -768,7 +768,7 @@ function initNetwork() {{
     multiselect: false
   }},
   edges: {{
-    smooth: {{type: 'dynamic', roundness: 0.3}},
+    smooth: {{type: 'curvedCW', roundness: 0.2}},
     scaling: {{
       label: {{
         enabled: true,
