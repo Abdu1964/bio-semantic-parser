@@ -57,6 +57,8 @@ def _find_entity_spans(text: str, entity_name: str) -> list[dict]:
 
 def _find_checkpoint_dir(doc_id: str) -> Optional[Path]:
     """Find the checkpoint directory for a document ID, checking direct name, case-insensitive name, and chunk metadata."""
+    if not doc_id or ".." in doc_id or "/" in doc_id or "\\" in doc_id:
+        return None
     checkpoints_root = _ROOT / "data" / "checkpoints"
     if not checkpoints_root.exists():
         return None

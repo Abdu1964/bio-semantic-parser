@@ -1714,7 +1714,7 @@ async function loadHumanReview(runDir, stagingDb) {
         </div>` : ''}
         
         <div style="margin-top:10px;margin-bottom:6px">
-          <button id="rc-sg-btn-${i}" onclick="event.stopPropagation();verifyReviewSource(${i}, '${esc(r.subject_name||'')}', '${esc(r.object_name||'')}', '${esc(r.relation||'')}')"
+          <button id="rc-sg-btn-${i}" data-subj="${esc(r.subject_name||'')}" data-obj="${esc(r.object_name||'')}" data-rel="${esc(r.relation||'')}" onclick="event.stopPropagation();verifyReviewSource(${i})"
             style="background:rgba(255,235,59,.15);border:1px solid #fbc02d;border-radius:6px;padding:3px 12px;color:#fbc02d;font-size:11px;cursor:pointer;font-family:var(--font);font-weight:600;white-space:nowrap">
             🔍 Verify in source
           </button>
@@ -1861,10 +1861,14 @@ function toggleReviewCard(i) {
   if (chevron) chevron.textContent = open ? '▼' : '▲';
 }
 
-function verifyReviewSource(i, subjName, objName, relation) {
+function verifyReviewSource(i) {
   const btn = document.getElementById(`rc-sg-btn-${i}`);
   const resultDiv = document.getElementById(`rc-sg-result-${i}`);
   if (!btn || !resultDiv) return;
+  
+  const subjName = btn.getAttribute('data-subj') || '';
+  const objName  = btn.getAttribute('data-obj') || '';
+  const relation = btn.getAttribute('data-rel') || '';
   
   btn.disabled = true;
   btn.innerHTML = '🔍 Searching…';
@@ -1889,7 +1893,7 @@ function verifyReviewSource(i, subjName, objName, relation) {
       resultDiv.innerHTML = data.chunks.map((c, idx) => `
         <div style="background:#ffffff;border:1px solid #d0d7de;border-radius:6px;padding:8px 12px;margin-bottom:8px;color:#000000;font-size:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
           <div style="font-size:10px;color:#6e7681;margin-bottom:6px;text-transform:uppercase;font-weight:600">Chunk ${c.chunk_index}</div>
-          <div style="line-height:1.6">${c.html}</div>
+          <div style="line-height:1.6">${c.highlighted_html}</div>
         </div>
       `).join('');
     } else {

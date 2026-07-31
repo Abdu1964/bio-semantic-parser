@@ -581,7 +581,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
   .sg-btn:hover {{ background: rgba(88,166,255,.22); transform: translateY(-1px); box-shadow: 0 4px 14px rgba(88,166,255,.15); }}
   .sg-btn:disabled {{ opacity: .5; cursor: wait; }}
   .sg-loading {{ color: #4a7fa5; font-size: 12px; padding: 12px 0; display: flex; align-items: center; gap: 8px; }}
-  .sg-loading .spinner {{ width: 16px; height: 16px; border: 2px solid #1a3350; border-top-color: #58a6ff; border-radius: 50%; animation: sg-spin .7s linear infinite; }}
+  .spinner {{ width: 16px; height: 16px; border: 2px solid #1a3350; border-top-color: #58a6ff; border-radius: 50%; animation: sg-spin .7s linear infinite; }}
   @keyframes sg-spin {{ to {{ transform: rotate(360deg); }} }}
   .sg-chunk {{ background: rgba(255,255,255,.03); border: 1px solid #1a3350; border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; transition: border-color .2s; }}
   .sg-chunk:hover {{ border-color: #58a6ff44; }}

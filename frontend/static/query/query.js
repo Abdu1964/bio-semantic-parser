@@ -314,7 +314,7 @@
     const resultDiv = document.getElementById('qsg-result');
     if (!btn || !resultDiv) return;
 
-    const cacheKey = `${ctx.docId}|${ctx.subjName}|${ctx.objName}`;
+    const cacheKey = `${ctx.docId}|${ctx.subjName}|${ctx.objName}|${ctx.rel}`;
 
     // Serve from cache if already fetched
     if (_sgCache[cacheKey]) {
