@@ -964,8 +964,9 @@ function showNodePanel(nodeId) {{
   if (props.id_source) {{
     rows.push(['Source', `<span class="pill" style="background:rgba(56,189,248,.1);color:#7dd3fc;border:1px solid rgba(56,189,248,.3)">${{esc(String(props.id_source).toUpperCase())}}</span>`]);
   }}
-  if (props.source_url) {{
-    rows.push(['Record', `<a href="${{esc(props.source_url)}}" target="_blank" rel="noopener noreferrer" class="source-btn">🔗 View source ↗</a>`]);
+  const u = String(props.source_url);
+  if (/^https?:\/\//i.test(u)) {{
+    rows.push(['Record', `<a href="${{esc(u)}}" target="_blank" rel="noopener noreferrer" class="source-btn">🔗 View source ↗</a>`]);
   }}
   if (props.evidence) {{
     const quotes = String(props.evidence).split('\\n').map(s => s.trim()).filter(Boolean);

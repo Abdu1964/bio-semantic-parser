@@ -23,6 +23,7 @@ from api.routes.pipeline     import router as _pipeline_router
 from api.routes.human_review import router as _hr_router
 from api.routes.kg           import router as _kg_router
 from api.routes.misc         import router as _misc_router
+from api.routes.export       import router as _export_router
 
 
 @asynccontextmanager
@@ -43,6 +44,7 @@ app.include_router(_pipeline_router)
 app.include_router(_hr_router)
 app.include_router(_kg_router)
 app.include_router(_misc_router)
+app.include_router(_export_router)
 
 if _FRONTEND.is_dir():
     app.mount("/static", StaticFiles(directory=_FRONTEND), name="static")
