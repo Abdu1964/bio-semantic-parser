@@ -522,7 +522,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
   .conf-fill {{ height: 100%; border-radius: 2px; background: linear-gradient(90deg, #00c9b1, #4f9cf9); }}
   #placeholder {{ color: #2d5a80; font-size: 13px; text-align: center; padding: 60px 20px; }}
   #placeholder .icon {{ font-size: 48px; margin-bottom: 16px; opacity: .5; }}
-  #legend {{ position: absolute; bottom: 16px; left: 16px; background: rgba(6,13,26,.88); border: 1px solid #1a3350; border-radius: 12px; padding: 12px 16px; font-size: 11px; max-width: 210px; backdrop-filter: blur(8px); }}
+  #legend {{ position: absolute; top: 16px; left: 16px; background: rgba(6,13,26,.88); border: 1px solid #1a3350; border-radius: 12px; padding: 12px 16px; font-size: 11px; max-width: 210px; backdrop-filter: blur(8px); }}
   #legend h4 {{ color: #4a7fa5; margin-bottom: 8px; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }}
   .legend-item {{ display: flex; align-items: center; gap: 6px; margin-bottom: 3px; color: #c9d1d9; }}
   .legend-dot {{ width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }}
