@@ -1716,6 +1716,15 @@ async function loadHumanReview(runDir, stagingDb) {
             style="background:rgba(56,189,248,.15);border:1px solid var(--blue);border-radius:6px;padding:3px 12px;color:var(--blue);font-size:11px;cursor:pointer;font-family:var(--font);font-weight:600;white-space:nowrap;align-self:flex-end">
             ↕ Apply suggestion</button>` : ''}
         </div>` : ''}
+        
+        <div style="margin-top:10px;margin-bottom:6px">
+          <button id="rc-sg-btn-${i}" data-subj="${esc(r.subject_name||'')}" data-obj="${esc(r.object_name||'')}" data-rel="${esc(r.relation||'')}" onclick="event.stopPropagation();verifyReviewSource(${i})"
+            style="background:rgba(255,235,59,.15);border:1px solid #fbc02d;border-radius:6px;padding:3px 12px;color:#fbc02d;font-size:11px;cursor:pointer;font-family:var(--font);font-weight:600;white-space:nowrap">
+            🔍 Verify in source
+          </button>
+          <div id="rc-sg-result-${i}" style="margin-top:8px"></div>
+        </div>
+
         <div id="id-correction-${i}" style="margin-top:6px;padding:8px 10px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:8px;display:${isTextEntity ? 'block' : 'none'}">
           <div style="color:#f59e0b;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:6px">Canonical ID Correction</div>
           <div id="subj-id-row-${i}" style="display:${hasTextSubj ? 'flex' : 'none'};align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
@@ -1854,6 +1863,52 @@ function toggleReviewCard(i) {
   const open = body.style.display !== 'none';
   body.style.display    = open ? 'none' : 'block';
   if (chevron) chevron.textContent = open ? '▼' : '▲';
+}
+
+function verifyReviewSource(i) {
+  const btn = document.getElementById(`rc-sg-btn-${i}`);
+  const resultDiv = document.getElementById(`rc-sg-result-${i}`);
+  if (!btn || !resultDiv) return;
+  
+  const subjName = btn.getAttribute('data-subj') || '';
+  const objName  = btn.getAttribute('data-obj') || '';
+  const relation = btn.getAttribute('data-rel') || '';
+  
+  btn.disabled = true;
+  btn.innerHTML = '🔍 Searching…';
+  
+  const docId = window._outputData && window._outputData.run_dir ? window._outputData.run_dir.split('/').pop() : '';
+  
+  fetch('/api/source-grounding', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      doc_id: docId,
+      subject_name: subjName,
+      object_name: objName,
+      relation: relation
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    btn.disabled = false;
+    btn.innerHTML = '🔍 Verify in source';
+    if (data.chunks && data.chunks.length > 0) {
+      resultDiv.innerHTML = data.chunks.map((c, idx) => `
+        <div style="background:#ffffff;border:1px solid #d0d7de;border-radius:6px;padding:8px 12px;margin-bottom:8px;color:#000000;font-size:12px;box-shadow:0 1px 3px rgba(0,0,0,0.1)">
+          <div style="font-size:10px;color:#6e7681;margin-bottom:6px;text-transform:uppercase;font-weight:600">Chunk ${c.chunk_index}</div>
+          <div style="line-height:1.6">${c.highlighted_html}</div>
+        </div>
+      `).join('');
+    } else {
+      resultDiv.innerHTML = `<div style="color:#8b949e;font-size:12px;padding:8px">No source sentences found.</div>`;
+    }
+  })
+  .catch(err => {
+    btn.disabled = false;
+    btn.innerHTML = '🔍 Verify in source';
+    resultDiv.innerHTML = `<div style="color:#ff7b72;font-size:12px;padding:8px">Error: ${err.message}</div>`;
+  });
 }
 
 function applySuggestion(idx) {

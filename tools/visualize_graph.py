@@ -575,6 +575,27 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
   .paper-actions {{ display: flex; gap: 6px; flex-wrap: wrap; }}
   .paper-link {{ font-size: 10px; padding: 3px 8px; border-radius: 4px; border: 1px solid #1a3350; color: #4a7fa5; text-decoration: none; transition: all .15s; }}
   .paper-link:hover {{ border-color: #00c9b1; color: #00c9b1; }}
+
+  /* ── Source grounding panel ────────────────────────────────────────── */
+  .sg-btn {{ display: inline-flex; align-items: center; gap: 7px; background: rgba(88,166,255,.12); border: 1px solid rgba(88,166,255,.35); color: #58a6ff; padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; transition: all .15s; font-family: inherit; }}
+  .sg-btn:hover {{ background: rgba(88,166,255,.22); transform: translateY(-1px); box-shadow: 0 4px 14px rgba(88,166,255,.15); }}
+  .sg-btn:disabled {{ opacity: .5; cursor: wait; }}
+  .sg-loading {{ color: #4a7fa5; font-size: 12px; padding: 12px 0; display: flex; align-items: center; gap: 8px; }}
+  .spinner {{ width: 16px; height: 16px; border: 2px solid #1a3350; border-top-color: #58a6ff; border-radius: 50%; animation: sg-spin .7s linear infinite; }}
+  @keyframes sg-spin {{ to {{ transform: rotate(360deg); }} }}
+  .sg-chunk {{ background: rgba(255,255,255,.03); border: 1px solid #1a3350; border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; transition: border-color .2s; }}
+  .sg-chunk:hover {{ border-color: #58a6ff44; }}
+  .sg-chunk-header {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }}
+  .sg-chunk-section {{ font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; color: #58a6ff; background: rgba(88,166,255,.1); padding: 2px 8px; border-radius: 4px; }}
+  .sg-chunk-badge {{ font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 4px; }}
+  .sg-chunk-badge.both {{ background: rgba(35,134,54,.15); color: #3fb950; border: 1px solid rgba(35,134,54,.35); }}
+  .sg-chunk-badge.partial {{ background: rgba(210,153,34,.12); color: #d29922; border: 1px solid rgba(210,153,34,.3); }}
+  .sg-chunk-text {{ font-size: 12.5px; color: #000000; background: #ffffff; line-height: 1.65; }}
+  .sg-chunk-text .sg-subject, .sg-chunk-text .sg-object {{ background: #ffff00; color: #000000; border-bottom: none; padding: 1px 4px; border-radius: 3px; font-weight: 700; }}
+  .sg-chunk-text .sg-source-sentence {{ background: rgba(255, 235, 59, 0.25); border-left: 3px solid #fbc02d; padding: 2px 6px; border-radius: 4px; display: inline; }}
+  .sg-empty {{ color: #4a7fa5; font-size: 12px; padding: 16px 0; text-align: center; }}
+  .sg-paper-link {{ display: inline-flex; align-items: center; gap: 6px; color: #58a6ff; font-size: 11px; text-decoration: none; margin-top: 8px; padding: 4px 0; transition: color .15s; }}
+  .sg-paper-link:hover {{ color: #79c0ff; }}
 </style>
 </head>
 <body>
@@ -1101,6 +1122,14 @@ function showEdgePanel(edgeId) {{
       <div class="field-value canonical">${{e._paper}}${{e._section ? '  ·  ' + e._section : ''}}</div>
     </div>`;
 
+  html += `
+    <div class="field-group">
+      <button class="sg-btn" id="sg-verify-btn" onclick="verifySourceGrounding()">
+        &#128269; Verify source text
+      </button>
+      <div id="sg-result"></div>
+    </div>`;
+
   const ctx = [e._species, e._tissue, e._condition, e._effect_size].filter(Boolean);
   if (ctx.length > 0) html += `
     <div class="field-group">
@@ -1137,6 +1166,151 @@ function showEdgePanel(edgeId) {{
   document.getElementById('panel-content').innerHTML = html;
   // Highlight the clicked edge
   network.selectEdges([edgeId]);
+}}
+
+// ── Source grounding verification (Modal popup) ─────────────────────────────
+function openSgModal(title, content) {{
+  let m = document.getElementById('sg-modal-overlay');
+  if (!m) {{
+    m = document.createElement('div');
+    m.id = 'sg-modal-overlay';
+    m.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:999999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);padding:20px;box-sizing:border-box;';
+    m.innerHTML = `
+      <style>
+        #sg-modal-body .sg-chunk {{ background: #ffffff !important; border: 1px solid #d0d7de !important; box-shadow: 0 1px 3px rgba(0,0,0,0.08) !important; }}
+        #sg-modal-body .sg-chunk-text {{ color: #000000 !important; background: #ffffff !important; }}
+        #sg-modal-body .sg-subject, #sg-modal-body .sg-object {{
+          background: #ffff00 !important;
+          color: #000000 !important;
+          font-weight: 700 !important;
+          border-bottom: none !important;
+          padding: 1px 4px !important;
+          border-radius: 3px !important;
+        }}
+        #sg-modal-body .sg-source-sentence {{
+          background: rgba(255, 235, 59, 0.25) !important;
+          border-left: 3px solid #fbc02d !important;
+          padding: 2px 6px !important;
+          border-radius: 4px !important;
+          display: inline !important;
+        }}
+      </style>
+      <div style="background:#0d1117;border:1px solid #30363d;border-radius:12px;width:100%;max-width:800px;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 25px 50px -12px rgba(0,0,0,0.85);overflow:hidden;">
+        <div style="padding:16px 20px;border-bottom:1px solid #21262d;display:flex;align-items:center;justify-content:space-between;background:#161b22;">
+          <div id="sg-modal-title" style="font-size:15px;font-weight:700;color:#e6edf3;display:flex;align-items:center;gap:8px;"></div>
+          <button onclick="closeSgModal()" style="background:transparent;border:none;color:#8b949e;font-size:20px;cursor:pointer;padding:4px 8px;line-height:1;">✕</button>
+        </div>
+        <div id="sg-modal-body" style="padding:20px;overflow-y:auto;flex:1;"></div>
+      </div>
+    `;
+    m.addEventListener('click', (e) => {{ if (e.target === m) closeSgModal(); }});
+    document.body.appendChild(m);
+  }}
+  document.getElementById('sg-modal-title').innerHTML = title || '🔍 Source Text Verification';
+  document.getElementById('sg-modal-body').innerHTML = content || '';
+  m.style.display = 'flex';
+}}
+
+function closeSgModal() {{
+  const m = document.getElementById('sg-modal-overlay');
+  if (m) m.style.display = 'none';
+}}
+
+function verifySourceGrounding() {{
+  // Find the currently selected edge
+  const selectedEdges = network.getSelectedEdges();
+  if (!selectedEdges.length) return;
+  const edgeId = selectedEdges[0];
+  const e = edgeMap[edgeId];
+  if (!e) return;
+
+  const btn = document.getElementById('sg-verify-btn');
+  if (btn) {{
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Searching…';
+  }}
+
+  // Determine doc_id: prefer the edge's paper, fall back to header badge
+  let docId = e._paper || '';
+  if (!docId) {{
+    const badge = document.querySelector('#src-badge');
+    if (badge) docId = badge.textContent.trim();
+  }}
+
+  if (!docId) {{
+    if (btn) {{
+      btn.disabled = false;
+      btn.innerHTML = '&#128269; Verify source text';
+    }}
+    openSgModal('🔍 Source Text Verification', '<div class="sg-empty" style="padding:20px;text-align:center;color:#8b949e;">No source paper identified for this relation.</div>');
+    return;
+  }}
+
+  openSgModal(
+    `🔍 Grounding: <span style="color:#58a6ff;">${{esc(e._subject_name)}}</span> ⟶ <span style="color:#f59e0b;">${{esc(e._relation.replace(/_/g,' '))}}</span> ⟶ <span style="color:#3fb950;">${{esc(e._object_name)}}</span>`,
+    `<div style="display:flex;align-items:center;justify-content:center;padding:40px;color:#8b949e;gap:10px;"><span class="spinner"></span> Searching text chunks in <strong>${{esc(docId)}}</strong>…</div>`
+  );
+
+  fetch('/api/source-grounding', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify({{
+      doc_id: docId,
+      subject_name: e._subject_name,
+      object_name: e._object_name,
+      relation: e._relation
+    }})
+  }})
+  .then(r => r.json())
+  .then(data => {{
+    if (btn) {{
+      btn.disabled = false;
+      btn.innerHTML = '&#128269; Verify source text';
+    }}
+
+    if (data.error) {{
+      document.getElementById('sg-modal-body').innerHTML = `<div class="sg-empty" style="color:#f85149;padding:20px;">${{esc(data.error)}}</div>`;
+      return;
+    }}
+
+    if (!data.chunks || data.chunks.length === 0) {{
+      document.getElementById('sg-modal-body').innerHTML = `<div class="sg-empty" style="padding:30px;text-align:center;color:#8b949e;">No text chunks found mentioning "${{esc(e._subject_name)}}" or "${{esc(e._object_name)}}" in document <strong>${{esc(docId)}}</strong>.</div>`;
+      return;
+    }}
+
+    let html = `<div style="margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;">`;
+    html += `<div style="font-size:11px;color:#4a7fa5;font-weight:700;text-transform:uppercase;letter-spacing:.8px;">Source Document: <strong style="color:#e6edf3;">${{esc(docId)}}</strong> · ${{data.matched_count}} of ${{data.total_chunks}} chunks matched</div>`;
+    if (data.source_url) {{
+      html += `<a class="sg-paper-link" href="${{esc(data.source_url)}}" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:12px;font-weight:600;">View original paper ↗</a>`;
+    }}
+    html += `</div>`;
+
+    for (const chunk of data.chunks) {{
+      const badgeText = chunk.has_both ? 'S + O' : chunk.subject_spans.length ? 'S only' : 'O only';
+      const badgeStyle = chunk.has_both 
+        ? 'background:rgba(35,134,54,.2);color:#3fb950;border:1px solid rgba(35,134,54,.4);padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;'
+        : 'background:rgba(210,153,34,.15);color:#d29922;border:1px solid rgba(210,153,34,.3);padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;';
+      
+      html += `
+        <div class="sg-chunk" style="background:#ffffff;border:1px solid #d0d7de;box-shadow:0 1px 3px rgba(0,0,0,0.08);border-radius:8px;padding:14px;margin-bottom:12px;">
+          <div class="sg-chunk-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <span class="sg-chunk-section" style="font-size:11px;font-weight:700;color:#0969da;background:rgba(9,105,218,.1);padding:2px 8px;border-radius:4px;text-transform:uppercase;">${{esc(chunk.section)}}</span>
+            <span style="${{badgeStyle}}">${{badgeText}}</span>
+          </div>
+          <div class="sg-chunk-text" style="font-size:13px;line-height:1.7;color:#000000;background:#ffffff;word-break:break-word;">${{chunk.highlighted_html}}</div>
+        </div>`;
+    }}
+
+    document.getElementById('sg-modal-body').innerHTML = html;
+  }})
+  .catch(err => {{
+    if (btn) {{
+      btn.disabled = false;
+      btn.innerHTML = '&#128269; Verify source text';
+    }}
+    const body = document.getElementById('sg-modal-body');
+    if (body) body.innerHTML = `<div class="sg-empty" style="color:#f85149;padding:20px;">Error: ${{esc(err.message)}}</div>`;
+  }});
 }}
 
 function togglePapersPanel() {{
@@ -1182,10 +1356,13 @@ network.on('doubleClick', function(params) {{
 }});
   // Expose panel functions on window from INSIDE initNetwork where they are in scope.
   // These are defined as inner functions of initNetwork, so they must be exported here.
-  window.showNodePanel = showNodePanel;
-  window.showEdgePanel = showEdgePanel;
-  window.hidePanel     = hidePanel;
-  window.searchNodes   = searchNodes;
+  window.showNodePanel         = showNodePanel;
+  window.showEdgePanel         = showEdgePanel;
+  window.hidePanel             = hidePanel;
+  window.searchNodes           = searchNodes;
+  window.verifySourceGrounding = verifySourceGrounding;
+  window.openSgModal           = openSgModal;
+  window.closeSgModal          = closeSgModal;
 }} // end initNetwork
 
 window.addEventListener('load', function() {{

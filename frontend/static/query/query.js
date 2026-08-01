@@ -256,9 +256,13 @@
     });
   }
 
+  // ── Source grounding cache (keyed by "doc_id|subject|object") ─────────────
+  const _sgCache = {};
+
   function showEdgeDetail(edge) {
     const detail = document.getElementById('query-edge-detail');
     if (!detail) return;
+
     const from = edge.from || '';
     const to   = edge.to   || '';
     const rel  = edge._relation || edge.label || '';
@@ -266,15 +270,121 @@
     const papers = (edge._source_papers || []).join(', ') || '—';
     const reason = edge._reasoning || '—';
 
-    const relLabel   = esc(String(rel).replace(/_/g,' '));
-    const reasonText = reason !== '—' ? esc(reason.length > 200 ? reason.slice(0,200) + '…' : reason) : '';
+    // Source grounding fields injected by the enriched /api/query/subgraph endpoint
+    const subjName = edge._subject_name || from;
+    const objName  = edge._object_name  || to;
+    const docId    = edge._doc_id       || (edge._source_papers || [])[0] || '';
+    const section  = edge._section      || '';
+
+    const relLabel   = esc(String(rel).replace(/_/g, ' '));
+    const reasonText = reason !== '—'
+      ? esc(reason.length > 200 ? reason.slice(0, 200) + '…' : reason)
+      : '';
+    const sectionBit = section
+      ? ` · <span style="color:var(--text3,#6e7681)">${esc(section)}</span>`
+      : '';
+
     detail.innerHTML = `
-      <div style="font-size:12px;color:var(--text1,#e6edf3);padding:12px;background:var(--surface2,#0d1117);border-radius:8px;margin-top:12px;border:1px solid var(--border,#30363d)">
-        <div style="font-weight:700;margin-bottom:8px">${esc(from)} → <span style="color:#F59E0B">${relLabel}</span> → ${esc(to)}</div>
-        <div style="color:var(--text3,#6e7681);font-size:11px">Confidence: <strong style="color:var(--text1,#e6edf3)">${esc(conf)}</strong> · Papers: ${esc(papers)}</div>
-        ${reasonText ? `<div style="color:var(--text3,#6e7681);font-size:11px;margin-top:6px">${reasonText}</div>` : ''}
+      <div class="qsg-edge-card">
+        <div class="qsg-triple">${esc(from)} <span class="qsg-arrow">→</span> <span class="qsg-predicate">${relLabel}</span> <span class="qsg-arrow">→</span> ${esc(to)}</div>
+        <div class="qsg-meta">Confidence: <strong>${esc(conf)}</strong>${sectionBit} · Papers: ${esc(papers)}</div>
+        ${reasonText ? `<div class="qsg-reason">${reasonText}</div>` : ''}
+
+        ${docId ? `
+        <div style="margin-top:10px">
+          <button class="qsg-verify-btn" id="qsg-btn" onclick="runQuerySourceGrounding()">
+            🔍 Verify in source text
+          </button>
+        </div>
+        <div id="qsg-result"></div>
+        ` : `<div class="qsg-no-source">No source paper linked — commit to unified KG to enable source grounding.</div>`}
       </div>`;
+
     detail.style.display = 'block';
+
+    // Stash current edge context for the grounding handler
+    window._qsgEdge = { docId, subjName, objName, rel, from, to };
+  }
+
+  window.runQuerySourceGrounding = function () {
+    const ctx = window._qsgEdge;
+    if (!ctx || !ctx.docId) return;
+
+    const btn       = document.getElementById('qsg-btn');
+    const resultDiv = document.getElementById('qsg-result');
+    if (!btn || !resultDiv) return;
+
+    const cacheKey = `${ctx.docId}|${ctx.subjName}|${ctx.objName}|${ctx.rel}`;
+
+    // Serve from cache if already fetched
+    if (_sgCache[cacheKey]) {
+      _renderGrounding(resultDiv, _sgCache[cacheKey], ctx);
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="qsg-spinner"></span> Searching…';
+    resultDiv.innerHTML = '';
+
+    fetch('/api/source-grounding', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        doc_id:       ctx.docId,
+        subject_name: ctx.subjName,
+        object_name:  ctx.objName,
+        relation:     ctx.rel,
+      }),
+    })
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = '🔍 Verify in source text';
+      _sgCache[cacheKey] = data;
+      _renderGrounding(resultDiv, data, ctx);
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.innerHTML = '🔍 Verify in source text';
+      resultDiv.innerHTML = `<div class="qsg-empty">Error: ${esc(err.message)}</div>`;
+    });
+  };
+
+  function _renderGrounding(resultDiv, data, ctx) {
+    if (data.error) {
+      resultDiv.innerHTML = `<div class="qsg-empty">${esc(data.error)}</div>`;
+      return;
+    }
+    if (!data.chunks || data.chunks.length === 0) {
+      resultDiv.innerHTML = `<div class="qsg-empty">No chunks found mentioning "<strong>${esc(ctx.subjName)}</strong>" or "<strong>${esc(ctx.objName)}</strong>".</div>`;
+      return;
+    }
+
+    const topChunks = data.chunks.slice(0, 5);
+    let html = `<div class="qsg-results">
+      <div class="qsg-results-header">
+        <span class="qsg-results-title">📄 Source Text</span>
+        <span class="qsg-results-meta">${data.matched_count} of ${data.total_chunks} chunks matched</span>
+      </div>`;
+
+    for (const chunk of topChunks) {
+      const badgeCls  = chunk.has_both ? 'qsg-badge-both' : 'qsg-badge-partial';
+      const badgeTxt  = chunk.has_both ? 'S + O' : chunk.subject_spans.length ? 'S only' : 'O only';
+      html += `
+        <div class="qsg-chunk">
+          <div class="qsg-chunk-head">
+            <span class="qsg-section-tag">${esc(chunk.section)}</span>
+            <span class="qsg-badge ${badgeCls}">${badgeTxt}</span>
+          </div>
+          <div class="qsg-chunk-body">${chunk.highlighted_html}</div>
+        </div>`;
+    }
+
+    if (data.source_url) {
+      html += `<a class="qsg-paper-link" href="${esc(data.source_url)}" target="_blank" rel="noopener">↗ View original paper</a>`;
+    }
+    html += `</div>`;
+    resultDiv.innerHTML = html;
   }
 
   // ── Reset ────────────────────────────────────────────────────────────────
