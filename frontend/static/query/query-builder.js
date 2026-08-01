@@ -202,7 +202,7 @@
         document.querySelectorAll('.qb-node').forEach(n=>n.classList.remove('connecting'));
         redrawEdges();
       }
-      openConnectionPicker(node.id, e.clientX, e.clientY);
+      openConnectionPicker(node.id);
     });
 
     canvas.appendChild(el);
@@ -432,7 +432,7 @@
   }
 
   // ── Connection picker — shows relation + target type, auto-creates target node ──
-  async function openConnectionPicker(fromId, cx, cy){
+  async function openConnectionPicker(fromId){
     closePopups();
     const canvas=document.getElementById('qb-canvas'); if(!canvas)return;
     const fromNode=_nodes.find(n=>n.id===fromId); if(!fromNode)return;

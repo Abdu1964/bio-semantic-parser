@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from html import escape as _html_escape
 import json
 import re
 from pathlib import Path
@@ -444,7 +445,8 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
                        "#0284c7" if "geo" in _src_name.lower() else \
                        "#d97706" if "clinical" in _src_name.lower() else \
                        "#6b7280"
-        _open_link   = f"href='{_paper_url}' target='_blank'" if _paper_url else ""
+        _paper_url_esc = _html_escape(_paper_url, quote=True) if _paper_url else ""
+        _open_link = f"href='{_paper_url_esc}' target='_blank' rel='noopener noreferrer'" if _paper_url else ""
         _src_badge   = (
             f"<a id='src-badge' {_open_link} style='display:inline-flex;align-items:center;gap:6px;"
             f"background:{_badge_color}18;border:1px solid {_badge_color}44;"
@@ -727,7 +729,7 @@ function urlForPaperId(id) {{
 function regPaperUrl(id, url) {{
   id = (id || '').trim();
   if (!id) return;
-  const u = url || urlForPaperId(id);
+  const u = /^https?:\\/\\//i.test(url) ? url : urlForPaperId(id);
   if (!u) return;
   PAPER_URLS[id] = u;              // by raw ID
   PAPER_URLS[paperLabel(id)] = u;  // by display label (dropdown value)
