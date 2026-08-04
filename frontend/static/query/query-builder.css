@@ -292,7 +292,7 @@
 
 /* ── Node edit popup ── */
 .qb-node-edit {
-  position: fixed;   /* fixed = viewport-relative, never clipped */
+  position: absolute;   /* absolute within qb-canvas, follows node position */
   background: #13171f;
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 14px;
@@ -345,7 +345,7 @@
 
 /* ── Relation picker ── */
 .qb-rel-picker {
-  position: fixed;
+  position: absolute;
   z-index: 99999;
   background: #1c2333;
   border: 1px solid var(--border, #30363d);
