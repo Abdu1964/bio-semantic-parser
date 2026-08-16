@@ -76,22 +76,14 @@ def run_layer3(emit, doc_id, _safe_id, fetch_url, source, paper_url, _completed_
         chunks = fetcher.fetch(fetch_url, source, doc_id, paper_url=paper_url, log_cb=_l3_log)
         title  = _get_paper_title(doc_id) or doc_id
 
-        from api.rich_stream import _make_console
-        import re as _re_l3
         for i, c in enumerate(chunks, 1):
-            tokens = len(c.get('text', '').split())
-            _c     = _make_console()
-            from rich.panel import Panel as _P
-            _c.print(_P(
-                c.get('text', ''),
-                title=(f"[bold yellow] Chunk {i}/{len(chunks)} [/bold yellow]"
-                       f"[dim]  section={c.get('section', '?')}  words≈{tokens}[/dim]"),
-                border_style="yellow", padding=(0, 2),
-            ))
-            html = _c.export_html(inline_styles=True)
-            body = _re_l3.search(r'<pre[^>]*>(.*?)</pre>', html, _re_l3.DOTALL)
-            if body:
-                emit({"layer": 3, "status": "log", "message": body.group(1), "data": {"kind": "html"}})
+            text   = c.get('text', '')
+            tokens = len(text.split())
+            # Emit as a chunk card (frontend truncates long text behind a "Show more"
+            # toggle). Format: num|section|words|text — the frontend re-joins on '|'.
+            emit({"layer": 3, "status": "log",
+                  "message": f"{i}/{len(chunks)}|{c.get('section', '?')}|{tokens}|{text}",
+                  "data": {"kind": "chunk"}})
 
         _emit(emit, 3, "done", f"'{title}' — {len(chunks)} chunks", {
             "doc_id":   doc_id,

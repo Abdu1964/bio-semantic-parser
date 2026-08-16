@@ -89,6 +89,60 @@ async function loadUnifiedKG(fmt) {
   const fallback = { neo4j: 'data/kg_output/unified_neo4j/graph.html', metta: 'data/kg_output/unified_metta/graph.html' };
   frame.src = '/api/file?path=' + encodeURIComponent(fallback[fmt]);
 }
+
+function styleGraphFrame(frame) {
+  try {
+    const doc = frame.contentDocument || frame.contentWindow.document;
+    if (!doc || doc.getElementById('kg-ui-overrides')) return;
+    const style = doc.createElement('style');
+    style.id = 'kg-ui-overrides';
+    style.textContent = `
+      .vis-network .vis-navigation {
+        top: 16px !important;
+        bottom: auto !important;
+        left: 16px !important;
+        right: auto !important;
+        z-index: 30 !important;
+      }
+      #legend { top: 9px !important; left: 1px !important; }
+    `;
+    doc.head.appendChild(style);
+  } catch (e) { }
+}
+
+function onUnifiedFrameLoad(frame) {
+  styleGraphFrame(frame);
+  try {
+    const win = frame.contentWindow;
+    const doc = win.document;
+    setTimeout(() => {
+      try {
+        const tabs = Array.from(doc.querySelectorAll('button.tab, .tab'));
+        const utab = tabs.find(t =>
+          t.textContent && t.textContent.trim().includes('Unified') &&
+          !t.textContent.includes('Verification') &&
+          !t.textContent.includes('PLN')
+        );
+        if (utab) {
+          utab.click();
+        } else if (typeof win.show === 'function') {
+          for (let i = 2; i <= 5; i++) {
+            win.show(i);
+            const active = doc.querySelector('.tab.active');
+            if (active && active.textContent.includes('Unified') && !active.textContent.includes('Verification')) break;
+          }
+        }
+      } catch (e) { }
+      setTimeout(() => {
+        try {
+          [win._network, win.network, win._unifiedNetwork].forEach(n => {
+            try { if (n && typeof n.fit === 'function') n.fit(); } catch (e) { }
+          });
+        } catch (e) { }
+      }, 600);
+    }, 800);
+  } catch (e) { }
+}
 </script>
 
 <!-- ── Main ── -->
@@ -495,12 +549,26 @@ async function loadUnifiedKG(fmt) {
 
   <!-- Result -->
   <div id="qb-result">
-    <div class="qb-result-meta" id="qb-result-meta"></div>
+    <div class="qb-result-meta" id="qb-result-meta">
+      <span class="qb-result-info"></span>
+      <div class="qb-export-spacer" style="flex:1"></div>
+      <div class="qb-export-dropdown" id="qb-export-dropdown">
+        <button class="qb-tool-btn qb-tool-export" id="qb-export-btn" onclick="toggleQbExportMenu(event)">
+          ⬇ Export
+          <span style="font-size:9px;margin-left:3px">▾</span>
+        </button>
+        <div class="qb-export-menu" id="qb-export-menu">
+            <button onclick="exportQueryResult('json')">JSON</button>
+            <button onclick="exportQueryResult('metta')">MeTTa (.metta)</button>
+          </div>
+      </div>
+    </div>
     <iframe id="qb-result-frame" src="about:blank"
-      style="width:100%;height:540px;border:1px solid var(--border,#30363d);border-radius:10px;display:block"></iframe>
+      style="width:100%;height:540px;border:1px solid var(--border,#30363d);border-radius:10px;display:block"
+      onload="styleGraphFrame(this)"></iframe>
   </div>
-
 </div><!-- end page-query -->
+
 
 <div id="page-unified" style="display:none;height:calc(100vh - 50px);flex-direction:column">
   <div style="display:flex;align-items:center;gap:12px;padding:10px 20px;border-bottom:1px solid var(--border,#30363d);background:var(--bg,#0d1117)">
@@ -512,19 +580,19 @@ async function loadUnifiedKG(fmt) {
     <button onclick="loadUnifiedKG()" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer">↺ Refresh</button>
 <button onclick="window.open(document.getElementById('unified-frame').src,'_blank')" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer">↗ Full screen</button>
 <button onclick="switchTab('query')" style="padding:5px 14px;background:transparent;border:1px solid #1f6feb55;border-radius:6px;color:#58a6ff;font-size:12px;cursor:pointer;font-weight:600">🔍 Query KG</button>
+    <div class="qb-export-dropdown" id="unified-export-dropdown" style="margin-left:auto">
+      <button onclick="toggleUnifiedExportMenu(event)" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer;font-weight:600">
+        ⬇ Export <span style="font-size:9px;margin-left:2px">▾</span>
+      </button>
+      <div class="qb-export-menu" id="unified-export-menu">
+        <button onclick="exportUnifiedKG('json')">JSON</button>
+        <button onclick="exportUnifiedKG('metta')">MeTTa (.metta)</button>
+      </div>
+    </div>
   </div>
   <iframe id="unified-frame" src="about:blank"
     style="flex:1;width:100%;border:none;height:calc(100vh - 160px);min-height:500px"
-    onload="
-      try {
-        const win = this.contentWindow;
-        setTimeout(() => {
-          try {
-            if (win.network && typeof win.network.fit === 'function') win.network.fit();
-          } catch(e){}
-        }, 500);
-      } catch(e){}
-    "></iframe>
+    onload="onUnifiedFrameLoad(this)"></iframe>
 </div>
 
 <!-- ── Sources slide-over ── -->
@@ -556,26 +624,26 @@ async function loadUnifiedKG(fmt) {
   </div>
 </div>
 
-<script src="/static/state.js"></script>
-<script src="/static/js/main/00-globals.js"></script>
-<script src="/static/js/main/01-atomspace-commit.js"></script>
-<script src="/static/js/main/02-existing-output.js"></script>
-<script src="/static/js/main/03-run-selector.js"></script>
-<script src="/static/js/main/04-view-mode.js"></script>
-<script src="/static/js/main/05-stream-terminal.js"></script>
-<script src="/static/js/main/06-input-detect.js"></script>
-<script src="/static/js/main/07-sources-panel.js"></script>
-<script src="/static/js/main/08-pipeline-run.js"></script>
-<script src="/static/js/main/09-event-handler.js"></script>
-<script src="/static/js/main/10-renderers.js"></script>
-<script src="/static/js/main/11-triple-editor.js"></script>
-<script src="/static/js/main/12-pln-query.js"></script>
-<script src="/static/js/main/13-tabs-helpers.js"></script>
-<script src="/static/js/main/14-init.js"></script>
-<script src="/static/js/main/15-bio-picker.js"></script>
+<script src="/static/state.js?v=2"></script>
+<script src="/static/js/main/00-globals.js?v=2"></script>
+<script src="/static/js/main/01-atomspace-commit.js?v=2"></script>
+<script src="/static/js/main/02-existing-output.js?v=2"></script>
+<script src="/static/js/main/03-run-selector.js?v=2"></script>
+<script src="/static/js/main/04-view-mode.js?v=2"></script>
+<script src="/static/js/main/05-stream-terminal.js?v=2"></script>
+<script src="/static/js/main/06-input-detect.js?v=2"></script>
+<script src="/static/js/main/07-sources-panel.js?v=2"></script>
+<script src="/static/js/main/08-pipeline-run.js?v=2"></script>
+<script src="/static/js/main/09-event-handler.js?v=2"></script>
+<script src="/static/js/main/10-renderers.js?v=2"></script>
+<script src="/static/js/main/11-triple-editor.js?v=2"></script>
+<script src="/static/js/main/12-pln-query.js?v=2"></script>
+<script src="/static/js/main/13-tabs-helpers.js?v=2"></script>
+<script src="/static/js/main/14-init.js?v=2"></script>
+<script src="/static/js/main/15-bio-picker.js?v=2"></script>
 <script src="/static/query/vis-network.min.js"></script>
-<script src="/static/query/query.js"></script>
 <script src="/static/query/query-builder.js"></script>
+<script src="/static/query/query.js"></script>
 
 <footer style="
   padding:14px 28px;margin-top:32px;

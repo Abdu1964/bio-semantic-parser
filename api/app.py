@@ -9,17 +9,22 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+_FRONTEND = _ROOT / "frontend" / "static"
+
 from api.routes.query        import router as _query_router
 from api.routes.sources      import router as _sources_router
 from api.routes.pipeline     import router as _pipeline_router
 from api.routes.human_review import router as _hr_router
-from api.routes.kg           import router as _kg_router
-from api.routes.misc         import router as _misc_router
+from api.routes.kg                import router as _kg_router
+from api.routes.source_grounding  import router as _sg_router
+from api.routes.misc              import router as _misc_router
+from api.routes.export       import router as _export_router
 
 
 @asynccontextmanager
@@ -39,4 +44,10 @@ app.include_router(_sources_router)
 app.include_router(_pipeline_router)
 app.include_router(_hr_router)
 app.include_router(_kg_router)
+app.include_router(_sg_router)
 app.include_router(_misc_router)
+app.include_router(_export_router)
+
+if _FRONTEND.is_dir():
+    app.mount("/static", StaticFiles(directory=_FRONTEND), name="static")
+    app.mount("/", StaticFiles(directory=_FRONTEND, html=True), name="frontend")

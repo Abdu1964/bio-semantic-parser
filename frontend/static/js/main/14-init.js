@@ -14,6 +14,10 @@ window.openViewer             = openViewer;
 window.discardRun             = discardRun;
 window.commitPLN              = commitPLN;
 window.clearAndReset          = AppState.clearAndReset;
+window.exportDownload         = exportDownload;
+window.toggleQbExportMenu     = toggleQbExportMenu;
+window.toggleUnifiedExportMenu = toggleUnifiedExportMenu;
+window.exportUnifiedKG        = exportUnifiedKG;
 
 // ── Feature flag: PLN optional sidecar ──────────────────────────────────────
 // Loaded once at page init from /api/config. Hides all PLN UI when false.
@@ -81,5 +85,7 @@ window.addEventListener('load', async () => {
 
 window.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeModal();
+  // Close any open export menus on Escape
+  document.querySelectorAll('.qb-export-menu').forEach(m => m.classList.remove('open'));
 });
 

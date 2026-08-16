@@ -32,6 +32,7 @@
 
   let _db='neo4j', _nodes=[], _edges=[], _network=null;
   let _drag=null, _connect=null, _nid=0, _eid=0;
+  let _lastQueryParams = null;   // stored after a successful query for export
 
   async function initBuilder(){
     bindDB();
@@ -78,12 +79,36 @@
   }
 
   // ── Canvas ────────────────────────────────────────────────────────────────
+  const NODE_W = 76;           // node circle size (see .qb-node-circle)
+  const LABEL_PAD = 22;        // room for the label beneath the circle
+
   function bindCanvas(){
     const canvas=document.getElementById('qb-canvas'); if(!canvas)return;
     document.addEventListener('mousemove',e=>{
+      // Connect mode: draw a temporary line from source node to the cursor
+      if(_connect){
+        const fn=_nodes.find(n=>n.id===_connect.fromId);
+        if(fn){
+          const rect=canvas.getBoundingClientRect();
+          redrawEdges();
+          const svg=document.getElementById('qb-svg');
+          if(svg){
+            const line=document.createElementNS('http://www.w3.org/2000/svg','path');
+            line.setAttribute('d',`M${fn.x+36},${fn.y+36} L${e.clientX-rect.left},${e.clientY-rect.top}`);
+            line.setAttribute('stroke','#58a6ff'); line.setAttribute('stroke-width','2');
+            line.setAttribute('stroke-dasharray','5,4'); line.setAttribute('fill','none');
+            svg.appendChild(line);
+          }
+        }
+        return;
+      }
       if(!_drag)return;
       const n=_nodes.find(x=>x.id===_drag.nid); if(!n)return;
-      n.x=e.clientX-_drag.ox; n.y=e.clientY-_drag.oy;
+      // Clamp inside the canvas so nodes can't be dragged out of bounds
+      const maxX=Math.max(0, canvas.offsetWidth  - NODE_W);
+      const maxY=Math.max(0, canvas.offsetHeight - NODE_W - LABEL_PAD);
+      n.x=Math.max(0, Math.min(e.clientX-_drag.ox, maxX));
+      n.y=Math.max(0, Math.min(e.clientY-_drag.oy, maxY));
       const el=document.getElementById('qbn-'+n.id);
       if(el){el.style.left=n.x+'px';el.style.top=n.y+'px';}
       redrawEdges();
@@ -92,9 +117,11 @@
       if(_drag){document.getElementById('qbn-'+_drag.nid)?.classList.remove('selected');_drag=null;}
       if(_connect){
         canvas.style.cursor='';
+        document.querySelectorAll('.qb-node').forEach(n=>n.classList.remove('connecting'));
         const t=e.target.closest('.qb-node');
         if(t){const tid=parseInt(t.id.replace('qbn-',''));if(tid!==_connect.fromId)openRelPicker(_connect.fromId,tid,e.clientX,e.clientY);}
         _connect=null;
+        redrawEdges();   // clear the temp line
       }
     });
     canvas.addEventListener('click',e=>{
@@ -154,10 +181,28 @@
       openNodeEdit(node);
     });
 
-    // Click handle → show connection picker (auto-creates target node)
-    el.querySelector('.qb-node-handle').addEventListener('click',e=>{
+    // Handle → start drawing a connection. Drag onto another existing node to
+    // connect them (mouseup handler calls openRelPicker); or click+release on
+    // empty canvas to auto-create a connected target node.
+    const handle=el.querySelector('.qb-node-handle');
+    handle.addEventListener('mousedown',e=>{
+      e.stopPropagation(); e.preventDefault();
+      if(e.button!==0)return;
+      _connect={fromId:node.id};
+      closePopups();
+      canvas.style.cursor='crosshair';
+      document.getElementById('qbn-'+node.id)?.classList.add('connecting');
+    });
+    // Plain click on the handle (no drag onto a node) → auto-create a target node
+    handle.addEventListener('click',e=>{
       e.stopPropagation();
-      openConnectionPicker(node.id, e.clientX, e.clientY);
+      if(_connect && _connect.fromId===node.id){
+        // click without landing on another node → offer to create a new one
+        _connect=null; canvas.style.cursor='';
+        document.querySelectorAll('.qb-node').forEach(n=>n.classList.remove('connecting'));
+        redrawEdges();
+      }
+      openConnectionPicker(node.id);
     });
 
     canvas.appendChild(el);
@@ -175,10 +220,9 @@
     const s=ts(node.type);
     const popup=document.createElement('div');
     popup.className='qb-node-edit'; popup.id='qb-node-edit-popup';
-    // Use viewport (fixed) coordinates so popup is never clipped
-    const rect=canvas.getBoundingClientRect();
-    const vpx=Math.min(rect.left+node.x+90, window.innerWidth-270);
-    const vpy=Math.max(10, Math.min(rect.top+node.y-10, window.innerHeight-400));
+    // Position relative to canvas (popup is a child of qb-canvas which is position:relative)
+    const vpx=Math.min(node.x+90, canvas.offsetWidth-270);
+    const vpy=Math.max(10, Math.min(node.y-10, canvas.offsetHeight-400));
     popup.style.left=vpx+'px'; popup.style.top=vpy+'px';
 
     popup.innerHTML=`
@@ -255,12 +299,11 @@
                 border-radius:4px;white-space:nowrap;flex-shrink:0">${id}</span>
             </div>`;
           }).join('');
-          // Position autocomplete using fixed coords so it's never clipped
-          const inputRect=input.getBoundingClientRect();
-          acList.style.position='fixed';
-          acList.style.left=inputRect.left+'px';
-          acList.style.top=(inputRect.bottom+2)+'px';
-          acList.style.width=inputRect.width+'px';
+          // Position autocomplete dropdown relative to the popup (its parent container)
+          acList.style.position='absolute';
+          acList.style.left='0';
+          acList.style.top='100%';
+          acList.style.width='100%';
           acList.style.maxHeight='200px';
           acList.style.overflowY='auto';
           acList.style.zIndex='99999';
@@ -389,10 +432,9 @@
   }
 
   // ── Connection picker — shows relation + target type, auto-creates target node ──
-  async function openConnectionPicker(fromId, cx, cy){
+  async function openConnectionPicker(fromId){
     closePopups();
     const canvas=document.getElementById('qb-canvas'); if(!canvas)return;
-    const rect=canvas.getBoundingClientRect();
     const fromNode=_nodes.find(n=>n.id===fromId); if(!fromNode)return;
 
     // Load connections for this entity (instance-level if name known, type-level otherwise)
@@ -411,12 +453,12 @@
 
     const picker=document.createElement('div');
     picker.className='qb-rel-picker'; picker.id='qb-rel-picker';
-    picker.style.position='fixed';
+    picker.style.position='absolute';
     picker.style.zIndex='99999';
     picker.style.width='260px';
-    const px=Math.min(cx+20, window.innerWidth-270);
+    const px=Math.min(fromNode.x+180, canvas.offsetWidth-270);
     picker.style.left=px+'px';
-    picker.style.top=Math.max(10, Math.min(cy-20, window.innerHeight-350))+'px';
+    picker.style.top=Math.max(10, Math.min(fromNode.y-20, canvas.offsetHeight-350))+'px';
 
     const s=ts(fromNode.type);
     picker.innerHTML=`
@@ -557,6 +599,16 @@
     namedNodes.slice(2).forEach((n,i)=>params.append('entity_extra', n.name));
     if(relations[0]) params.set('relation', relations[0]);
 
+    // Store params for export
+    _lastQueryParams = {
+      db: _db,
+      entity1: namedNodes[0]?.name || '',
+      entity2: namedNodes[1]?.name || '',
+      relation: relations[0] || '',
+      entity_extra: namedNodes.slice(2).map(n => n.name),
+      limit: 150,
+    };
+
     const result=document.getElementById('qb-result');
     const frame=document.getElementById('qb-result-frame');
     const meta=document.getElementById('qb-result-meta');
@@ -564,11 +616,15 @@
     try{
       frame.src=`/api/query/subgraph-html?${params}`;
       result.classList.add('show');
-      if(meta) meta.innerHTML=`DB: <strong>${_db.toUpperCase()}</strong> &nbsp;·&nbsp;
-        ${_nodes.map(n=>`<span style="color:${ts(n.type).color}">${n.name||n.type}</span>`).join(' → ')}
-        <button onclick="window.open('/api/query/subgraph-html?${params}','_blank')"
-          style="margin-left:12px;padding:4px 10px;background:transparent;border:1px solid var(--border,#30363d);
-          border-radius:5px;color:var(--text2,#8b949e);font-size:11px;cursor:pointer">↗ Full screen</button>`;
+      if(meta) {
+        const info = meta.querySelector('.qb-result-info');
+        const spacer = meta.querySelector('.qb-export-spacer');
+        if(info) info.innerHTML=`DB: <strong>${_db.toUpperCase()}</strong> &nbsp;·&nbsp;
+          ${_nodes.map(n=>`<span style="color:${ts(n.type).color}">${n.name||n.type}</span>`).join(' → ')}
+          <button onclick="window.open('/api/query/subgraph-html?${params}','_blank')"
+            style="margin-left:12px;padding:4px 10px;background:transparent;border:1px solid var(--border,#30363d);
+            border-radius:5px;color:var(--text2,#8b949e);font-size:11px;cursor:pointer">↗ Full screen</button>`;
+      }
       result.scrollIntoView({behavior:'smooth',block:'start'});
     }catch(e){ alert('Query failed: '+e.message); }
     finally{ btn.disabled=false; btn.textContent='▶ Run Query'; }
@@ -585,6 +641,9 @@
     if(c)c.querySelectorAll('.qb-node,.qb-node-edit,.qb-rel-picker').forEach(el=>el.remove());
     redrawEdges();showHint();
     document.getElementById('qb-result')?.classList.remove('show');
+    const info = document.querySelector('.qb-result-info');
+    if(info) info.innerHTML = '';
+    _lastQueryParams = null;
     if(_network){_network.destroy();_network=null;}
   }
   function showHint(){const h=document.getElementById('qb-canvas-hint');if(h)h.style.display='';}
@@ -609,4 +668,21 @@
   };
 
   window.initQueryBuilder=initBuilder;
+
+  // ── Export query results ──────────────────────────────────────────────────
+  window.exportQueryResult = function(fmt) {
+    if (!_lastQueryParams) {
+      alert('Run a query first before exporting.');
+      return;
+    }
+    const ext = fmt === 'json' ? 'json' : fmt === 'metta' ? 'metta' : 'zip';
+    const nameParts = ['query'];
+    if (_lastQueryParams.entity1) nameParts.push(_lastQueryParams.entity1.replace(/\s+/g, '_'));
+    if (_lastQueryParams.relation) nameParts.push(_lastQueryParams.relation);
+    if (_lastQueryParams.entity2) nameParts.push(_lastQueryParams.entity2.replace(/\s+/g, '_'));
+    const baseName = nameParts.join('_').slice(0, 60);
+    exportDownload('/api/export/subgraph', { ..._lastQueryParams, format: fmt }, `${baseName}.${ext}`);
+    // Close the menu
+    document.querySelectorAll('#qb-export-menu').forEach(m => m.classList.remove('open'));
+  };
 })();

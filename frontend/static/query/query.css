@@ -223,3 +223,208 @@
   background: #0d1117;
   position: relative;
 }
+
+/* ── Source grounding styles (query tab) ──────────────────────────────────── */
+
+/* Edge detail card */
+.qsg-edge-card {
+  font-size: 12px;
+  color: var(--text1, #e6edf3);
+  padding: 12px 14px;
+  background: var(--surface2, #0d1117);
+  border-radius: 10px;
+  margin-top: 12px;
+  border: 1px solid var(--border, #30363d);
+}
+
+.qsg-triple {
+  font-weight: 700;
+  font-size: 12.5px;
+  margin-bottom: 7px;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+.qsg-arrow   { color: var(--text3, #6e7681); }
+.qsg-predicate { color: #F59E0B; }
+
+.qsg-meta {
+  color: var(--text3, #6e7681);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.qsg-meta strong { color: var(--text1, #e6edf3); }
+
+.qsg-reason {
+  color: var(--text3, #6e7681);
+  font-size: 11px;
+  margin-top: 6px;
+  font-style: italic;
+  border-left: 2px solid var(--border, #30363d);
+  padding-left: 8px;
+}
+
+.qsg-no-source {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text3, #6e7681);
+}
+
+/* Verify button */
+.qsg-verify-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(88, 166, 255, 0.1);
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  color: #58a6ff;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, transform 0.12s;
+}
+.qsg-verify-btn:hover:not(:disabled) {
+  background: rgba(88, 166, 255, 0.2);
+  transform: translateY(-1px);
+}
+.qsg-verify-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+/* Spinner inside button */
+.qsg-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(88, 166, 255, 0.3);
+  border-top-color: #58a6ff;
+  border-radius: 50%;
+  animation: qsg-spin 0.65s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes qsg-spin { to { transform: rotate(360deg); } }
+
+/* Empty / error state */
+.qsg-empty {
+  color: var(--text3, #6e7681);
+  font-size: 11.5px;
+  padding: 10px 0 2px;
+}
+
+/* Results container */
+.qsg-results {
+  margin-top: 10px;
+}
+
+.qsg-results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.qsg-results-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text1, #e6edf3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.qsg-results-meta {
+  font-size: 10px;
+  color: var(--text3, #6e7681);
+}
+
+/* Individual chunk */
+.qsg-chunk {
+  background: #ffffff !important;
+  border: 1px solid #d0d7de !important;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  transition: border-color 0.15s;
+}
+.qsg-chunk:hover { border-color: #0969da !important; }
+
+.qsg-chunk-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.qsg-section-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: #58a6ff;
+  background: rgba(88, 166, 255, 0.1);
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+/* Match badges */
+.qsg-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+.qsg-badge-both {
+  background: rgba(35, 134, 54, 0.15);
+  color: #3fb950;
+  border: 1px solid rgba(35, 134, 54, 0.35);
+}
+.qsg-badge-partial {
+  background: rgba(210, 153, 34, 0.12);
+  color: #d29922;
+  border: 1px solid rgba(210, 153, 34, 0.3);
+}
+
+/* Highlighted chunk text */
+.qsg-chunk-body {
+  font-size: 12.5px;
+  color: #000000 !important;
+  background: #ffffff !important;
+  line-height: 1.65;
+  word-break: break-word;
+}
+
+/* Subject / object highlights — must match the API's HTML output */
+.qsg-chunk-body .sg-subject,
+.qsg-chunk-body .sg-object {
+  background: #ffff00 !important;
+  color: #000000 !important;
+  border-bottom: none !important;
+  padding: 1px 4px !important;
+  border-radius: 3px !important;
+  font-weight: 700 !important;
+}
+
+.qsg-chunk-body .sg-source-sentence {
+  background: rgba(255, 235, 59, 0.25) !important;
+  border-left: 3px solid #fbc02d !important;
+  padding: 2px 6px !important;
+  border-radius: 4px !important;
+  display: inline;
+}
+
+/* Paper link */
+.qsg-paper-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #58a6ff;
+  font-size: 11px;
+  text-decoration: none;
+  margin-top: 6px;
+  padding: 3px 0;
+  transition: color 0.15s;
+}
+.qsg-paper-link:hover { color: #79c0ff; }
+
