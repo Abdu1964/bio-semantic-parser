@@ -1,21 +1,4 @@
-"""
-Load / throughput / soak tests.
-
-These push the pipeline's pure-Python hot paths (no network, no ML weights) at
-volumes well beyond a single paper, asserting three things load testing is meant
-to catch:
-
-  * throughput — the stage completes a large batch within a generous wall-clock
-    bound (catches accidental O(N²) regressions, not micro-benchmarks);
-  * correctness under volume — no records dropped, duplicated, or mis-counted
-    when N is large;
-  * bounded resources — caches and stores grow with *distinct* work, not with
-    repeated work (no unbounded leak, no N-inflation).
-
-Timing bounds are deliberately loose (CI runs on shared hardware); they exist to
-flag catastrophic regressions, not to benchmark. conftest.py stubs tiktoken so
-token == word, which keeps these deterministic and fast.
-"""
+"""Load and throughput tests for the pipeline's pure-Python stages."""
 import os
 import time
 from unittest.mock import MagicMock, patch
