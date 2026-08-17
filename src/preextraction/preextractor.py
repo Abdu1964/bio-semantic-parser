@@ -78,10 +78,15 @@ class Preextractor:
         doc_id      = chunk.get("document_id", "")
         source_name = chunk.get("source_name", "")
 
+        # Candidates from supplemental sources, reconciled against the ensemble
+        # in one pass below (_resolve_overlaps).
+        extra_entities = []
+
         if source_name == "pubmed" and doc_id and len(doc_id) <= 10:
             pt_entities = fetch_pubtator_entities(doc_id)
             if pt_entities:
-                entities = _merge_entities(entities, pt_entities)
+                # PubTator3 offsets are article-level, not chunk-local.
+                extra_entities += _relocalize_to_chunk(pt_entities, text)
 
         # ── HuggingFace clinical NER — adds Diagnostic_procedure, Therapeutic_procedure,
         #    Medication, Sign_symptom, Disease_disorder, Lab_value that scispaCy misses.
@@ -90,7 +95,7 @@ class Preextractor:
             if _hf_ok():
                 hf_ents = _hf_tag(text)
                 if hf_ents:
-                    entities = _merge_entities(entities, hf_ents)
+                    extra_entities += hf_ents
         except Exception:
             pass   # never break the pipeline if optional tagger fails
 
@@ -101,9 +106,12 @@ class Preextractor:
             if _gliner_ok():
                 gliner_ents = _gliner_tag(text)
                 if gliner_ents:
-                    entities = _merge_entities(entities, gliner_ents)
+                    extra_entities += gliner_ents
         except Exception:
             pass   # never break the pipeline if optional tagger fails
+
+        if extra_entities:
+            entities = _resolve_overlaps(entities + extra_entities)
 
         negation   = self.negation_detector.process(entities, doc)
         doi        = self.doi_extractor.extract(text)
@@ -137,23 +145,67 @@ class Preextractor:
             return list(pool.map(self.process, chunks))
 
 
-def _merge_entities(ensemble: list, extra: list) -> list:
-    """Merge entity lists by surface text. If extra has richer normalization (e.g. PubTator identifier), update the existing entry."""
-    merged = []
-    by_key = {}
-    for e in ensemble:
-        key = (e.get("text") or "").lower()
-        if not key or key in by_key:
+def _relocalize_to_chunk(entities: list, chunk_text: str) -> list:
+    """Recompute start/end for entities whose offsets aren't chunk-local (e.g.
+    PubTator3's article-level offsets). Drops entities not present in this chunk."""
+    lower_chunk = chunk_text.lower()
+    result = []
+    for e in entities:
+        text = (e.get("text") or "").strip()
+        if not text:
             continue
-        by_key[key] = e.copy()
-        merged.append(by_key[key])
-    for e in extra:
-        key = (e.get("text") or "").lower()
-        if not key:
+        idx = lower_chunk.find(text.lower())
+        if idx < 0:
             continue
-        if key not in by_key:
-            by_key[key] = e.copy()
-            merged.append(by_key[key])
-        elif "identifier" in e or e.get("source") == "pubtator3":
-            by_key[key].update(e)
-    return merged
+        e = dict(e, start=idx, end=idx + len(text))
+        result.append(e)
+    return result
+
+
+# Last-resort tie-break for identical length + confidence — fixed and explicit,
+# not accidental input order.
+_SOURCE_PRIORITY = {"ensemble": 3, "pubtator3": 2, "gliner": 1, "hf_ner": 0}
+
+
+def _resolve_overlaps(entities: list) -> list:
+    """Reconcile overlapping spans across NER sources sharing chunk-local
+    coordinates. Longest span wins; ties broken by confidence, then
+    _SOURCE_PRIORITY, then leftmost start. Exact-span duplicates fold into
+    the winner (differing label kept as alt_label/alt_confidence, not
+    dropped); partial overlaps with a higher-priority span are dropped."""
+    valid = [e for e in entities if e.get("start", -1) >= 0 and e.get("end", -1) > e.get("start", -1)]
+
+    def sort_key(e):
+        return (
+            e["end"] - e["start"],
+            e.get("confidence") or 0.0,
+            _SOURCE_PRIORITY.get(e.get("source"), 0),
+            -e["start"],
+        )
+
+    accepted, ranges = [], []
+    for cand in sorted(valid, key=sort_key, reverse=True):
+        c_start, c_end = cand["start"], cand["end"]
+        exact_match = None
+        overlaps    = False
+        for i, (a_start, a_end) in enumerate(ranges):
+            if c_start < a_end and c_end > a_start:
+                overlaps = True
+                if (a_start, a_end) == (c_start, c_end):
+                    exact_match = i
+                break
+        if exact_match is not None:
+            winner = accepted[exact_match]
+            if cand.get("label") and cand["label"] != winner.get("label"):
+                winner["alt_label"]      = cand["label"]
+                winner["alt_confidence"] = cand.get("confidence")
+            for k, v in cand.items():
+                if k not in winner:
+                    winner[k] = v
+            winner["confidence"] = max(winner.get("confidence") or 0.0, cand.get("confidence") or 0.0)
+        elif not overlaps:
+            accepted.append(cand)
+            ranges.append((c_start, c_end))
+
+    accepted.sort(key=lambda e: e["start"])
+    return accepted

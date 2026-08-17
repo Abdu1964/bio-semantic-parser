@@ -37,5 +37,6 @@ class NERTagger:
                 "negated":    False,
                 "assertion":  "PRESENT",
                 "confidence": 1.0,
+                "source":     "ensemble",
             })
         return entities
