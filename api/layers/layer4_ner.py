@@ -41,18 +41,30 @@ def run_layer4(emit, doc_id, _safe_id, chunks, _completed_layers):
             _utils._preextractor = Preextractor()
         preextractor = _utils._preextractor
 
-        _log(emit, 4, "Models loaded — running NER ensemble on chunks…")
-        tagged_chunks = preextractor.process_batch(chunks)
-        all_ents      = [e for c in tagged_chunks for e in c.get("entities", [])]
-        negated       = [e for e in all_ents if e.get("negated")]
+        n = len(chunks)
+        _log(emit, 4, f"Models loaded — running NER ensemble on {n} chunks…")
 
-        for i, c in enumerate(tagged_chunks, 1):
-            ents   = c.get("entities", [])
-            neg    = [e for e in ents if e.get("negated")]
-            sample = ", ".join(f"{e['text']} ({e['label']})" for e in ents[:4])
-            _log(emit, 4, f"  Chunk {i} [{c.get('section', '?')}]: {len(ents)} entities — {sample}{'…' if len(ents) > 4 else ''}")
-            if neg:
-                _log(emit, 4, f"    ✗ Negated: {', '.join(e['text'] for e in neg)}")
+        # Tag chunks in parallel; log as each finishes
+        import concurrent.futures as _cf
+        workers = min(int(os.getenv("NER_CHUNK_CONCURRENCY", "4")), max(n, 1))
+        tagged_chunks = [None] * n
+        done = 0
+        with _cf.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(preextractor.process, chunk): i for i, chunk in enumerate(chunks)}
+            for fut in _cf.as_completed(futures):
+                i = futures[fut]
+                tagged_chunks[i] = fut.result()
+                done += 1
+                c    = tagged_chunks[i]
+                ents = c.get("entities", [])
+                neg  = [e for e in ents if e.get("negated")]
+                sample = ", ".join(f"{e['text']} ({e['label']})" for e in ents[:4])
+                _log(emit, 4, f"  [{done}/{n}] Chunk {i+1} [{c.get('section','?')}]: {len(ents)} entities — {sample}{'…' if len(ents) > 4 else ''}")
+                if neg:
+                    _log(emit, 4, f"    ✗ Negated: {', '.join(e['text'] for e in neg)}")
+
+        all_ents = [e for c in tagged_chunks for e in c.get("entities", [])]
+        negated  = [e for e in all_ents if e.get("negated")]
 
         doi  = next((c.get("doi") for c in tagged_chunks if c.get("doi")), None)
         if doi: _log(emit, 4, f"  DOI extracted: {doi}")

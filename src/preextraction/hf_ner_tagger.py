@@ -60,6 +60,7 @@ _pipeline: Optional[object] = None
 _pipeline_model: str = ""
 import threading as _threading
 _pipeline_lock = _threading.Lock()
+_infer_lock = _threading.Lock()   # HF pipelines aren't safe to call from several threads
 
 
 def _get_pipeline():
@@ -125,7 +126,8 @@ def tag_entities(text: str) -> list[dict]:
 
     try:
         pipe    = _get_pipeline()
-        results = pipe(text[:8000])   # cap at 8k chars to stay within context
+        with _infer_lock:
+            results = pipe(text[:8000])   # cap at 8k chars to stay within context
     except Exception:
         return []
 

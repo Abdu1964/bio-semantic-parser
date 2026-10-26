@@ -9,6 +9,7 @@ from typing import Optional
 
 
 class DOIExtractor:
+    # First DOI: "10." + 4+ digits + "/" + suffix
     _PATTERN = re.compile(r'10\.\d{4,}\/[^\s]+')
 
     def extract(self, text: str) -> Optional[str]:
