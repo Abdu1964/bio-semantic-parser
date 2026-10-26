@@ -5,7 +5,7 @@ from api.pipeline_utils import _emit, _log, _pre, _post, _ckpt, _rtext, _count_r
 
 
 def run_layer8(emit, doc_id, _safe_id, processed, tagged_chunks, staging_db,
-               output_format, title):
+               output_format, title, source_entity=""):
     """Write validated triples to the KG, run verification, generate graph HTML."""
     _pre(emit, 8)
     _emit(emit, 8, "running", "Writing to knowledge graph…")
@@ -17,10 +17,33 @@ def run_layer8(emit, doc_id, _safe_id, processed, tagged_chunks, staging_db,
             if c.get("text"): _by_doc[c.get("document_id", "")].append(c["text"])
         text_by_doc = {k: " ".join(v) for k, v in _by_doc.items()}
 
+        # Group runs by the source entity's database (e.g. "flybase")
+        species = ""
+        if source_entity:
+            try:
+                from src.resolver.entity_resolver import EntityResolver
+                db = EntityResolver().identify(source_entity)
+                if db:
+                    species = db["name"].split("-")[0].lower()
+                    organism = db.get("organism", "")
+                    if organism:
+                        for r in processed:
+                            if not r.get("species"):
+                                r["species"] = organism
+            except Exception:
+                pass
+
         pub     = pub_process(processed, verbose=False, text_by_doc=text_by_doc,
-                              formats=output_format, paper_name=title, doc_id=doc_id)
+                              formats=output_format, paper_name=title, doc_id=doc_id,
+                              species=species, entity_id=source_entity)
         os.environ.pop("TRIPLE_STORE_PATH", None)
         run_dir = Path(pub.get("run_dir", ""))
+
+        # Tag source entity (e.g. FBgn0000022) on run metadata if provided
+        if source_entity and run_dir.exists():
+            import json as _json
+            meta_path = run_dir / "entity_meta.json"
+            meta_path.write_text(_json.dumps({"source_entity": source_entity}))
         neo4j   = pub.get("neo4j", {})
         metta   = pub.get("metta", {})
         verif   = pub.get("verification", {})
@@ -174,7 +197,7 @@ def run_layer8(emit, doc_id, _safe_id, processed, tagged_chunks, staging_db,
             except Exception:
                 pass
 
-        pln_graph_html = Path("")
+        pln_graph_html = None   # None avoids Path("").exists() == True (resolves to ".")
         _pln_result    = {"stv_all": [], "derived": [], "contradictions": [], "revised": 0}
         if os.getenv("ENABLE_PLN", "false").lower() == "true":
             try:
@@ -252,7 +275,7 @@ def run_layer8(emit, doc_id, _safe_id, processed, tagged_chunks, staging_db,
             "ver_pct":        ver_pct,
             "run_dir":        str(run_dir),
             "graph_html":     str(graph_html)     if graph_html.exists()     else "",
-            "pln_html":       str(pln_graph_html) if pln_graph_html.exists() else "",
+            "pln_html":       str(pln_graph_html) if pln_graph_html and pln_graph_html.exists() else "",
             "pln_extracted":  _pln_result.get("stv_all", []) and len(_pln_result.get("stv_all", [])),
             "pln_inferred":   len(_pln_result.get("derived", [])),
             "ver_html":       str(ver_html) if ver_html and ver_html.exists() else "",
@@ -264,6 +287,7 @@ def run_layer8(emit, doc_id, _safe_id, processed, tagged_chunks, staging_db,
             "paper_tp":        _paper_metrics["tp"],
             "paper_fp":        _paper_metrics["fp"],
             "paper_fn":        _paper_metrics["fn"],
+            "source_entity":   source_entity,
         })
     except Exception as e:
         os.environ.pop("TRIPLE_STORE_PATH", None)

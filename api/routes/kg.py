@@ -440,6 +440,33 @@ async def commit_status(job_id: str = ""):
     return JSONResponse(job)
 
 
+@router.get("/api/species")
+async def list_species():
+    """Distinct species in the unified store, with triple counts, for the species filter dropdown."""
+    import sqlite3
+    from src.postextraction.deduplication import db_path_for_format
+
+    counts: dict = {}
+    for fmt in ("neo4j", "metta"):
+        db_path = db_path_for_format(fmt)
+        if not db_path.exists():
+            continue
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT species, COUNT(*) FROM triples WHERE species IS NOT NULL AND species != '' GROUP BY species"
+            ).fetchall()
+        finally:
+            conn.close()
+        for name, n in rows:
+            counts[name] = max(counts.get(name, 0), n)
+        break  # neo4j/metta stores mirror the same data — one pass is enough
+
+    from tools.export_unified import _slug
+    species = [{"name": name, "slug": _slug(name), "count": n} for name, n in sorted(counts.items())]
+    return JSONResponse({"species": species})
+
+
 @router.post("/api/rebuild-compare")
 async def rebuild_compare(run_dir: str = Form(...)):
     """Rebuild compare pages for a run directory using latest unified verification."""

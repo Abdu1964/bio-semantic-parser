@@ -3,6 +3,46 @@ from pathlib import Path
 from api.pipeline_utils import _emit, _log, _pre, _post, _ckpt, _resolve_input
 
 
+def _check_bio_id(emit, input_value: str) -> bool:
+    """
+    If input_value looks like a biological entity ID (FBgn, WBGene, MGI:, etc.),
+    look up its publications and emit a picker_required event, then return True
+    so the caller can return None (pipeline pauses here).
+    Returns False if not a recognized bio entity ID.
+    """
+    try:
+        from src.resolver.entity_resolver import EntityResolver
+        er = EntityResolver()
+        db = er.identify(input_value.strip())
+        if db is None:
+            return False
+
+        _emit(emit, 1, "running",
+              f"Recognized {db['name']} ID — looking up publications for {input_value.strip()}…")
+
+        pubs = er.lookup(input_value.strip())
+        if not pubs:
+            _emit(emit, 1, "error",
+                  f"No publications found for {input_value.strip()} in {db['name']}.")
+            return True
+
+        emit({
+            "layer":  1,
+            "status": "picker_required",
+            "message": f"Found {len(pubs)} publication(s) for {input_value.strip()} ({db['name']})",
+            "data": {
+                "entity_id":   input_value.strip(),
+                "entity_db":   db["name"],
+                "publications": [p.to_dict() for p in pubs],
+            },
+        })
+        return True
+    except Exception as exc:
+        import traceback
+        _emit(emit, 1, "error", f"EntityResolver error: {exc}")
+        return True
+
+
 def run_layer1(emit, input_type, input_value, source_name, output_format, registry, scheduler):
     """Load registered sources, resolve the input to a doc_id, detect existing checkpoints.
 
@@ -11,6 +51,11 @@ def run_layer1(emit, input_type, input_value, source_name, output_format, regist
     _pre(emit, 1)
     _emit(emit, 1, "running", "Loading registered data sources…")
     try:
+        # Bio entity ID detection — FBgn, WBGene, MGI:, etc.
+        if input_type == "auto" or not source_name:
+            if _check_bio_id(emit, input_value):
+                return None   # pipeline pauses; frontend will restart with chosen PMID
+
         all_sources = registry.get_all_sources()
         source, doc_id, fetch_url = _resolve_input(
             input_type, input_value, source_name, all_sources, scheduler

@@ -1,0 +1,106 @@
+# Shared settings for FlyBase ID types.
+_flybase_common: &flybase_common
+  resolver_type: tsv_gz
+  tsv_comment_char: "#"
+  refs_format: flybase_pipe   # "FBrf0123|39516491, FBrf0456|-" — pipe-separated FBrf|PMID, comma-separated list
+  missing_value_token: "-"   # sentinel FlyBase uses for absent PMID/PMCID/DOI values
+  crossref_dir_url: "https://s3ftp.flybase.org/releases/current/precomputed_files/references/"
+  crossref_filename_regex: "^fbrf_pmid_pmcid_doi_fb_.*\\.tsv\\.gz$"
+  crossref_id_col: "FBrf_ID"
+  crossref_pmid_col: "PMID"
+  crossref_pmcid_col: "PMCID"
+  crossref_doi_col: "DOI"
+  pmid_prefix: "PMID:"        # crossref PMID column is prefixed like "PMID:1234567"
+  cache_ttl_days: 30
+
+entity_databases:
+
+  - name: FlyBase-Gene
+    <<: *flybase_common
+    organism: "Drosophila melanogaster"
+    description: "Drosophila Gene Database — maps FBgn IDs to representative publications"
+    id_pattern: "^FBgn\\d{7}$"
+    id_example: "FBgn0000022"
+    # Primary TSV: FBgn → FBrf|PMID pairs. FlyBase embeds the release version in the
+    # filename (e.g. representative_publications_fb_2026_02.tsv.gz) even under the
+    # stable "releases/current/" path, so the exact file is discovered at runtime
+    # from the directory listing rather than pinned here.
+    tsv_dir_url: "https://s3ftp.flybase.org/releases/current/precomputed_files/references/"
+    tsv_filename_regex: "^representative_publications_fb_.*\\.tsv\\.gz$"
+    id_column: "FBgn_ID"
+    symbol_column: "Symbol"
+    refs_column: "References"
+
+  # Covers every OTHER FlyBase ID type — alleles (FBal), aberrations (FBab),
+  # insertions (FBti), transgenic constructs (FBtp), clones (FBcl), transcripts
+  # (FBtr), polypeptides (FBpp), etc. — via FlyBase's entity_publication file,
+  # a generic (non-gene-specific) entity→publication association table.
+  # Listed AFTER FlyBase-Gene so gene IDs still resolve via the curated,
+  # ranked "representative publications" file above; this one only matches
+  # once that more specific pattern has already failed.
+  # Not a curated/ranked list (unlike representative_publications) — just raw
+  # associations, so entities with many publications can return long lists.
+  # Kept as a scanned (not fully-indexed) lookup: the file is ~5.7M rows across
+  # ~2M entities, too large to usefully cache as a parsed JSON index per request.
+  - name: FlyBase-Entity
+    organism: "Drosophila melanogaster"
+    description: "FlyBase entity↔publication associations — covers all non-gene FlyBase ID types (alleles, aberrations, insertions, constructs, etc.)"
+    id_pattern: "^FB(?!gn)[A-Za-z]{2}\\d+$"
+    id_example: "FBal0000001"
+    resolver_type: tsv_gz_scan
+    tsv_dir_url: "https://s3ftp.flybase.org/releases/current/precomputed_files/references/"
+    tsv_filename_regex: "^entity_publication_fb_.*\\.tsv\\.gz$"
+    tsv_comment_char: "#"
+    id_column: "entity_id"
+    symbol_column: "entity_name"
+    ref_id_column: "FlyBase_publication_id"
+    pmid_column: "PubMed_id"
+    missing_value_token: "-"
+    pmid_prefix: ""              # this file's PubMed_id column has no prefix, unlike the crossref file
+    crossref_dir_url: "https://s3ftp.flybase.org/releases/current/precomputed_files/references/"
+    crossref_filename_regex: "^fbrf_pmid_pmcid_doi_fb_.*\\.tsv\\.gz$"
+    crossref_id_col: "FBrf_ID"
+    crossref_pmid_col: "PMID"
+    crossref_pmcid_col: "PMCID"
+    crossref_doi_col: "DOI"
+    cache_ttl_days: 30
+
+  - name: WormBase
+    organism: "Caenorhabditis elegans"
+    description: "C. elegans Gene Database — maps WBGene IDs to publications"
+    id_pattern: "^WBGene\\d{8}$"
+    id_example: "WBGene00000001"
+    resolver_type: api_ncbi    # uses NCBI Gene cross-references
+    cache_ttl_days: 30
+
+  - name: MGI
+    organism: "Mus musculus"
+    description: "Mouse Genome Informatics — maps MGI IDs to publications"
+    id_pattern: "^MGI:\\d+$"
+    id_example: "MGI:87853"
+    resolver_type: api_ncbi
+    cache_ttl_days: 30
+
+  - name: ZFIN
+    organism: "Danio rerio"
+    description: "Zebrafish Information Network — maps ZDB-GENE IDs to publications"
+    id_pattern: "^ZDB-GENE-\\d{6}-\\d+$"
+    id_example: "ZDB-GENE-990415-72"
+    resolver_type: api_ncbi
+    cache_ttl_days: 30
+
+  - name: SGD
+    organism: "Saccharomyces cerevisiae"
+    description: "Saccharomyces Genome Database — maps S. cerevisiae gene IDs"
+    id_pattern: "^S\\d{9}$"
+    id_example: "S000000004"
+    resolver_type: api_ncbi
+    cache_ttl_days: 30
+
+  - name: RGD
+    organism: "Rattus norvegicus"
+    description: "Rat Genome Database — maps RGD IDs to publications"
+    id_pattern: "^RGD:\\d+$"
+    id_example: "RGD:2004"
+    resolver_type: api_ncbi
+    cache_ttl_days: 30

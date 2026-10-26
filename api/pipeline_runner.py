@@ -28,17 +28,19 @@ def run_pipeline(
     emit:          Callable,
     run_id:        str,
     source_name:   str = "",
+    source_entity: str = "",
     is_stopped:    Callable = None,
 ):
     try:
         _run(input_type, input_value, output_format, emit, run_id, source_name,
-             is_stopped=is_stopped or (lambda: False))
+             source_entity=source_entity, is_stopped=is_stopped or (lambda: False))
     except Exception as exc:
         emit({"layer": 0, "status": "fatal", "message": str(exc),
               "data": {"traceback": traceback.format_exc()}})
 
 
-def _run(input_type, input_value, output_format, emit, run_id, source_name, is_stopped=None):
+def _run(input_type, input_value, output_format, emit, run_id, source_name,
+         source_entity="", is_stopped=None):
     _proj_root = str(Path(__file__).parent.parent)
     if _proj_root not in sys.path:
         sys.path.insert(0, _proj_root)
@@ -97,4 +99,5 @@ def _run(input_type, input_value, output_format, emit, run_id, source_name, is_s
     if _check_stop(7): return
 
     # Layer 8 — publish to KG + verification
-    run_layer8(emit, doc_id, _safe_id, processed, tagged_chunks, staging_db, output_format, title)
+    run_layer8(emit, doc_id, _safe_id, processed, tagged_chunks, staging_db, output_format, title,
+               source_entity=source_entity)

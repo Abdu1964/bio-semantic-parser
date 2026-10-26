@@ -365,10 +365,10 @@ def write_metta(triples: list, out_dir: Path) -> dict:
         node_files.append(str(path))
 
     for (s_slug, rel, o_slug), rows in edges_by_type.items():
-        suffix  = f"{s_slug}_{rel}_{o_slug}"
-        rel_dir = out_dir / suffix
-        rel_dir.mkdir(parents=True, exist_ok=True)
-        path = rel_dir / f"edges_{suffix}.metta"
+        suffix   = f"{s_slug}_{rel}_{o_slug}"
+        type_dir = out_dir / s_slug
+        type_dir.mkdir(parents=True, exist_ok=True)
+        path = type_dir / f"edges_{suffix}.metta"
         with open(path, "w", encoding="utf-8") as f:
             f.write(f"; Bio Semantic Parser — Unified KG — edges_{suffix}.metta\n\n")
             for row in rows:
@@ -616,6 +616,48 @@ def run_export(out_root: Path = None, min_confidence: float = 0.0,
                 _write_metta_browser(metta_dir, metta_root / "files.html", len(triples))
             except Exception:
                 pass
+
+    # Per-species export, alongside the merged one
+    species_values = sorted({(t.get("species") or "").strip() for t in triples if t.get("species")})
+    for sp in species_values:
+        sp_triples = [t for t in triples if (t.get("species") or "").strip() == sp]
+        sp_slug    = _slug(sp)
+
+        if formats in ("neo4j", "both"):
+            sp_dir = neo4j_root / sp_slug / "neo4j"
+            sp_dir.mkdir(parents=True, exist_ok=True)
+            write_neo4j(sp_triples, sp_dir)
+            if generate_html:
+                try:
+                    subprocess.run(
+                        [sys.executable, "tools/visualize_graph.py",
+                         "--run-dir", str(neo4j_root / sp_slug),
+                         "--output", str(neo4j_root / sp_slug / "graph.html"),
+                         "--kg-root", str(out_root)],
+                        capture_output=True, text=True,
+                    )
+                except Exception:
+                    pass
+
+        if formats in ("metta", "both"):
+            sp_dir = metta_root / sp_slug / "metta"
+            sp_dir.mkdir(parents=True, exist_ok=True)
+            write_metta(sp_triples, sp_dir)
+            if generate_html:
+                try:
+                    _tmp = metta_root / sp_slug / "neo4j"
+                    _tmp.mkdir(parents=True, exist_ok=True)
+                    write_neo4j(sp_triples, _tmp)
+                    subprocess.run(
+                        [sys.executable, "tools/visualize_graph.py",
+                         "--run-dir", str(metta_root / sp_slug),
+                         "--output", str(metta_root / sp_slug / "graph.html")],
+                        capture_output=True, text=True,
+                    )
+                    import shutil as _sh
+                    _sh.rmtree(_tmp, ignore_errors=True)
+                except Exception:
+                    pass
 
     neo4j_ver_html = None
     metta_ver_html = None
