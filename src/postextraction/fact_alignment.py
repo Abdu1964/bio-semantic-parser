@@ -165,8 +165,8 @@ def align_facts(records: list) -> list:
         k, d = records[keep], records[drop]
         note = {"relation": _rel(d), "subject": d.get("subject_name"), "object": d.get("object_name"),
                 "sentence": _sentence(d), "reason": v["reason"], "scope": "paper"}
-        k.setdefault("merged_facts", []).append(note)
-        k.setdefault("supporting_evidence", []).append(_sentence(d))
+        k.setdefault("merged_facts", []).extend([*d.get("merged_facts", []), note])      # keep earlier merges too
+        k.setdefault("supporting_evidence", []).extend([*d.get("supporting_evidence", []), _sentence(d)])
         merged_into[drop] = keep
 
     kept = [r for i, r in enumerate(records) if i not in merged_into]
