@@ -9,10 +9,10 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
     image: rejuvebio/bio-semantic-parser-frontend:staging
-    container_name: bsp-frontend
+    #container_name: bsp-frontend
     restart: unless-stopped
     ports:
-      - "8006:80"
+      - "8020:80"
     volumes:
       - ./frontend/static:/app/frontend/static
     depends_on:
@@ -24,8 +24,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: rejuvebio/bio-semantic-parser-backend:staging
-    container_name: bsp-backend
+    #image: rejuvebio/bio-semantic-parser-backend:staging
+    #container_name: bsp-backend
     restart: unless-stopped
     expose:
       - "8000"
@@ -41,8 +41,8 @@ services:
       - ./data:/app/data
       - ./config:/app/config
       - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
-    mem_limit: 8g
-    memswap_limit: 8g
+    mem_limit: 16g
+    memswap_limit: 16g
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/sources"]
       interval: 30s
