@@ -1,4 +1,4 @@
-"""Layer 7 step 5 — second LLM pass to resolve entities that failed normalization."""
+"""Layer 7 step 5 — LLM proposes names for unresolved entities; databases give IDs."""
 import json
 import re
 from collections import defaultdict
@@ -15,20 +15,15 @@ def _parse_json(raw: str) -> dict:
     return json.loads(raw.strip())
 
 
-def _resolve_entities_for_paper(
+def _propose_names(
     unresolved_names: list,
     unresolved_types: list,
     already_resolved: list,
     paper_text: str,
 ) -> dict:
-    """
-    Second LLM call: infer canonical IDs for unresolved entities using
-    paper context and already-resolved entities from the same paper.
-
-    Returns: {entity_name: "canonical_id"} or STILL_UNKNOWN if not resolvable.
-    """
+    """{name: standard name or STILL_UNKNOWN} — never IDs."""
     resolved_context = "\n".join(
-        f"  {e['name']} ({e['type']}) → {e['id']}"
+        f"  {e['name']} ({e['type']})"
         for e in already_resolved[:20]
     )
     unresolved_list = "\n".join(
@@ -38,15 +33,15 @@ def _resolve_entities_for_paper(
 
     prompt = (
         f"PAPER TEXT EXCERPT:\n\"{paper_text[:2000]}\"\n\n"
-        f"ALREADY RESOLVED ENTITIES IN THIS PAPER:\n"
+        f"OTHER ENTITIES IN THIS PAPER:\n"
         f"{resolved_context if resolved_context else '  (none yet)'}\n\n"
-        f"UNRESOLVED ENTITIES THAT NEED CANONICAL IDs:\n{unresolved_list}\n\n"
-        "For each unresolved entity, provide the most likely canonical identifier.\n"
-        "Use these formats: MESH:D…  NCBI_GENE:…  CHEBI:…  UNIPROT:…\n"
-        "If you cannot determine it confidently, return STILL_UNKNOWN.\n\n"
+        f"UNRESOLVED ENTITIES:\n{unresolved_list}\n\n"
+        "For each unresolved entity, give the standard name used in biomedical ontologies "
+        "(expand abbreviations, fix spelling). Do not give IDs.\n"
+        "If it is vague or study-specific, return STILL_UNKNOWN.\n\n"
         "Return ONLY JSON:\n"
         "{\n"
-        '  "<entity_name>": "<canonical_id or STILL_UNKNOWN>",\n'
+        '  "<entity_name>": "<standard name or STILL_UNKNOWN>",\n'
         "  ...\n"
         "}"
     )
@@ -56,9 +51,7 @@ def _resolve_entities_for_paper(
             model           = _MODEL,
             messages        = [
                 {"role": "system", "content":
-                 "You are a biomedical entity normalisation expert. "
-                 "Return only valid JSON with canonical identifiers. "
-                 "Never guess — return STILL_UNKNOWN if not certain."},
+                 "You are a biomedical terminology expert. Return only valid JSON with standard names."},
                 {"role": "user", "content": prompt},
             ],
             temperature     = _TEMPERATURE,
@@ -68,6 +61,18 @@ def _resolve_entities_for_paper(
         return _parse_json(raw)
     except Exception:
         return {name: "STILL_UNKNOWN" for name in unresolved_names}
+
+
+def _lookup_proposed(name: str, entity_type: str) -> dict:
+    """Database lookup of a proposed name; {} unless it resolves to a trusted ID."""
+    from src.postextraction.entity_normalization import normalize_entity
+    if not name or name == "STILL_UNKNOWN" or ":" in name:
+        return {}
+    res = normalize_entity(name, entity_type)
+    cid = res.get("canonical_id", "")
+    if not cid or cid.startswith("TEXT:") or cid == "NEEDS_REVIEW" or res.get("needs_review"):
+        return {}
+    return {**res, "proposed_name": name}
 
 
 def resolve(records: list, text_by_doc: dict) -> list:
@@ -121,26 +126,28 @@ def resolve(records: list, text_by_doc: dict) -> list:
         paper_text = " ".join(chunk_texts) if chunk_texts else text_by_doc.get(doc_id, "")
 
         if unresolved_names:
-            resolved = _resolve_entities_for_paper(
+            proposed = _propose_names(
                 unresolved_names, unresolved_types, already_resolved, paper_text
             )
-            for name, cid in resolved.items():
-                resolution_map[name] = cid
+            types = dict(zip(unresolved_names, unresolved_types))
+            for name, std in proposed.items():
+                hit = _lookup_proposed(str(std or ""), types.get(name, "OTHER"))
+                if hit:
+                    resolution_map[name] = hit
 
     # Apply resolutions to all records
     updated = []
     for r in records:
         rec = dict(r)
-        for name_key, id_key, needs_key in [
-            ("subject_name", "subject_id", "subject_needs_review"),
-            ("object_name",  "object_id",  "object_needs_review"),
-        ]:
-            name = rec.get(name_key, "")
-            if rec.get(id_key) == "NEEDS_REVIEW" and name in resolution_map:
-                resolved_id = resolution_map[name]
-                if resolved_id != "STILL_UNKNOWN":
-                    rec[id_key]   = resolved_id
-                    rec[needs_key]= False
+        for side in ("subject", "object"):
+            name = rec.get(f"{side}_name", "")
+            if rec.get(f"{side}_id") == "NEEDS_REVIEW" and name in resolution_map:
+                hit = resolution_map[name]
+                rec[f"{side}_id"]             = hit["canonical_id"]
+                rec[f"{side}_canonical_name"] = hit.get("canonical_name", "")
+                rec[f"{side}_id_source"]      = hit.get("id_source", "")
+                rec[f"{side}_source_url"]     = hit.get("source_url", "")
+                rec[f"{side}_needs_review"]   = False
 
         # Re-evaluate review flag
         still_needs_review = (
