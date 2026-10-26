@@ -1,4 +1,4 @@
-"""Routes: /api/file, /api/discard-paper, /api/checkpoint-status, /api/config, /api/resume-from-layer, /api/status."""
+"""Routes: /api/file, /api/discard-paper, /api/checkpoint-status, /api/config, /api/resume-from-layer, /api/results, /api/status."""
 import os
 import shutil
 import sys
@@ -131,8 +131,10 @@ async def checkpoint_status(doc_id: str = "", filename: str = ""):
                 meta       = _j.loads(ckpt.read_text())
                 completed  = meta.get("completed_layers", [])
                 next_layer = None if 8 in completed else next((l for l in range(3, 9) if l not in completed), None)
+                substeps   = meta.get("substeps", {})
                 return {"has_checkpoint": True, "completed_layers": completed,
-                        "next_layer": next_layer, "doc_id": doc_id}
+                        "next_layer": next_layer, "doc_id": doc_id,
+                        "substeps": substeps}
 
         if filename and ckpt_root.exists():
             fname_stem = filename.lower().replace(".pdf", "").replace(".txt", "")
@@ -161,8 +163,12 @@ async def get_config():
 
 
 @router.post("/api/resume-from-layer")
-async def resume_from_layer(doc_id: str = Form(...), from_layer: int = Form(...)):
-    """Reset checkpoint so pipeline resumes from from_layer on next run."""
+async def resume_from_layer(
+    doc_id: str = Form(...),
+    from_layer: int = Form(...),
+    from_substep: int = Form(0),
+):
+    """Reset checkpoint so pipeline resumes from from_layer (optionally from_substep) on next run."""
     try:
         import json as _j
         _safe_doc = doc_id.replace("/", "_").replace(":", "_")
@@ -173,35 +179,161 @@ async def resume_from_layer(doc_id: str = Form(...), from_layer: int = Form(...)
         meta           = _j.loads(ckpt_meta.read_text())
         old_layers     = meta.get("completed_layers", [])
         effective_from = max(from_layer, 3)
-        reset_layers   = [l for l in old_layers if l >= effective_from]
-        meta["completed_layers"] = [l for l in old_layers if l < effective_from]
-        ckpt_meta.write_text(_j.dumps(meta, indent=2))
-
-        ckpt_dir   = ckpt_meta.parent
-        _layer_files = {
+        ckpt_dir       = ckpt_meta.parent
+        _layer_files   = {
             3: "layer3_chunks.json",
             4: "layer4_annotated.json",
             6: "layer6_results.json",
             7: "layer7_processed.json",
         }
         deleted_files = []
-        for l in reset_layers:
-            fname = _layer_files.get(l)
+
+        if from_substep > 0:
+            # Sub-step resume: clear sub-steps >= from_substep
+            substeps = meta.get("substeps", {})
+            key = str(from_layer)
+            all_ss = substeps.get(key, [])
+            for ss in all_ss:
+                if ss >= from_substep:
+                    f = ckpt_dir / f"layer{from_layer}_substep{ss}.json"
+                    if f.exists():
+                        f.unlink()
+                        deleted_files.append(f.name)
+            kept_ss = [s for s in all_ss if s < from_substep]
+            if kept_ss:
+                substeps[key] = kept_ss
+            else:
+                substeps.pop(key, None)
+            meta["substeps"] = substeps
+            # Also remove the full layer checkpoint so it re-runs
+            fname = _layer_files.get(from_layer)
             if fname:
                 f = ckpt_dir / fname
                 if f.exists():
                     f.unlink()
                     deleted_files.append(fname)
+            reset_layers = [from_layer] if from_layer in old_layers else []
+            meta["completed_layers"] = [l for l in old_layers if l != from_layer]
+        else:
+            # Full layer reset
+            reset_layers = [l for l in old_layers if l >= effective_from]
+            meta["completed_layers"] = [l for l in old_layers if l < effective_from]
+            # Also clear all substeps for reset layers
+            substeps = meta.get("substeps", {})
+            for l in reset_layers:
+                for ss in substeps.pop(str(l), []):
+                    f = ckpt_dir / f"layer{l}_substep{ss}.json"
+                    if f.exists():
+                        f.unlink()
+                        deleted_files.append(f.name)
+            meta["substeps"] = substeps
+            for l in reset_layers:
+                fname = _layer_files.get(l)
+                if fname:
+                    f = ckpt_dir / fname
+                    if f.exists():
+                        f.unlink()
+                        deleted_files.append(fname)
 
+        ckpt_meta.write_text(_j.dumps(meta, indent=2))
         return {
             "ok":            True,
             "from_layer":    from_layer,
+            "from_substep":  from_substep,
             "kept_layers":   meta["completed_layers"],
-            "reset_layers":  reset_layers,
             "deleted_files": deleted_files,
         }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+@router.get("/api/results")
+async def get_results(doc_id: str = ""):
+    """Return output file paths and metrics for the most recent completed run of a paper."""
+    try:
+        import json as _j
+        if not doc_id:
+            return JSONResponse({"error": "doc_id required"}, status_code=400)
+
+        _safe = doc_id.replace("/", "_").replace(":", "_")
+        # Lowercase, underscores — for folder matching
+        _norm = _safe.lower().replace(" ", "_").replace(".", "_")
+        kg_root = _ROOT / "data" / "kg_output"
+
+        # Run folders matching the id prefix, newest first
+        _key = _norm[:18]
+        candidates = sorted(
+            [d for d in kg_root.iterdir()
+             if d.is_dir() and _key in d.name.lower()],
+            key=lambda d: d.name,
+            reverse=True,
+        )
+        if not candidates:
+            return JSONResponse({"error": "No output found for this paper"}, status_code=404)
+
+        run_dir = candidates[0]
+
+        eval_report = {}
+        eval_path = run_dir / "eval_report.json"
+        if eval_path.exists():
+            try:
+                eval_report = _j.loads(eval_path.read_text())
+            except Exception:
+                pass
+
+        ver_results = []
+        ver_json = run_dir / "verification_report.json"
+        if ver_json.exists():
+            try:
+                raw = _j.loads(ver_json.read_text())
+                if isinstance(raw, list):
+                    ver_results = raw[:35]
+            except Exception:
+                pass
+
+        n_verified  = sum(1 for r in ver_results if r.get("overall_status") == "CONFIRMED")
+        n_total     = len(ver_results)
+
+        graph_html = run_dir / "graph.html"
+        ver_html   = run_dir / "verification_report.html"
+        pln_html   = (run_dir / "pln_graph.html") if (run_dir / "pln_graph.html").exists() \
+                     else (run_dir / "pln" / "pln_graph.html")
+
+        from api.pipeline_utils import _count_run_edges, _count_run_nodes
+        neo4j_edges = _count_run_edges(run_dir, "neo4j")
+        metta_edges = _count_run_edges(run_dir, "metta")
+        neo4j_nodes = _count_run_nodes(run_dir)
+
+        staging_db = _ROOT / "data" / "staging" / f"{_safe}_both.db"
+        if not staging_db.exists():
+            staging_db = _ROOT / "data" / "staging" / f"{_safe}_neo4j.db"
+        if not staging_db.exists():
+            staging_db = Path("")
+
+        return {
+            "run_dir":        str(run_dir),
+            "graph_html":     str(graph_html)  if graph_html.exists()  else "",
+            "pln_html":       str(pln_html)    if pln_html.exists()    else "",
+            "ver_html":       str(ver_html)    if ver_html.exists()    else "",
+            "staging_db":     str(staging_db)  if staging_db.exists()  else "",
+            "neo4j_edges":    neo4j_edges,
+            "neo4j_nodes":    neo4j_nodes,
+            "metta_edges":    metta_edges,
+            "metta_nodes":    0,
+            "verified":       n_verified,
+            "total":          n_total,
+            "ver_results":    ver_results,
+            "paper_precision": eval_report.get("precision", 0.0),
+            "paper_recall":    eval_report.get("recall",    0.0),
+            "paper_f1":        eval_report.get("f1",        0.0),
+            "paper_tp":        eval_report.get("tp",        0),
+            "paper_fp":        eval_report.get("fp",        0),
+            "paper_fn":        eval_report.get("fn",        0),
+            "auto_insert":     n_verified,
+            "human_review":    0,
+        }
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @router.get("/api/status")

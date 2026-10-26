@@ -26,16 +26,43 @@ def run_layer7(emit, doc_id, _safe_id, results, tagged_chunks, output_format, _c
         os.environ["TRIPLE_STORE_PATH"] = str(staging_db)
 
         from src.postextraction.postextractor import process as postprocess
+        from src.pipeline_checkpoint import (
+            save_substep as _save_ss, load_substep as _load_ss,
+            get_completed_substeps as _get_ss,
+        )
         pairs = list(zip(results, tagged_chunks))
 
         if not _skip(7):
             _l7_start = _time.time()
 
+            # ── Detect sub-step checkpoints ───────────────────────────────────
+            _done_substeps = _get_ss(doc_id, 7)
+            _resume_step   = 1
+            _preloaded_records   = None
+            _preloaded_validated = None
+
+            if 6 in _done_substeps:
+                _preloaded_validated = _load_ss(doc_id, 7, 6)
+                if _preloaded_validated:
+                    _resume_step = 7
+                    sys.stderr.write(f"[Layer 7] Sub-step checkpoint: skipping normalization + validation (step 6 saved)\n")
+                    sys.stderr.flush()
+            elif 1 in _done_substeps:
+                _preloaded_records = _load_ss(doc_id, 7, 1)
+                if _preloaded_records:
+                    _resume_step = 2
+                    sys.stderr.write(f"[Layer 7] Sub-step checkpoint: skipping entity normalization (step 1 saved)\n")
+                    sys.stderr.flush()
+
+            _step_timer = [_time.time()]   # per-step timer
+
             def _step_cb(step, label, detail):
-                elapsed = _time.time() - _l7_start
+                now = _time.time()
+                step_elapsed = now - _step_timer[0]
+                _step_timer[0] = now
                 msg = f"  Step {step}/7 — {label}" + (f": {detail}" if detail else "")
                 _log(emit, 7, msg)
-                sys.stderr.write(f"[Layer 7] {elapsed:.0f}s  {msg}\n")
+                sys.stderr.write(f"[Layer 7] +{step_elapsed:.0f}s  {msg}\n")
                 sys.stderr.flush()
 
             def _batch_cb(done, total, n_valid):
@@ -46,11 +73,26 @@ def run_layer7(emit, doc_id, _safe_id, results, tagged_chunks, output_format, _c
                       f"Semantic validation: batch {done}/{total} — {n_valid} VALID so far",
                       {"done": done, "total": total, "valid": n_valid})
 
+            def _substep_save(step, data):
+                try:
+                    _save_ss(doc_id, 7, step, data)
+                    sys.stderr.write(f"[Layer 7] Sub-step {step} checkpoint saved ({len(data)} records)\n")
+                    sys.stderr.flush()
+                except Exception as _e:
+                    sys.stderr.write(f"[Layer 7] Sub-step save failed: {_e}\n")
+
             _n_rels = sum(len(r.relations) for r, _ in pairs if hasattr(r, "relations"))
-            sys.stderr.write(f"[Layer 7] Starting — {len(pairs)} pairs / ~{_n_rels} relations to process\n")
-            sys.stderr.write(f"[Layer 7] Computing confidence scores ({_n_rels} NLI passes) — this takes ~{max(5, _n_rels // 10)}s on CPU…\n")
+            sys.stderr.write(f"[Layer 7] Starting from step {_resume_step} — {len(pairs)} pairs / ~{_n_rels} relations\n")
             sys.stderr.flush()
-            processed = postprocess(pairs, step_cb=_step_cb, batch_cb=_batch_cb)
+            processed = postprocess(
+                pairs,
+                step_cb=_step_cb,
+                batch_cb=_batch_cb,
+                resume_from_step=_resume_step,
+                preloaded_records=_preloaded_records,
+                preloaded_validated=_preloaded_validated,
+                step_save_cb=_substep_save,
+            )
             sys.stderr.write(f"[Layer 7] Done in {_time.time() - _l7_start:.0f}s\n")
             sys.stderr.flush()
         else:
