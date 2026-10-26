@@ -186,6 +186,8 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
     if auto_insert:
         log(f"Writing {len(auto_insert)} record(s) to Atomspace (Neo4j CSV + MeTTa)…")
         result = insert_to_atomspace(auto_insert, run_dir=run, formats=formats)
+        if formats in ("metta", "both"):
+            _write_identity_atoms(run)
         summary["auto_insert"] = result["records"]
         summary["neo4j"]       = result["neo4j"]
         summary["metta"]       = result["metta"]
@@ -274,6 +276,8 @@ def export_csvs_from_db(staging_db: str, run_dir: str, formats: str = "neo4j") -
 
     try:
         insert_to_atomspace(records, run_dir=run, formats=formats)
+        if formats in ("metta", "both"):
+            _write_identity_atoms(run)
     except Exception:
         pass
 
@@ -294,15 +298,26 @@ def _write_alignment(records: list, run_dir) -> None:
     with path.open("w", encoding="utf-8") as f:
         for m in merges.values():
             f.write(_json.dumps(m, default=str) + "\n")
-    # IdenticalTo atoms; strength by method
+
+
+def _write_identity_atoms(run_dir) -> None:
+    """metta/identity.metta from alignment.jsonl — call after each MeTTa export (it clears metta/)."""
+    import json as _json
+    src = Path(run_dir) / "alignment.jsonl"
+    if not src.exists():
+        return
     atoms = []
-    for m in merges.values():
+    for line in src.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        m = _json.loads(line)
         strength, conf = (1.0, 0.95) if m.get("method") in ("cross_reference", "synonym") \
-            else (0.9, round(float(m.get("score") or 0.8), 3))
+            else (0.9, round(float(m.get("score") or 0.8), 3))          # strength by method
         atoms.append(f'(IdenticalTo (Concept "{m["from"]}") (Concept "{m["to"]}") (stv {strength} {conf}))')
-    metta_dir = Path(run_dir) / "metta"
-    metta_dir.mkdir(parents=True, exist_ok=True)
-    (metta_dir / "identity.metta").write_text("\n".join(atoms) + "\n", encoding="utf-8")
+    if atoms:
+        metta_dir = Path(run_dir) / "metta"
+        metta_dir.mkdir(parents=True, exist_ok=True)
+        (metta_dir / "identity.metta").write_text("\n".join(atoms) + "\n", encoding="utf-8")
 
 
 def _write_fact_merges(records: list, run_dir) -> None:
