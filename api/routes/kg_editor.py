@@ -12,9 +12,31 @@ if str(_ROOT) not in sys.path:
 router = APIRouter()
 
 
-def _resolve(db_path: str) -> Path:
+_STAGING   = (_ROOT / "data" / "staging").resolve()
+_KG_OUTPUT = (_ROOT / "data" / "kg_output").resolve()
+_KG_DBS    = {(_ROOT / "data" / n).resolve()
+              for n in ("triple_store.db", "triple_store_neo4j.db", "triple_store_metta.db")}
+
+
+def _resolve(db_path: str):
+    """Allowed DB path (a staging DB or a unified KG DB), else None."""
     p = Path(db_path)
-    return p if p.is_absolute() else _ROOT / p
+    p = (p if p.is_absolute() else _ROOT / p).resolve()
+    if p in _KG_DBS or (p.parent == _STAGING and p.suffix == ".db"):
+        return p
+    return None
+
+
+def _resolve_run_dir(run_dir: str):
+    """Allowed run directory (inside data/kg_output), else None."""
+    p = Path(run_dir)
+    p = (p if p.is_absolute() else _ROOT / p).resolve()
+    return p if p.is_relative_to(_KG_OUTPUT) and p != _KG_OUTPUT else None
+
+
+def _forbidden(what: str) -> JSONResponse:
+    return JSONResponse({"ok": False, "triples": [], "total": 0, "error": f"{what} not allowed"},
+                        status_code=400)
 
 
 @router.get("/api/kg/relations")
@@ -40,6 +62,8 @@ async def list_triples(
     try:
         import sqlite3 as _sq
         p = _resolve(db_path)
+        if p is None:
+            return _forbidden("db_path")
         if not p.exists():
             return JSONResponse({"triples": [], "total": 0, "error": f"DB not found: {db_path}"})
 
@@ -54,9 +78,11 @@ async def list_triples(
             params.extend([pq, pq, pq])
 
         total = conn.execute(f"SELECT COUNT(*) FROM triples {where}", params).fetchone()[0]
+        cols  = {r[1] for r in conn.execute("PRAGMA table_info(triples)")}
+        section = ", section" if "section" in cols else ""      # older DBs have no section column
         rows  = conn.execute(
             f"SELECT id, subject_name, subject_id, subject_type, relation, "
-            f"object_name, object_id, object_type, negated, confidence, section "
+            f"object_name, object_id, object_type, negated, confidence{section} "
             f"FROM triples {where} ORDER BY id DESC LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
@@ -85,6 +111,10 @@ async def update_triple(
         import sqlite3 as _sq
         from datetime import datetime, timezone
         p = _resolve(db_path)
+        if p is None:
+            return _forbidden("db_path")
+        if run_dir and _resolve_run_dir(run_dir) is None:
+            return _forbidden("run_dir")
         if not p.exists():
             return JSONResponse({"ok": False, "error": "DB not found"})
 
@@ -98,7 +128,7 @@ async def update_triple(
         conn.commit()
         conn.close()
 
-        _thr.Thread(target=_rebuild, args=(db_path, run_dir), daemon=True).start()
+        _thr.Thread(target=_rebuild, args=(p, _resolve_run_dir(run_dir) if run_dir else None), daemon=True).start()
         return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
@@ -116,6 +146,10 @@ async def delete_triple(
     try:
         import sqlite3 as _sq
         p = _resolve(db_path)
+        if p is None:
+            return _forbidden("db_path")
+        if run_dir and _resolve_run_dir(run_dir) is None:
+            return _forbidden("run_dir")
         if not p.exists():
             return JSONResponse({"ok": False, "error": "DB not found"})
 
@@ -124,20 +158,16 @@ async def delete_triple(
         conn.commit()
         conn.close()
 
-        _thr.Thread(target=_rebuild, args=(db_path, run_dir), daemon=True).start()
+        _thr.Thread(target=_rebuild, args=(p, _resolve_run_dir(run_dir) if run_dir else None), daemon=True).start()
         return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
 
 
-def _rebuild(db_path: str, run_dir: str) -> None:
-    """Re-export CSVs → rebuild graph → re-verify. Same logic as human_review rebuild."""
-    sdb = _resolve(db_path)
+def _rebuild(sdb: Path, _run) -> None:
+    """Re-export CSVs → rebuild graph → re-verify (paths already validated)."""
     try:
-        if run_dir:
-            _run = Path(run_dir)
-            if not _run.is_absolute():
-                _run = _ROOT / run_dir
+        if _run:
 
             from src.publish.output_layer import export_csvs_from_db
             from tools.visualize_graph import build_graph_data, render_html
