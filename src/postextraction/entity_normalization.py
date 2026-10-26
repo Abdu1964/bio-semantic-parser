@@ -806,7 +806,7 @@ def _ols4_candidates(text: str, ontologies: list, rows: int = 10) -> list:
             oid = oid.replace("_", ":", 1) if "_" in oid and ":" not in oid else oid
             syns = d.get("synonym") or []
             syns = [syns] if isinstance(syns, str) else syns
-            if oid and ":" in oid and label:
+            if oid and ":" in oid and label and not _malformed_id(oid):
                 out.append((oid, _uninvert_mesh_label(label, first(d.get("ontology_prefix"))),
                             first(d.get("ontology_prefix")), "; ".join(syns), first(d.get("iri"))))
     except Exception as e:
@@ -830,7 +830,7 @@ def _llm_pick(text: str, entity_type: str, context: str, cands: list) -> Optiona
         f'Ontology candidates:\n{listing}\n\n'
         'Which candidate denotes exactly the same concept as the term as used here? '
         'A broader, narrower or related concept does not count; neither does a different organism\'s '
-        'gene or a different disease. Answer with the number only, or NONE.'
+        'gene or a different disease. If several fit, pick the lowest number. Answer with the number only, or NONE.'
     )
     pick = None
     try:
@@ -858,7 +858,7 @@ def _verified_candidate(text: str, entity_type: str, context: str, ontologies: l
             words = set(tokens(c[1])) | {t for syn in c[3].split("; ") for t in tokens(syn)}
             if c[0] not in seen and core & words and not _wrong_organism(c[1], species):
                 seen.add(c[0]); cands.append(c)
-    cands = cands[:8]
+    cands = sorted(cands, key=lambda c: _ontology_rank(c[2]))[:8]     # core ontologies first
     i = _llm_pick(text, entity_type, context, cands) if cands else None
     if i is None or not 0 <= i < len(cands):
         return None

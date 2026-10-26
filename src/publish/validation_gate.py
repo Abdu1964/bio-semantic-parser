@@ -102,6 +102,8 @@ def split_discards(human_review: list) -> tuple:
             keep.append(r)
             continue
         reasons = []
+        if r.get("subject_id") and r.get("subject_id") == r.get("object_id"):
+            reasons.append("subject and object are the same entity")
         if r.get("validation_verdict") == "REJECT":
             reasons.append("semantic validation REJECT: " + (r.get("validation_reasoning") or "")[:200])
         for side in ("subject", "object"):
