@@ -7,6 +7,7 @@ from . import (
     semantic_validation,
     atomspace_alignment,
     concept_alignment,
+    fact_alignment,
 )
 from .postextractor import process, process_batch
 
@@ -19,6 +20,7 @@ __all__ = [
     "semantic_validation",
     "atomspace_alignment",
     "concept_alignment",
+    "fact_alignment",
     "process",
     "process_batch",
 ]
