@@ -12,6 +12,14 @@ _INDEX_NUMBERED_SHARE, _INDEX_MAX_MEDIAN_LEN = 0.65, 40
 _E_RANGE = re.compile(r"\b(\d{1,4})e(\d{1,4})\b")                    # "233e237"
 _E_NAME_JOIN = re.compile(r"\b([A-Z][a-z]{2,})e([A-Z][a-z]{2,})\b")    # "HutchinsoneGilford"
 _DASH_GLYPH_MIN = 5
+
+
+def _is_page_range(m) -> bool:
+    """'233e237': both sides ≥2 digits, same length, second a bit larger — never '1e6' or '2e10'."""
+    a, b = m.group(1), m.group(2)
+    return len(a) >= 2 and len(a) == len(b) and 0 < int(b) - int(a) <= 200
+
+
 _BLANK_PAGE = re.compile(r"^this page (?:is )?(?:intentionally )?left blank\.?$", re.I)
 
 # Hyphenation at line breaks ("robust-\nness").
@@ -72,12 +80,14 @@ class TextCleaner:
     def _repair_dash_glyphs(self, text: str) -> str:
         """Restore en dashes some PDF fonts extract as 'e' (only if the document shows it)."""
         self.dashes_repaired = 0
-        ranges = [m for m in _E_RANGE.finditer(text) if int(m.group(1)) < int(m.group(2))]
+        if PAGE_BREAK not in text:                       # only PDF text has this glyph defect
+            return text
+        ranges = [m for m in _E_RANGE.finditer(text) if _is_page_range(m)]
         if len(ranges) < _DASH_GLYPH_MIN:
             return text
 
         def fix_range(m):
-            if int(m.group(1)) >= int(m.group(2)):
+            if not _is_page_range(m):                    # e.g. scientific notation "1e6"
                 return m.group(0)
             self.dashes_repaired += 1
             return f"{m.group(1)}\u2013{m.group(2)}"
