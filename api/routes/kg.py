@@ -459,8 +459,7 @@ async def list_species():
         finally:
             conn.close()
         for name, n in rows:
-            counts[name] = max(counts.get(name, 0), n)
-        break  # neo4j/metta stores mirror the same data — one pass is enough
+            counts[name] = max(counts.get(name, 0), n)   # stores can differ (format-specific commits)
 
     from tools.export_unified import _slug
     species = [{"name": name, "slug": _slug(name), "count": n} for name, n in sorted(counts.items())]
