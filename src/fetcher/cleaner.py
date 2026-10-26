@@ -6,6 +6,7 @@ PAGE_BREAK = "\f"   # PDFHandler separates pages with this
 
 # Repeated lines = page furniture; pages of short numbered lines = contents/index.
 _FURNITURE_SHARE = 0.2
+_MARGIN_LINES = 3            # headers/footers live in the first/last lines of a page
 _PAGE_NUM_END = re.compile(r"(?:^|[\s.,])(?:\d{1,4}(?:[e–—-]\d{1,4})?|[ivxlcdm]{1,7})[,.;]?\s*$", re.I)
 _TOC_MIN_LINES, _TOC_NUMBERED_SHARE, _TOC_MAX_MEDIAN_LEN = 15, 0.55, 25
 _INDEX_NUMBERED_SHARE, _INDEX_MAX_MEDIAN_LEN = 0.65, 40
@@ -107,16 +108,18 @@ class TextCleaner:
             return text
 
         key = lambda line: re.sub(r"^\d+\s*|\s*\d+$", "#", line.strip().lower())  # page numbers sit at line edges
+        in_margin = lambda i, n: i < _MARGIN_LINES or i >= n - _MARGIN_LINES
+        page_lines = [[l for l in page.split("\n") if l.strip()] for page in pages]
         seen = Counter()
-        for page in pages:
-            seen.update({key(l) for l in page.split("\n") if len(l.strip()) >= 8})
+        for lines in page_lines:
+            seen.update({key(l) for i, l in enumerate(lines) if in_margin(i, len(lines)) and len(l.strip()) >= 8})
         threshold = max(3, int(len(pages) * _FURNITURE_SHARE))
         furniture = {k for k, n in seen.items() if n >= threshold}
 
         kept = []
-        for page in pages:
-            lines = [l for l in page.split("\n") if l.strip()]
-            body = [l for l in lines if key(l) not in furniture and not _BLANK_PAGE.match(l.strip())]
+        for lines in page_lines:
+            body = [l for i, l in enumerate(lines)
+                    if not (in_margin(i, len(lines)) and key(l) in furniture) and not _BLANK_PAGE.match(l.strip())]
             self.furniture_lines_removed += len(lines) - len(body)
             if self._is_toc_or_index(body):
                 self.toc_pages_removed += 1
