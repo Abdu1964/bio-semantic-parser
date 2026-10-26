@@ -140,16 +140,31 @@ def _get_verification_lock(run_dir_str: str):
             _verification_pending[run_dir_str] = False
         return _verification_locks[run_dir_str]
 
-def _set_verification_pending(run_dir_str: str):
-    with _verification_locks_mu:
-        _verification_pending[run_dir_str] = True
-
 def _take_verification_pending(run_dir_str: str) -> bool:
     """Atomically read-and-clear the pending flag. True means a re-run is needed."""
     with _verification_locks_mu:
         v = _verification_pending.get(run_dir_str, False)
         _verification_pending[run_dir_str] = False
         return v
+
+
+def _acquire_or_mark_pending(run_dir_str: str, lock) -> bool:
+    """Take the verification lock, or mark a re-run for the current holder — atomically."""
+    with _verification_locks_mu:
+        if lock.acquire(blocking=False):
+            return True
+        _verification_pending[run_dir_str] = True
+        return False
+
+
+def _release_unless_pending(run_dir_str: str, lock) -> bool:
+    """Release the lock if no re-run is pending (True = done); else clear the flag and keep it."""
+    with _verification_locks_mu:
+        if _verification_pending.get(run_dir_str, False):
+            _verification_pending[run_dir_str] = False
+            return False
+        lock.release()
+        return True
 
 
 @router.post("/api/human-review/action")
@@ -203,12 +218,13 @@ async def review_action(
                 # Re-run verification so the report reflects the current approved set.
                 # If verification is already running, mark it pending so it runs again
                 lock = _get_verification_lock(run_dir_str)
-                if lock.acquire(blocking=False):
+                if _acquire_or_mark_pending(run_dir_str, lock):
+                    done = False
                     try:
                         from tools.verify_kg import run_verification
-                        if _run_path.exists():
-                            while True:
-                                _take_verification_pending(run_dir_str)
+                        _take_verification_pending(run_dir_str)
+                        while True:
+                            if _run_path.exists():
                                 for fmt, out_html, out_json in [
                                     ("neo4j",
                                      _run_path / "verification_report.html",
@@ -224,12 +240,13 @@ async def review_action(
                                             out_html=out_html, out_json=out_json,
                                         )
                                     except Exception: pass
-                                if not _take_verification_pending(run_dir_str):
-                                    break
+                            # Exit and lock release are atomic with new approvals marking "pending".
+                            if _release_unless_pending(run_dir_str, lock):
+                                done = True
+                                break
                     finally:
-                        lock.release()
-                else:
-                    _set_verification_pending(run_dir_str)
+                        if not done:
+                            lock.release()
             except Exception: pass
 
         def _delayed_rebuild(sdb_path, rdir):
