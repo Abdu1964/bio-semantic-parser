@@ -131,6 +131,11 @@ class Fetcher:
         before_len = len(text)
         text = self.cleaner.clean(text)
         log(f"           ✓ {before_len:,} → {len(text):,} chars  ({before_len - len(text):,} removed)")
+        log(f"           ✓ Page furniture lines: {self.cleaner.furniture_lines_removed:,}  |  "
+            f"Contents/index pages: {self.cleaner.toc_pages_removed}  |  "
+            f"Reference entries: {self.cleaner.references_removed:,}  |  "
+            f"Hyphenated words rejoined: {self.cleaner.hyphens_rejoined:,}  |  "
+            f"Dashes repaired: {self.cleaner.dashes_repaired:,}")
 
         # Step 4 — coreference resolution
         log("  Step 4 — Resolving coreferences...")
