@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.postextraction import concept_alignment as ca
 from src.postextraction import entity_normalization as en
-from src.postextraction.name_matching import term_key
+from src.postextraction.name_matching import EXACT, match_quality
 
 logger = logging.getLogger(__name__)
 
@@ -60,16 +60,16 @@ def _kg_concepts() -> dict:
     return concepts
 
 
-def _synonym_keys(c: dict) -> set:
+def _synonyms(c: dict) -> list:
     syns = c["rec"].get("synonyms") or ""
-    syns = syns.split("; ") if isinstance(syns, str) else list(syns)
-    return {term_key(x) for x in syns + [c["label"]] if x}
+    return [x for x in (syns.split("; ") if isinstance(syns, str) else syns) if x]
 
 
 def _synonym_says_same(a: dict, b: dict) -> bool:
-    """A database lists one concept's name as a synonym of the other."""
-    return bool(term_key(a["label"])) and (term_key(a["label"]) in _synonym_keys(b)
-                                          or term_key(b["label"]) in _synonym_keys(a))
+    """A database lists one concept's name as an exact synonym of the other (reorderings aren't enough)."""
+    return bool(a["label"] and b["label"]) and (
+        match_quality(a["label"], b["label"], _synonyms(b)) == EXACT
+        or match_quality(b["label"], a["label"], _synonyms(a)) == EXACT)
 
 
 def align_with_kg(records: list) -> list:

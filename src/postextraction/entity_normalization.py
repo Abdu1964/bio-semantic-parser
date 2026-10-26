@@ -2254,16 +2254,16 @@ def merge_synonym_concepts(records: list) -> list:
                 prefix = _ontology_prefix_of(cid)
                 info[cid] = {"fam": _PREFIX_FAMILY.get(prefix) or _TYPE_FAMILY.get(r.get(f"{side}_type"), "concept"),
                              "prefix": prefix,
-                             "label": term_key(r.get(f"{side}_canonical_name") or ""),
-                             "names": {term_key(x) for x in syns + [r.get(f"{side}_canonical_name") or ""] if x},
+                             "label": r.get(f"{side}_canonical_name") or "",
+                             "syns": [x for x in syns if x],
                              "rank": _ontology_rank(_ontology_prefix_of(cid)),
                              "rec": {f: r.get(f"{side}_{f}") for f in fields}}
     target: dict = {}
     for a, ia in info.items():
         for b, ib in info.items():
-            if (a == b or ia["prefix"] == ib["prefix"] or ia["fam"] != ib["fam"]
-                    or not ia["label"] or ia["label"] not in ib["names"]):
-                continue
+            if (a == b or ia["prefix"] == ib["prefix"] or ia["fam"] != ib["fam"] or not ia["label"]
+                    or match_quality(ia["label"], ib["label"], ib["syns"]) != EXACT):
+                continue                                       # reorderings like "control rodents" aren't enough
             keep, drop = (a, b) if ia["rank"] < ib["rank"] else (b, a)
             target.setdefault(drop, keep)
     for a in list(target):                                         # follow chains
