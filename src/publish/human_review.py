@@ -156,7 +156,7 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
         return 0
 
     queue_path = queue_path or _QUEUE_PATH
-    conn = _sq.connect(staging_db)
+    conn = _sq.connect(staging_db, timeout=10)
     conn.row_factory = _sq.Row
 
     # Ensure schema matches staging DB

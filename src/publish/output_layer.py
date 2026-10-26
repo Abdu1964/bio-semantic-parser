@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.publish.validation_gate    import route
+from src.publish.validation_gate    import route, split_discards
 from src.publish.human_review       import append as queue_for_review
 from src.publish.atomspace_inserter import insert_to_atomspace
 from src.publish.output_verifier    import verify_run
@@ -64,22 +64,22 @@ def _doc_id_slug(doc_id: str) -> str:
     return _slug(d, 40)
 
 
-def _run_dir(paper_name: str = "", doc_id: str = "") -> Path:
-    """
-    Create a timestamped directory for this run.
-    Folder name = YYYY-MM-DD_HH-MM-SS_{doc_id_slug}
-    Falls back to paper_name slug if doc_id is not available.
-    """
+def _run_dir(paper_name: str = "", doc_id: str = "", species: str = "", entity_id: str = "") -> Path:
+    """Create a timestamped run directory, nested under {species}/{entity_id}/ if given."""
     ts      = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
     suffix  = _doc_id_slug(doc_id) or _slug(paper_name)
     name    = f"{ts}_{suffix}" if suffix else ts
-    run     = _KG_ROOT / name
+    root    = _KG_ROOT
+    if species and entity_id:
+        root = root / _slug(species) / _slug(entity_id, max_len=64)
+    run = root / name
     run.mkdir(parents=True, exist_ok=True)
     return run
 
 
 def process(records: list, verbose: bool = False, text_by_doc: dict = None,
-            formats: str = "both", paper_name: str = "", doc_id: str = "") -> dict:
+            formats: str = "both", paper_name: str = "", doc_id: str = "",
+            species: str = "", entity_id: str = "") -> dict:
     """
     Run Layer 8 on all records from Layer 7.
 
@@ -102,7 +102,7 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
     # Auto-extract doc_id from records if not provided
     if not doc_id and records:
         doc_id = records[0].get("document_id", "") if records else ""
-    run = _run_dir(paper_name, doc_id=doc_id)
+    run = _run_dir(paper_name, doc_id=doc_id, species=species, entity_id=entity_id)
     log(f"Run directory: {run}")
 
     # Build text lookup using BOTH document_id and chunk_index as key.
@@ -125,7 +125,15 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
     # ── Validation Gate ───────────────────────────────────────────────────────
     log("Validation Gate")
     auto_insert, human_review = route(records)
-    log(f"  → {len(auto_insert)} auto-insert  |  {len(human_review)} → human review")
+    human_review, discarded = split_discards(human_review)
+    auto_insert, generic = split_discards(auto_insert)     # generic entities can pass the validator too
+    discarded += generic
+    log(f"  → {len(auto_insert)} auto-insert  |  {len(human_review)} → human review  |  "
+        f"{len(discarded)} discarded (rejected.jsonl)")
+    if discarded:
+        _write_rejected(discarded, run)
+    _write_alignment(auto_insert + human_review + discarded, run)
+    _write_fact_merges(auto_insert + human_review + discarded, run)
 
     # ── Sync gate decision back to staging DB ────────────────────────────────
     # Layer 7 Step 2 (deduplication) wrote ALL records to the staging DB before
@@ -172,7 +180,7 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
         log(f"     Location: {run}/human_review.jsonl")
 
     # ── Auto-Insert → Atomspace ───────────────────────────────────────────────
-    summary = {"auto_insert": 0, "human_review": len(human_review),
+    summary = {"auto_insert": 0, "human_review": len(human_review), "discarded": len(discarded),
                "neo4j": {}, "metta": {}, "run_dir": str(run)}
 
     if auto_insert:
@@ -270,3 +278,58 @@ def export_csvs_from_db(staging_db: str, run_dir: str, formats: str = "neo4j") -
         pass
 
 
+def _write_alignment(records: list, run_dir) -> None:
+    """Write concept merges to <run_dir>/alignment.jsonl."""
+    import json as _json
+    merges: dict = {}
+    for r in records:
+        for side in ("subject", "object"):
+            for m in (r.get(f"{side}_alignment"), r.get(f"{side}_kg_identity")):
+                if m and m.get("from"):
+                    merges.setdefault((m["from"], m.get("to")), m)
+    if not merges:
+        return
+    path = Path(run_dir) / "alignment.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for m in merges.values():
+            f.write(_json.dumps(m, default=str) + "\n")
+    # IdenticalTo atoms; strength by method
+    atoms = []
+    for m in merges.values():
+        strength, conf = (1.0, 0.95) if m.get("method") in ("cross_reference", "synonym") \
+            else (0.9, round(float(m.get("score") or 0.8), 3))
+        atoms.append(f'(IdenticalTo (Concept "{m["from"]}") (Concept "{m["to"]}") (stv {strength} {conf}))')
+    metta_dir = Path(run_dir) / "metta"
+    metta_dir.mkdir(parents=True, exist_ok=True)
+    (metta_dir / "identity.metta").write_text("\n".join(atoms) + "\n", encoding="utf-8")
+
+
+def _write_fact_merges(records: list, run_dir) -> None:
+    """Write fact merges to <run_dir>/fact_alignment.jsonl."""
+    import json as _json
+    rows = [{"kept": {"subject": r.get("subject_name"), "relation": getattr(r.get("relation"), "value", r.get("relation")),
+                      "object": r.get("object_name"), "subject_id": r.get("subject_id"), "object_id": r.get("object_id")},
+             "merged": r["merged_facts"]}
+            for r in records if r.get("merged_facts")]
+    if not rows:
+        return
+    path = Path(run_dir) / "fact_alignment.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(_json.dumps(row, default=str) + "\n")
+
+
+def _write_rejected(records: list, run_dir) -> None:
+    """Append discarded triples to <run_dir>/rejected.jsonl for audit."""
+    import json as _json
+    from datetime import datetime, timezone
+    path = Path(run_dir) / "rejected.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    with path.open("a", encoding="utf-8") as f:
+        for r in records:
+            row = {k: (getattr(v, "value", v)) for k, v in r.items() if not k.startswith("_")}
+            row["discarded_at"] = now
+            f.write(_json.dumps(row, default=str) + "\n")
