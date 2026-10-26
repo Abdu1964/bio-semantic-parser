@@ -44,11 +44,18 @@ def _strip_accents(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
 
 
+# Greek letters spelled out, so ERα ≠ ERβ and TNF-α == TNF alpha.
+_GREEK = dict(zip("αβγδεζηθικλμνξοπρστυφχψωϵς",
+                  "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho "
+                  "sigma tau upsilon phi chi psi omega epsilon sigma".split()))
+
+
 def normalize_term(text: str) -> str:
     """Lowercase, ASCII, US spelling, punctuation stripped."""
     if not text:
         return ""
     t = _strip_accents(text).lower()
+    t = "".join(f" {_GREEK[c]} " if c in _GREEK else c for c in t)
     t = t.replace("’", "'").replace("‘", "'")
     t = re.sub(r"'s\b", "", t)                 # possessive: "alzheimer's" → "alzheimer"
     for pattern, repl in _SPELLING_VARIANTS:
