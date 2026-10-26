@@ -94,24 +94,17 @@ def term_key(text: str) -> str:
     return " ".join(sorted(tokens(text)))
 
 
+_GENUS_ABBREV = re.compile(r"^[A-Za-z]{1,3}\.$")
+
+
 def _abbreviation_match(query: str, label: str) -> bool:
-    """'D. melanogaster' ↔ 'Drosophila melanogaster'."""
-    q = normalize_term(query).split()
-    l = normalize_term(label).split()
-    if len(q) != len(l) or len(q) < 2:
+    """Organism binomials only: 'D. melanogaster' ↔ 'Drosophila melanogaster' (never 'T cells' ↔ 'tumor cells')."""
+    raw = query.strip().split()
+    q, l = normalize_term(query).split(), normalize_term(label).split()
+    if len(raw) != 2 or len(q) != 2 or len(l) != 2 or not _GENUS_ABBREV.match(raw[0]):
         return False
-    abbreviated = False
-    for qt, lt in zip(q, l):
-        if qt == lt:
-            continue
-        stem = qt.rstrip(".")
-        # "D." or a bare single letter (normalize_term drops the dot) is an abbreviation
-        is_abbrev = (qt.endswith(".") and 1 <= len(stem) <= 3) or len(stem) == 1
-        if is_abbrev and lt.startswith(stem) and len(lt) > len(stem):
-            abbreviated = True
-            continue
-        return False
-    return abbreviated
+    stem = raw[0].rstrip(".").lower()
+    return q[1] == l[1] and l[0].startswith(stem) and len(l[0]) > len(stem)
 
 
 def _typo_close(a: str, b: str) -> bool:
