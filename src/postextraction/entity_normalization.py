@@ -1,5 +1,6 @@
 """Layer 7 step 1 — maps entity text to canonical biomedical identifiers via OLS4, NCBI, UniProt, RxNorm, and Wikidata."""
 import collections
+import contextvars
 import logging
 import os
 import re
@@ -1478,8 +1479,39 @@ def _build_source_url(canonical_id: str, id_source: str, ontology_prefix: str, i
 # ── Main normalization function ───────────────────────────────────────────────
 
 # ── Document-level concept consistency: one ID per term within a paper ──────
+class _DocState:
+    """Per-paper state: concept cache, genera, main species, paper-defined abbreviations, term locks."""
+    def __init__(self):
+        self.concepts: dict = {}
+        self.genera: set = set()
+        self.species: str = ""
+        self.abbrevs: dict = {}
+        self.locks: dict = {}
+        self.locks_guard = threading.Lock()
+
+
+# Each pipeline run (thread) has its own state; worker pools get it via in_document().
+_doc_var: contextvars.ContextVar = contextvars.ContextVar("bsp_document_state", default=None)
+_default_doc = _DocState()
+
+
+def _doc() -> _DocState:
+    return _doc_var.get() or _default_doc
+
+
+def in_document(fn):
+    """Wrap fn so worker threads use the calling run's document state."""
+    state = _doc()
+
+    def run(*args, **kwargs):
+        token = _doc_var.set(state)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _doc_var.reset(token)
+    return run
+
 # Families keep genes, proteins and organisms apart so a gene and its protein don't merge.
-_document_concepts: dict = {}
 
 _TYPE_FAMILY: dict = {
     "GENE": "gene", "TRANSCRIPT": "gene", "EXON": "gene", "NON_CODING_RNA": "gene",
@@ -1494,23 +1526,14 @@ _TYPE_FAMILY: dict = {
 }
 
 
-# Genera seen in this paper (to expand "D. simulans").
-_document_genera: set = set()
 _GENUS_RE = re.compile(r"^([A-Z][a-z]{2,})\s+[a-z][a-z-]+")
-
-
-_concept_locks: dict = {}
-_concept_locks_guard = threading.Lock()
 
 
 def _concept_lock(ckey):
     """One lock per term so concurrent lookups of the same term run once."""
-    with _concept_locks_guard:
-        return _concept_locks.setdefault(ckey, threading.Lock())
-
-
-_document_species = {"default": ""}     # paper's main organism
-_document_abbrevs: dict = {}             # short form → long form defined in this paper
+    d = _doc()
+    with d.locks_guard:
+        return d.locks.setdefault(ckey, threading.Lock())
 
 
 _PAREN_SHORT = re.compile(r"\(\s*([^()\s][^()]{0,9}?)\s*\)")
@@ -1555,27 +1578,25 @@ def find_abbreviations(text: str) -> dict:
 
 def _expand_document_abbreviations(text: str) -> str:
     """Expand abbreviations the paper defines."""
-    if not _document_abbrevs or not text:
+    abbrevs = _doc().abbrevs
+    if not abbrevs or not text:
         return text
-    for short, long in _document_abbrevs.items():
+    for short, long in abbrevs.items():
         if short in text:
             text = re.sub(rf"(?<![\w-]){re.escape(short)}(?![\w-])", long, text)
     return text
 
 
 def reset_document_cache() -> None:
-    """Reset per-paper state."""
-    _document_concepts.clear()
-    _document_genera.clear()
-    _document_species["default"] = ""
-    _document_abbrevs.clear()
+    """Start fresh per-paper state for this run."""
+    _doc_var.set(_DocState())
 
 
 def _remember_genus(*names: str) -> None:
     for name in names:
         m = _GENUS_RE.match((name or "").strip())
         if m:
-            _document_genera.add(m.group(1))
+            _doc().genera.add(m.group(1))
 
 
 def _expand_abbreviated_binomial(text: str) -> Optional[str]:
@@ -1588,7 +1609,7 @@ def _expand_abbreviated_binomial(text: str) -> Optional[str]:
              and n.split()[0].startswith(initial.lower()) and n.split()[1] == epithet.lower()]
     if len(known) == 1:
         return known[0].capitalize()
-    for pool in (_document_genera,
+    for pool in (_doc().genera,
                  {n.split()[0].capitalize() for n in _TAXON_LOCAL if " " in n and "." not in n}):
         fits = sorted(g for g in pool if g.startswith(initial))
         real = [f"{g} {epithet}" for g in fits if _ncbi_taxon_search(f"{g} {epithet}")]
@@ -1640,7 +1661,7 @@ def normalize_entity(
     context: str = "",
 ) -> dict:
     """Normalize one entity to a canonical ID (dict with canonical_id, canonical_name, id_source, ...)."""
-    result = _normalize_entity_cached(text, entity_type, existing_id, species or _document_species["default"], context)
+    result = _normalize_entity_cached(text, entity_type, existing_id, species or _doc().species, context)
     fam = _TYPE_FAMILY.get(entity_type)
     if result.get("network_degraded") and fam == "gene" and result.get("id_source") not in _GENE_SOURCES:
         # Gene sources failed on the network: retry later, no guessing
@@ -1674,8 +1695,9 @@ def _normalize_entity_cached(text: str, entity_type: str, existing_id: Optional[
     ckey = _concept_key(text, entity_type)
     has_trusted_id = bool(existing_id) and _is_canonical_id(existing_id)
     with _concept_lock(ckey):            # one lookup per term
-        if ckey and not has_trusted_id and ckey in _document_concepts:
-            return dict(_document_concepts[ckey])
+        concepts = _doc().concepts
+        if ckey and not has_trusted_id and ckey in concepts:
+            return dict(concepts[ckey])
 
         _net_state.errors = 0
         result = _normalize_entity_core(text, entity_type, existing_id, species, context)
@@ -1691,7 +1713,7 @@ def _normalize_entity_cached(text: str, entity_type: str, existing_id: Optional[
         cid = result.get("canonical_id", "")
         if (ckey and cid and not cid.startswith("TEXT:") and cid != "NEEDS_REVIEW"
                 and not result.get("network_degraded")):
-            _document_concepts.setdefault(ckey, dict(result))
+            concepts.setdefault(ckey, dict(result))
             if _TYPE_FAMILY.get(entity_type) == "organism" and not ambiguous_abbreviation:
                 _remember_genus(text, result.get("canonical_name", ""))
         return result
@@ -2294,16 +2316,16 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
     done = [0]
     named = collections.Counter(r.get("species") for r in records if r.get("species"))
     if named:
-        _document_species["default"] = named.most_common(1)[0][0]
+        _doc().species = named.most_common(1)[0][0]
     for chunk_text in {r.get("_chunk_text", "") for r in records}:
         for short, long in find_abbreviations(chunk_text).items():
-            _document_abbrevs.setdefault(short, long)
-    if _document_abbrevs:
-        logger.info("Abbreviations defined in this paper: %s", _document_abbrevs)
+            _doc().abbrevs.setdefault(short, long)
+    if _doc().abbrevs:
+        logger.info("Abbreviations defined in this paper: %s", _doc().abbrevs)
 
     def run(indices):
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = {ex.submit(normalize_record, records[i], chunk_for(records[i])): i for i in indices}
+            futs = {ex.submit(in_document(normalize_record), records[i], chunk_for(records[i])): i for i in indices}
             for f in as_completed(futs):
                 out[futs[f]] = f.result()
                 done[0] += 1
@@ -2319,6 +2341,6 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
         logger.info("Retrying %d record(s) whose lookups hit network errors", len(retry))
         reset_network_state()
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, res in zip(retry, ex.map(lambda i: normalize_record(records[i], chunk_for(records[i])), retry)):
+            for i, res in zip(retry, ex.map(in_document(lambda i: normalize_record(records[i], chunk_for(records[i]))), retry)):
                 out[i] = res
     return merge_synonym_concepts(out)
