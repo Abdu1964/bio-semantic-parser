@@ -29,6 +29,7 @@ class Chunker:
 
         return self._split_with_overlap(text, section_tag)
 
+    # Split into chunks under max_tokens, overlapping by a few sentences.
     def _split_with_overlap(self, text: str, section_tag: str) -> list:
         sentences = text.split(". ")
         chunks = []
@@ -45,7 +46,7 @@ class Chunker:
                         "text": ". ".join(current_sentences) + ".",
                         "section": section_tag,
                         "chunk_index": chunk_index,
-                        "total_chunks": -1
+                        "total_chunks": -1  # set below
                     })
                     chunk_index += 1
                     current_sentences = current_sentences[-self.overlap_sentences:]
@@ -70,6 +71,7 @@ class Chunker:
 
         return chunks
 
+    # Chunk every section and combine the chunks.
     def chunk_document(self, sections: list) -> list:
         all_chunks = []
         for section in sections:
