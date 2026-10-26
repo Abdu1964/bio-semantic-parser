@@ -372,6 +372,7 @@ async function _startFromLayer(docId, fromLayer) {
 }
 
 async function _startFromSubstep(docId, layer, substep) {
+  if (typeof _cancelSuggestions === 'function') _cancelSuggestions();
   document.getElementById('pre-run-prompt')?.remove();
   const stepLabels = {2: 'deduplication', 7: 'atomspace alignment'};
   const label = stepLabels[substep] || `step ${substep}`;
@@ -400,6 +401,7 @@ async function _startFromSubstep(docId, layer, substep) {
 let _skipCheckpointCheck = false;  // set true to bypass pre-run check once
 
 function _dismissPreRun(resolvedDocId) {
+  if (typeof _cancelSuggestions === 'function') _cancelSuggestions();
   document.getElementById('pre-run-prompt')?.remove();
   // Discard checkpoint — use resolved doc_id from checkpoint-status, fall back to input value
   const val = resolvedDocId || document.getElementById('smart-input').value.trim();
@@ -419,6 +421,7 @@ function _resumePipeline(docId, fromLayer) {
 }
 
 async function _resumeFromLayer(docId, fromLayer, skipConfirm) {
+  if (typeof _cancelSuggestions === 'function') _cancelSuggestions();
   const layerNames = ['','Source','Dedup','Fetch','NER','Schema','Extract','Validate','Publish'];
   const name = layerNames[fromLayer] || `Layer ${fromLayer}`;
 
@@ -468,6 +471,7 @@ async function _resumeFromLayer(docId, fromLayer, skipConfirm) {
 }
 
 async function _reprocessPaper(docId) {
+  if (typeof _cancelSuggestions === 'function') _cancelSuggestions();
   if (!confirm(`Reprocess "${docId}" from scratch?\n\nThis will delete all existing outputs and run all 8 layers again.`)) return;
 
   // 1. Tell server to delete all existing outputs for this paper
