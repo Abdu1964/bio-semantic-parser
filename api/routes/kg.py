@@ -33,9 +33,9 @@ async def rebuild_all_compare():
                             out_html=_udir / "verification_report.html",
                             out_json=_udir / "verification_report.json")
                     except Exception: pass
-            for run in kg_root.iterdir():
-                if not run.is_dir() or not (run / "graph.html").exists(): continue
-                if run.name.startswith("unified"): continue
+            from src.publish.output_layer import all_run_dirs
+            for run in all_run_dirs(kg_root):                   # nested runs too
+                if not (run / "graph.html").exists(): continue
                 try:
                     _build_compare_page(
                         run / "graph.html", uni_neo4j / "graph.html",
@@ -276,8 +276,9 @@ async def commit_existing_outputs(
                         except Exception: pass
                 except Exception: pass
                 try:
-                    for _other_run in kg_root.iterdir():
-                        if not _other_run.is_dir() or _other_run == _run: continue
+                    from src.publish.output_layer import all_run_dirs
+                    for _other_run in all_run_dirs(kg_root):
+                        if _other_run == _run: continue
                         _other_graph = _other_run / "graph.html"
                         if not _other_graph.exists(): continue
                         if output_format in ("neo4j", "both"):

@@ -1,5 +1,6 @@
 """Layer 8 — Output Layer Orchestrator: validation gate → KG write → verification."""
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -62,6 +63,29 @@ def _doc_id_slug(doc_id: str) -> str:
         return f"PDF_{d[:12]}"
     # Fallback — slug the raw value
     return _slug(d, 40)
+
+
+_RUN_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_|$)")
+
+
+def all_run_dirs(root: Path = None) -> list:
+    """Every run folder, flat or nested under {species}/{entity_id}/, newest first."""
+    root = Path(root or _KG_ROOT)
+    found = []
+    for dirpath, dirnames, _ in os.walk(root):
+        if Path(dirpath) == root:
+            dirnames[:] = [d for d in dirnames if not d.startswith("unified")]
+        for d in list(dirnames):
+            if _RUN_NAME.match(d):
+                found.append(Path(dirpath) / d)
+                dirnames.remove(d)                 # don't walk into a run's own files
+    return sorted(found, key=lambda p: p.name, reverse=True)
+
+
+def run_dirs_for(doc_id: str, root: Path = None) -> list:
+    """Run folders of one paper — same suffix the publisher writes (_doc_id_slug), newest first."""
+    suffix = _doc_id_slug(doc_id).lower()
+    return [d for d in all_run_dirs(root) if suffix and d.name.lower().endswith("_" + suffix)]
 
 
 def _run_dir(paper_name: str = "", doc_id: str = "", species: str = "", entity_id: str = "") -> Path:

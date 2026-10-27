@@ -83,13 +83,14 @@ async def discard_paper(doc_id: str = Form(...)):
         safe_id = doc_id.replace("/", "_").replace(":", "_")
 
         deleted_dirs = []
-        for d in kg_root.glob(f"*{safe_id[:12]}*"):
-            if d.is_dir():
-                shutil.rmtree(d, ignore_errors=True)
-                deleted_dirs.append(d.name)
+        from src.publish.output_layer import run_dirs_for
+        for d in run_dirs_for(doc_id, kg_root):
+            shutil.rmtree(d, ignore_errors=True)
+            deleted_dirs.append(d.name)
 
-        staging = _ROOT / "data" / "staging" / f"{safe_id}_both.db"
-        if staging.exists(): staging.unlink()
+        for fmt in ("both", "neo4j", "metta"):
+            staging = _ROOT / "data" / "staging" / f"{safe_id}_{fmt}.db"
+            if staging.exists(): staging.unlink()
 
         proc_db = _ROOT / "data" / "processed_ids.db"
         if proc_db.exists():
@@ -239,18 +240,8 @@ async def get_results(doc_id: str = ""):
             return JSONResponse({"error": "doc_id required"}, status_code=400)
 
         _safe = doc_id.replace("/", "_").replace(":", "_")
-        # Lowercase, underscores — for folder matching
-        _norm = _safe.lower().replace(" ", "_").replace(".", "_")
-        kg_root = _ROOT / "data" / "kg_output"
-
-        # Run folders matching the id prefix, newest first
-        _key = _norm[:18]
-        candidates = sorted(
-            [d for d in kg_root.iterdir()
-             if d.is_dir() and _key in d.name.lower()],
-            key=lambda d: d.name,
-            reverse=True,
-        )
+        from src.publish.output_layer import run_dirs_for
+        candidates = run_dirs_for(doc_id, _ROOT / "data" / "kg_output")   # newest first, nested runs too
         if not candidates:
             return JSONResponse({"error": "No output found for this paper"}, status_code=404)
 
@@ -264,18 +255,19 @@ async def get_results(doc_id: str = ""):
             except Exception:
                 pass
 
-        ver_results = []
+        all_results = []
         ver_json = run_dir / "verification_report.json"
         if ver_json.exists():
             try:
                 raw = _j.loads(ver_json.read_text())
                 if isinstance(raw, list):
-                    ver_results = raw[:35]
+                    all_results = raw
             except Exception:
                 pass
 
-        n_verified  = sum(1 for r in ver_results if r.get("overall_status") == "CONFIRMED")
-        n_total     = len(ver_results)
+        n_verified  = sum(1 for r in all_results if r.get("overall_status") == "CONFIRMED")
+        n_total     = len(all_results)
+        ver_results = all_results[:35]                 # display payload only
 
         graph_html = run_dir / "graph.html"
         ver_html   = run_dir / "verification_report.html"
@@ -287,18 +279,15 @@ async def get_results(doc_id: str = ""):
         metta_edges = _count_run_edges(run_dir, "metta")
         neo4j_nodes = _count_run_nodes(run_dir)
 
-        staging_db = _ROOT / "data" / "staging" / f"{_safe}_both.db"
-        if not staging_db.exists():
-            staging_db = _ROOT / "data" / "staging" / f"{_safe}_neo4j.db"
-        if not staging_db.exists():
-            staging_db = Path("")
+        staging_db = next((p for fmt in ("both", "neo4j", "metta")
+                           if (p := _ROOT / "data" / "staging" / f"{_safe}_{fmt}.db").exists()), None)
 
         return {
             "run_dir":        str(run_dir),
             "graph_html":     str(graph_html)  if graph_html.exists()  else "",
             "pln_html":       str(pln_html)    if pln_html.exists()    else "",
             "ver_html":       str(ver_html)    if ver_html.exists()    else "",
-            "staging_db":     str(staging_db)  if staging_db.exists()  else "",
+            "staging_db":     str(staging_db)  if staging_db else "",
             "neo4j_edges":    neo4j_edges,
             "neo4j_nodes":    neo4j_nodes,
             "metta_edges":    metta_edges,

@@ -25,11 +25,8 @@ def run_layer2(emit, doc_id, _safe_id, _completed_layers, output_format, schedul
 
         _kg_root      = Path("data/kg_output")
         _safe         = doc_id.replace('/', '_').replace(':', '_')
-        _run_dirs_check = sorted(
-            [d for d in _kg_root.glob(f"*{_safe[:12]}*")
-             if d.is_dir() and (d / 'graph.html').exists()],
-            reverse=True
-        )
+        from src.publish.output_layer import run_dirs_for
+        _run_dirs_check = [d for d in run_dirs_for(doc_id, _kg_root) if (d / 'graph.html').exists()]
         _has_run_folder = bool(_run_dirs_check)
         _next_layer = (None if 8 in _completed_layers
                        else next((l for l in range(3, 9) if l not in _completed_layers), None))
