@@ -145,6 +145,10 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
         import sqlite3 as _sq
         try:
             _sc = _sq.connect(_staging_path)
+            # Rows were staged before repairs, re-resolution and species backfill — write final values.
+            from src.postextraction.deduplication import sync_record
+            for _r in auto_insert + human_review:
+                _r["triple_id"] = sync_record(_sc, _r) or _r.get("triple_id")
             # Mark every staged triple as flagged by default, then clear the ones
             # that actually passed the gate.
             _sc.execute("UPDATE triples SET flagged_for_review=1")
