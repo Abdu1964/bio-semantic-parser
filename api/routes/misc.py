@@ -188,52 +188,35 @@ async def resume_from_layer(
         }
         deleted_files = []
 
-        if from_substep > 0:
-            # Sub-step resume: clear sub-steps >= from_substep
-            substeps = meta.get("substeps", {})
-            key = str(from_layer)
-            all_ss = substeps.get(key, [])
-            for ss in all_ss:
-                if ss >= from_substep:
-                    f = ckpt_dir / f"layer{from_layer}_substep{ss}.json"
-                    if f.exists():
-                        f.unlink()
-                        deleted_files.append(f.name)
-            kept_ss = [s for s in all_ss if s < from_substep]
-            if kept_ss:
-                substeps[key] = kept_ss
+        def _drop(name: str) -> None:
+            f = ckpt_dir / name
+            if f.exists():
+                f.unlink()
+                deleted_files.append(name)
+
+        def _substep_files(layer: int):
+            for f in ckpt_dir.glob(f"layer{layer}_substep*.json"):
+                step = f.stem.rsplit("substep", 1)[-1]
+                if step.isdigit():
+                    yield int(step), f.name
+
+        substeps = meta.get("substeps", {})
+        # Reset this layer and every later one — completed or interrupted.
+        first = from_layer if from_substep > 0 else effective_from
+        for layer in range(first, 9):
+            keep_before = from_substep if (from_substep > 0 and layer == from_layer) else 0
+            if layer in _layer_files:
+                _drop(_layer_files[layer])
+            for step, name in _substep_files(layer):
+                if step >= keep_before:
+                    _drop(name)
+            kept = [s for s in substeps.get(str(layer), []) if s < keep_before]
+            if kept:
+                substeps[str(layer)] = kept
             else:
-                substeps.pop(key, None)
-            meta["substeps"] = substeps
-            # Also remove the full layer checkpoint so it re-runs
-            fname = _layer_files.get(from_layer)
-            if fname:
-                f = ckpt_dir / fname
-                if f.exists():
-                    f.unlink()
-                    deleted_files.append(fname)
-            reset_layers = [from_layer] if from_layer in old_layers else []
-            meta["completed_layers"] = [l for l in old_layers if l != from_layer]
-        else:
-            # Full layer reset
-            reset_layers = [l for l in old_layers if l >= effective_from]
-            meta["completed_layers"] = [l for l in old_layers if l < effective_from]
-            # Also clear all substeps for reset layers
-            substeps = meta.get("substeps", {})
-            for l in reset_layers:
-                for ss in substeps.pop(str(l), []):
-                    f = ckpt_dir / f"layer{l}_substep{ss}.json"
-                    if f.exists():
-                        f.unlink()
-                        deleted_files.append(f.name)
-            meta["substeps"] = substeps
-            for l in reset_layers:
-                fname = _layer_files.get(l)
-                if fname:
-                    f = ckpt_dir / fname
-                    if f.exists():
-                        f.unlink()
-                        deleted_files.append(fname)
+                substeps.pop(str(layer), None)
+        meta["substeps"] = substeps
+        meta["completed_layers"] = [l for l in old_layers if l < first]
 
         ckpt_meta.write_text(_j.dumps(meta, indent=2))
         return {
