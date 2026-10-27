@@ -120,11 +120,23 @@ async def update_triple(
 
         now = datetime.now(timezone.utc).isoformat()
         conn = _sq.connect(str(p), timeout=10)
+        conn.row_factory = _sq.Row
+        old = conn.execute("SELECT * FROM triples WHERE id=?", (triple_id,)).fetchone()
         conn.execute(
             "UPDATE triples SET subject_name=?, subject_id=?, relation=?, "
             "object_name=?, object_id=?, updated_at=? WHERE id=?",
             (subject_name, subject_id, relation, object_name, object_id, now, triple_id),
         )
+        cols = set(old.keys()) if old else set()
+        for side, name, cid in (("subject", subject_name, subject_id), ("object", object_name, object_id)):
+            if old and (old[f"{side}_name"] != name or old[f"{side}_id"] != cid):
+                # The old entity's canonical name/URL/synonyms no longer describe this side.
+                stale = [c for c in (f"{side}_canonical_name", f"{side}_source_url", f"{side}_synonyms") if c in cols]
+                sets = ", ".join(f"{c}=''" for c in stale)
+                if f"{side}_id_source" in cols:
+                    sets += (", " if sets else "") + f"{side}_id_source='manual'"
+                if sets:
+                    conn.execute(f"UPDATE triples SET {sets} WHERE id=?", (triple_id,))
         conn.commit()
         conn.close()
 
@@ -201,7 +213,8 @@ def _rebuild(sdb: Path, _run) -> None:
             try:
                 _os.chdir(str(_ROOT))
                 from tools.export_unified import run_export
-                run_export(generate_html=True, formats="neo4j")
+                fmt = "metta" if "metta" in sdb.name else "neo4j" if "neo4j" in sdb.name else "both"
+                run_export(generate_html=True, formats=fmt)          # rebuild the store that was edited
             except Exception: pass
             finally:
                 _os.chdir(old)

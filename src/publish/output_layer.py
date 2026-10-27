@@ -277,7 +277,12 @@ def export_csvs_from_db(staging_db: str, run_dir: str, formats: str = "neo4j") -
     except Exception:
         return
 
-    if not rows:
+    if not rows:                               # nothing approved left: empty the exports, don't keep stale ones
+        import shutil as _sh
+        for fmt in ("neo4j", "metta"):
+            if formats in (fmt, "both"):
+                _sh.rmtree(run / fmt, ignore_errors=True)
+                (run / fmt).mkdir(parents=True, exist_ok=True)
         return
 
     records = [dict(r) for r in rows]

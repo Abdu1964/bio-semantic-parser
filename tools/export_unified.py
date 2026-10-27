@@ -551,7 +551,16 @@ def run_export(out_root: Path = None, min_confidence: float = 0.0,
     else:
         triples = load_triples(min_confidence, include_contradictions,
                                fmt="neo4j" if formats == "neo4j" else "metta")
-    if not triples:
+    if not triples:                            # empty store: clear old unified exports so graphs rebuild empty
+        import shutil as _sh
+        for want, root, sub_dir in (("neo4j", neo4j_root, "neo4j"), ("metta", metta_root, "metta")):
+            if formats in (want, "both") and root.exists():
+                for child in root.iterdir():                   # only what this exporter writes
+                    ours = child.name in (sub_dir, "graph.html", "verification_report.html", "verification_report.json") \
+                        or (child.is_dir() and (child / sub_dir).exists())      # per-species exports
+                    if ours:
+                        _sh.rmtree(child, ignore_errors=True) if child.is_dir() else child.unlink()
+                (root / sub_dir).mkdir(parents=True, exist_ok=True)
         return {"triples": 0,
                 "neo4j_dir": neo4j_root / "neo4j", "neo4j_html": None,
                 "metta_dir": metta_root / "metta",  "metta_html": None,
