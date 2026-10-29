@@ -13,6 +13,7 @@ def run_layer6(emit, doc_id, _safe_id, tagged_chunks, _completed_layers):
 
     results           = []
     _l6_results_path  = Path(f"data/checkpoints/{_safe_id}/layer6_results.json")
+    _l6_figures_path  = Path(f"data/checkpoints/{_safe_id}/layer6_figure_chunks.json")
 
     _pre(emit, 6)
 
@@ -38,6 +39,8 @@ def run_layer6(emit, doc_id, _safe_id, tagged_chunks, _completed_layers):
                         pass
                 if _loaded:
                     results = _loaded
+                    if _l6_figures_path.exists():          # figure results pair with these chunks
+                        tagged_chunks.extend(_jj6.loads(_l6_figures_path.read_text(encoding="utf-8")))
                     _emit(emit, 6, "done", f"Checkpoint — {len(results)} extraction results loaded ✓", {})
                     return results
         except Exception:
@@ -104,14 +107,23 @@ def run_layer6(emit, doc_id, _safe_id, tagged_chunks, _completed_layers):
             if b:
                 results.extend(b)
 
+        try:                                                # Phase 3: relations read from figures
+            from src.figures.vision import add_figure_relations
+            n_figure = add_figure_relations(doc_id, tagged_chunks, results, _l6_figures_path,
+                                            log=lambda m: _log(emit, 6, m))
+        except Exception as e:
+            n_figure = 0
+            _log(emit, 6, f"Figure relations skipped: {e}")
+
         viable   = sum(1 for r in results for rel in r.relations if rel.extraction_viable)
         rejected = sum(1 for r in results if r.rejected)
         model    = os.getenv("LLM_MODEL", "gemma4")
         _emit(emit, 6, "done", f"{viable} relations extracted", {
-            "viable": viable, "chunks": total, "rejected": rejected,
+            "viable": viable, "chunks": total, "rejected": rejected, "figure_relations": n_figure,
         })
         _post(emit, 6, [
-            f"{viable} relation(s) extracted from {total} chunk(s)",
+            f"{viable} relation(s) extracted from {total} chunk(s)"
+            + (f" — {n_figure} of them read from figures (sent to human review)" if n_figure else ""),
             f"LLM: {model} — local, no data leaves, no API cost",
             "Every relation has a mandatory reasoning trace explaining why that type was chosen",
             f"{rejected} chunk(s) rejected after 3 Pydantic retries → human review queue",
