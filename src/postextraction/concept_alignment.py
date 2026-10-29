@@ -216,13 +216,15 @@ def _semantic_candidates(concepts: dict, left: list = None, right: list = None) 
 
     lo, le = stack(left)
     ro, re_ = stack(right)
-    sim = le @ re_.T
-    best = torch.full((len(left), len(right)), -1.0)
-    for i in range(len(left)):
-        rows = sim[lo == i]
-        for j in range(len(right)):
-            if left[i] != right[j]:
-                best[i, j] = rows[:, ro == j].max()
+    sim = le @ re_.T                                          # every name × every name
+    L, R = len(left), len(right)
+    # Best name-pair score per concept pair, vectorized (max over each concept's names).
+    best = torch.full((L, sim.shape[1]), -1.0).scatter_reduce(0, lo[:, None].expand(-1, sim.shape[1]), sim, "amax")
+    best = torch.full((L, R), -1.0).scatter_reduce(1, ro[None].expand(L, -1), best, "amax")
+    col = {cid: j for j, cid in enumerate(right)}
+    for i, a in enumerate(left):
+        if a in col:
+            best[i, col[a]] = -1.0                            # never pair a concept with itself
     pairs = {}
     for i, a in enumerate(left):
         for j in torch.topk(best[i], min(_TOP_K, len(right))).indices.tolist():

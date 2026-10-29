@@ -99,6 +99,19 @@ def align_with_kg(records: list) -> list:
     with ThreadPoolExecutor(max_workers=8) as ex:
         for cid, (xrefs, definition) in zip(todo, ex.map(ca._lookup, todo)):
             concepts[cid]["xrefs"], concepts[cid]["definition"] = xrefs, definition
+
+    # A database cross-reference to a KG node decides directly — no embedding candidates needed.
+    kg_by_key: dict = {}
+    for cid in kg:
+        kg_by_key.setdefault(concepts[cid]["key"], []).append(cid)
+    for a in todo:
+        for key in concepts[a].get("xrefs", ()):
+            for b in kg_by_key.get(key, []):
+                concepts[b].setdefault("xrefs", set())
+                if a not in matches and check(a, b) and ca._xref_says_same(concepts[a], concepts[b]):
+                    matches[a] = (b, "cross_reference", 1.0, "ontology cross-reference")
+    todo = [a for a in todo if a not in matches]
+
     cands = [(s, a, b) for s, a, b in ca._semantic_candidates(concepts, left=todo, right=list(kg)) if check(a, b)]
     kg_needed = {b for _, _, b in cands}
     with ThreadPoolExecutor(max_workers=8) as ex:
