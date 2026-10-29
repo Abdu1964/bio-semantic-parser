@@ -1,4 +1,5 @@
 """Figures from a PDF: image and vector-drawing areas grouped under their "Figure N" captions."""
+import os
 import re
 from collections import Counter
 
@@ -8,7 +9,7 @@ from src.figures.ocr import is_scanned
 # "Figure 2. Title", "Fig. 2: ...", "FIGURE 2 Title" — not body text like "Figure 2 shows".
 CAPTION_RE = re.compile(r"^\s*(?:Supplementary\s+)?(?:Fig(?:ure)?s?\.?|FIGURE)\s*(S?\d+[A-Za-z]?)"
                         r"(?:\s*[.:|]\s*|\s+(?=[A-Z(\[]))")
-_DPI = 150
+_DPI = int(os.getenv("FIGURE_DPI", "300"))       # small figure labels need 300 dpi to be legible
 _MIN_SIDE = 60                   # points; smaller areas are icons, bullets or rules
 _MIN_AREA = 0.02                 # share of the page for one piece of figure content
 _MIN_UNCAPTIONED = 0.10          # an uncaptioned figure must be at least this large
