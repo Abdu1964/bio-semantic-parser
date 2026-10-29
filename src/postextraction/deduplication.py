@@ -356,3 +356,42 @@ def count_triples_for_paper(doc_id: str) -> int:
     conn.close()
     return n
 
+
+
+_SYNC_FIELDS = ("subject_id", "subject_name", "subject_type", "relation", "object_id", "object_name",
+                "object_type", "species", "subject_canonical_name", "subject_source_url", "subject_synonyms",
+                "subject_id_source", "object_canonical_name", "object_source_url", "object_synonyms",
+                "object_id_source")
+
+
+def _plain(v):
+    v = getattr(v, "value", v)
+    return "; ".join(map(str, v)) if isinstance(v, (list, tuple, set)) else v
+
+
+def sync_record(conn: sqlite3.Connection, record: dict):
+    """Write a record's final values (after repairs, re-resolution, species backfill) to its staged row.
+    If the row now duplicates another fact, merge into that row. Returns the row id that holds the fact."""
+    tid = record.get("triple_id")
+    if not tid:
+        return None
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(triples)")}
+    values = {f: _plain(record.get(f)) for f in _SYNC_FIELDS if f in cols and record.get(f) is not None}
+    values["negated"] = 1 if record.get("negated") else 0
+    for side in ("subject", "object"):
+        if f"{side}_needs_review" in cols:
+            values[f"{side}_needs_review"] = 1 if record.get(f"{side}_needs_review") else 0
+    other = conn.execute(
+        "SELECT id, source_papers FROM triples WHERE subject_id=? AND relation=? AND object_id=? AND negated=? AND id!=?",
+        (values.get("subject_id"), values.get("relation"), values.get("object_id"), values["negated"], tid),
+    ).fetchone()
+    if other:                                               # the repaired fact already exists: merge
+        mine = conn.execute("SELECT source_papers FROM triples WHERE id=?", (tid,)).fetchone()
+        papers = list(dict.fromkeys(json.loads(other[1] or "[]") + json.loads((mine[0] if mine else None) or "[]")))
+        conn.execute("UPDATE triples SET source_papers=? WHERE id=?", (json.dumps(papers), other[0]))
+        conn.execute("DELETE FROM triples WHERE id=?", (tid,))
+        return other[0]
+    sets = ", ".join(f"{k}=?" for k in values)
+    conn.execute(f"UPDATE triples SET {sets}, updated_at=? WHERE id=?",
+                 (*values.values(), datetime.now(timezone.utc).isoformat(), tid))
+    return tid

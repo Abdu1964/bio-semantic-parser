@@ -78,6 +78,15 @@ async function loadUnifiedKG(fmt) {
   if (sel && sel.value !== fmt) sel.value = fmt;
   const frame = document.getElementById('unified-frame');
   if (!frame) return;
+
+  // A species is selected — load that species' pre-built graph
+  const speciesSel = document.getElementById('unified-species-sel');
+  const species = speciesSel ? speciesSel.value : '';
+  if (species) {
+    frame.src = '/api/file?path=' + encodeURIComponent(`data/kg_output/unified_${fmt}/${species}/graph.html`);
+    return;
+  }
+
   try {
     const r = await fetch(`/api/query/latest-compare?fmt=${fmt}`);
     const d = await r.json();
@@ -89,6 +98,21 @@ async function loadUnifiedKG(fmt) {
   const fallback = { neo4j: 'data/kg_output/unified_neo4j/graph.html', metta: 'data/kg_output/unified_metta/graph.html' };
   frame.src = '/api/file?path=' + encodeURIComponent(fallback[fmt]);
 }
+
+async function _loadSpeciesOptions() {
+  const sel = document.getElementById('unified-species-sel');
+  if (!sel) return;
+  try {
+    const d = await (await fetch('/api/species')).json();
+    for (const sp of (d.species || [])) {
+      const opt = document.createElement('option');
+      opt.value = sp.slug;
+      opt.textContent = `${sp.name} (${sp.count})`;
+      sel.appendChild(opt);
+    }
+  } catch(e) {}
+}
+window.addEventListener('load', _loadSpeciesOptions);
 
 function styleGraphFrame(frame) {
   try {
@@ -577,8 +601,12 @@ function onUnifiedFrameLoad(frame) {
       <option value="neo4j">Neo4j</option>
       <option value="metta">MeTTa</option>
     </select>
+    <span style="font-size:13px;font-weight:600;color:var(--text2,#8b949e)">Species:</span>
+    <select id="unified-species-sel" onchange="loadUnifiedKG()" style="background:var(--surface1,#161b22);border:1px solid var(--border,#30363d);color:var(--text1,#e6edf3);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;max-width:220px">
+      <option value="">All species</option>
+    </select>
     <button onclick="loadUnifiedKG()" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer">↺ Refresh</button>
-<button onclick="window.open(document.getElementById('unified-frame').src,'_blank')" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer">↗ Full screen</button>
+<button id="unified-fullscreen-btn" onclick="window.open(document.getElementById('unified-frame').src,'_blank')" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer">↗ Full screen</button>
 <button onclick="switchTab('query')" style="padding:5px 14px;background:transparent;border:1px solid #1f6feb55;border-radius:6px;color:#58a6ff;font-size:12px;cursor:pointer;font-weight:600">🔍 Query KG</button>
     <div class="qb-export-dropdown" id="unified-export-dropdown" style="margin-left:auto">
       <button onclick="toggleUnifiedExportMenu(event)" style="padding:5px 14px;background:transparent;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;cursor:pointer;font-weight:600">
@@ -627,7 +655,7 @@ function onUnifiedFrameLoad(frame) {
 <script src="/static/state.js?v=2"></script>
 <script src="/static/js/main/00-globals.js?v=2"></script>
 <script src="/static/js/main/01-atomspace-commit.js?v=2"></script>
-<script src="/static/js/main/02-existing-output.js?v=2"></script>
+<script src="/static/js/main/02-existing-output.js?v=3"></script>
 <script src="/static/js/main/03-run-selector.js?v=2"></script>
 <script src="/static/js/main/04-view-mode.js?v=2"></script>
 <script src="/static/js/main/05-stream-terminal.js?v=2"></script>
@@ -635,7 +663,7 @@ function onUnifiedFrameLoad(frame) {
 <script src="/static/js/main/07-sources-panel.js?v=2"></script>
 <script src="/static/js/main/08-pipeline-run.js?v=2"></script>
 <script src="/static/js/main/09-event-handler.js?v=2"></script>
-<script src="/static/js/main/10-renderers.js?v=2"></script>
+<script src="/static/js/main/10-renderers.js?v=3"></script>
 <script src="/static/js/main/11-triple-editor.js?v=2"></script>
 <script src="/static/js/main/12-pln-query.js?v=2"></script>
 <script src="/static/js/main/13-tabs-helpers.js?v=2"></script>

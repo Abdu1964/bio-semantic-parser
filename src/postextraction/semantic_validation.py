@@ -85,8 +85,11 @@ Return ONLY this JSON:
 
   "verdict": "VALID" | "REVIEW" | "REJECT",
   "verdict_reasoning": "<1-3 sentences explaining the overall verdict>",
-  "suggested_correction": "<if REJECT or REVIEW: what the correct extraction should be, else empty string>"
+  "suggested_correction": "<if REJECT or REVIEW: describe the correct extraction using Subject/Relation/Object format. The Relation MUST be one of the valid taxonomy values listed below — never invent a new name. Use OTHER only if nothing fits. Else empty string.>"
 }}
+
+VALID RELATION TYPES (use these exact values for Relation in suggested_correction):
+{", ".join(sorted(r.value for r in RelationType))}
 
 VERDICT RULES:
   VALID  — all 5 dimensions correct
@@ -142,6 +145,11 @@ def validate(record: dict, source_text: str) -> dict:
             issue_text = data.get(issue_key, "")
             if issue_text:
                 issues.append(f"{dim.upper()}: {issue_text}")
+
+    # Suggest a correction only when both entities are grounded in the text.
+    if not (data.get("subject_correct", True) and data.get("object_correct", True)
+            and data.get("support_strong", True)):
+        correction = ""
 
     # ── Update record ─────────────────────────────────────────────
     flagged       = record.get("flagged_for_review", False)
@@ -250,6 +258,12 @@ def _apply_verdict(record: dict, data: dict) -> dict:
             if issue_text:
                 issues.append(f"{dim.upper()}: {issue_text}")
 
+    # Suggest a correction only when both entities are grounded in the text.
+    entities_in_text = data.get("subject_correct", True) and data.get("object_correct", True)
+    support_ok       = data.get("support_strong", True)
+    if not (entities_in_text and support_ok):
+        correction = ""
+
     flagged       = record.get("flagged_for_review", False)
     review_reason = record.get("review_reason", "")
     if verdict in ("REVIEW", "REJECT"):
@@ -308,3 +322,28 @@ def validate_batch(pairs: list) -> list:
         else:
             updated.append(_apply_verdict(record, verdict_data))
     return updated
+
+
+def second_opinion(record: dict, source_text: str) -> dict:
+    """Strict single-relation re-check of a REVIEW/SKIPPED record."""
+    first = record.get("validation_verdict", "SKIPPED")
+    checked = validate(record, source_text)
+    if checked.get("validation_verdict") == "SKIPPED":
+        return record                       # keep the first verdict
+    checked["first_verdict"] = first
+    return checked
+
+
+def second_opinions(records: list, text_for, workers: int = _BATCH_WORKERS) -> tuple:
+    """Second opinion on REVIEW/SKIPPED records; returns (records, changed)."""
+    from concurrent.futures import ThreadPoolExecutor
+    idx = [i for i, r in enumerate(records)
+           if r.get("validation_verdict") in ("REVIEW", "SKIPPED") and not r.get("is_contradiction")]
+    if not idx:
+        return records, 0
+    out = list(records)
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        for i, res in zip(idx, ex.map(lambda i: second_opinion(records[i], text_for(records[i])), idx)):
+            out[i] = res
+    changed = sum(1 for i in idx if out[i].get("validation_verdict") != records[i].get("validation_verdict"))
+    return out, changed

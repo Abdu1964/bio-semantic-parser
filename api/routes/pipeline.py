@@ -237,6 +237,7 @@ async def start_run(
     input_value:   str = Form(""),
     source_name:   str = Form(""),
     output_format: str = Form("both"),
+    source_entity: str = Form(""),   # e.g. "FBgn0000022", "WBGene00000001" — tagged on KG triples
     pdf_file: UploadFile = File(None),
 ):
     run_id = str(uuid.uuid4())[:8]
@@ -271,7 +272,7 @@ async def start_run(
         from api.pipeline_runner import run_pipeline
         run_pipeline(input_type, input_value, output_format,
                      _thread_emit, run_id, source_name=source_name,
-                     is_stopped=_is_stopped)
+                     source_entity=source_entity, is_stopped=_is_stopped)
         msg = "Pipeline stopped by user" if _stop_flags.get(run_id) else "Pipeline finished"
         asyncio.run_coroutine_threadsafe(
             _queues[run_id].put({"layer": 0, "status": "complete", "message": msg}),

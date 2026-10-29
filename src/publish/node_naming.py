@@ -4,6 +4,7 @@ from collections import Counter
 
 _COMPRESS_ENABLED   = os.getenv("NODE_NAME_COMPRESS_ENABLED", "true").strip().lower() in ("1", "true", "yes")
 _COMPRESS_MAX_WORDS = int(os.getenv("NODE_NAME_COMPRESS_MAX_WORDS", "7"))
+_LONG_NAME_CHARS = int(os.getenv("NODE_NAME_LONG_CHARS", "40"))
 _LLM_BASE_URL       = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
 _LLM_API_KEY        = os.getenv("LLM_API_KEY", "ollama")
 _LLM_MODEL          = os.getenv("LLM_MODEL", "gemma2:27b")
@@ -62,6 +63,11 @@ def _resolve_display(names: list, canonical_names: list = None, is_uncertain: bo
 
     best_canon   = Counter(canon).most_common(1)[0][0] if canon else ""
     best_surface = Counter(surface).most_common(1)[0][0] if surface else ""
+
+    # Long official names (e.g. full UniProt protein names) display as the paper's shorter form.
+    if (best_canon and best_surface and not is_uncertain and len(best_canon) > _LONG_NAME_CHARS
+            and len(best_surface) < len(best_canon)):
+        return best_surface, best_canon
 
     if best_canon and not is_uncertain and len(best_canon.split()) <= _COMPRESS_MAX_WORDS:
         return best_canon, ""

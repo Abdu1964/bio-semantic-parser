@@ -1,19 +1,16 @@
-"""Computes extraction confidence from five evidence channels using Open Targets weighted harmonic sum."""
+"""Extraction confidence from five evidence channels (rank-weighted, adapted from Open Targets)."""
 import re
 
 
-# Channel weights for the weighted harmonic sum (Open Targets approach).
-# C2 highest: Kilicoglu 2017 showed epistemic certainty is the dominant signal for predication reliability.
-# C3 second: a p-value or effect size is the gold standard of evidence quality (CI, p-value, SE).
-# C1/C4 are corroborating signals; C5 lowest: Shen 2025 showed 41% LLM miscalibration.
+# Channel weights (project's choice): wording certainty > statistics > section/claim > NLI/LLM.
 CHANNEL_WEIGHTS = {
-    "C1_section":      0.20,   # Open Targets text mining section weights
+    "C1_section":      0.20,   # Open Targets text mining section weights (Kafkas 2017)
     #how certain is the language
-    "C2_factuality":   0.30,   # Kilicoglu 2017 epistemic certainty (dominant)
+    "C2_factuality":   0.30,   # factuality levels (Kilicoglu 2017)
     #Is there a p-value or effect size backing this up
-    "C3_quantitative": 0.25,   # p-value / effect size (gold standard evidence)
+    "C3_quantitative": 0.25,   # p-value / effect size
     "C4_direct_claim": 0.15,   # co-sentence presence
-    "C5_llm":          0.10,   # LLM reliability (Shen 2025: 41% miscalibration)
+    "C5_llm":          0.10,   # NLI entailment; LLM self-reported confidence only as fallback
 }
 
 
@@ -276,10 +273,10 @@ def _channel_nli_entailment(text: str, subject: str, relation: str, obj: str,
     return 0.37 + min(max(llm_fallback, 0.0), 1.0) * 0.40
 
 
-# ── Weighted harmonic sum (Open Targets approach) ────────────────────────────
+# ── Rank-weighted combination ──
 
 def _combine_channels(channels: list) -> float:
-    """Open Targets weighted harmonic sum (Ochoa 2021, NAR): i² penalty dampens single-channel dominance."""
+    """Rank-weighted average: weight / rank² (adapted from Ochoa 2021, NAR)."""
     weights = list(CHANNEL_WEIGHTS.values())
     ranked = sorted(zip(channels, weights), key=lambda x: x[0], reverse=True)
     numerator   = sum(w * c / (i + 1) ** 2 for i, (c, w) in enumerate(ranked))
@@ -338,7 +335,7 @@ def explain(
             "weights":          CHANNEL_WEIGHTS,
         },
         "references": {
-            "combination_formula": "Open Targets weighted harmonic sum (Ochoa 2021, NAR)",
+            "combination_formula": "Rank-weighted average adapted from the Open Targets harmonic sum (Ochoa 2021, NAR)",
             "section_weights":     "Open Targets (Kafkas 2017, PMC5461726)",
             "factuality":          "Kilicoglu 2017 (PMC5497973)",
             "quantitative":        "Open Targets (Ochoa 2021, NAR)",

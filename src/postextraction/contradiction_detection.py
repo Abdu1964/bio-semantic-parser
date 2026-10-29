@@ -17,43 +17,45 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def check_contradiction(record: dict) -> dict:
-    """Flag the record if an opposing relation already exists for the same entity pair."""
+    """Flag the record if an opposing relation, or the same relation negated, exists for the entity pair."""
     try:
         rel_enum = RelationType(record.get("relation", ""))
     except ValueError:
         return record   # unknown relation type — skip
 
-    opposing = OPPOSING_RELATIONS.get(rel_enum)
-    if opposing is None:
-        return record   # no known opposite for this relation type
-
     subject_id = record.get("subject_id", "")
     object_id  = record.get("object_id",  "")
-
     if not subject_id or not object_id:
         return record
-
-    negated = 1 if record.get("negated") else 0
 
     import os as _os
     db_path = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
     if not db_path.exists():
         return record
 
+    negated  = 1 if record.get("negated") else 0
+    opposing = OPPOSING_RELATIONS.get(rel_enum)
+    checks = [(rel_enum.value, 1 - negated, f"'{rel_enum.value}' is both stated and negated")]
+    if opposing is not None:
+        checks.append((opposing.value, negated, f"'{rel_enum.value}' conflicts with existing '{opposing.value}'"))
+
     conn = _get_conn()
-    row  = conn.execute(
-        "SELECT id, source_papers FROM triples "
-        "WHERE subject_id=? AND relation=? AND object_id=? AND negated=?",
-        (subject_id, opposing.value, object_id, negated),
-    ).fetchone()
+    hit = None
+    for rel, neg, what in checks:
+        row = conn.execute(
+            "SELECT id, source_papers FROM triples "
+            "WHERE subject_id=? AND relation=? AND object_id=? AND negated=?",
+            (subject_id, rel, object_id, neg),
+        ).fetchone()
+        if row:
+            hit = (row, what)
+            break
     conn.close()
 
-    if row:
-        reason = (
-            f"CONTRADICTION: '{record['relation']}' conflicts with existing "
-            f"'{opposing.value}' for same entity pair (triple_id={row['id']} "
-            f"sources={row['source_papers']})"
-        )
+    if hit:
+        row, what = hit
+        reason = (f"CONTRADICTION: {what} for same entity pair "
+                  f"(triple_id={row['id']} sources={row['source_papers']})")
         existing_reason = record.get("review_reason", "")
         combined = (existing_reason + " | " + reason).strip(" |")
         return {

@@ -39,17 +39,16 @@ def _clean_entity_name(name: str) -> str:
 
 
 @router.get("/api/suggest-id")
-async def suggest_canonical_id(name: str = "", entity_type: str = ""):
-    """Resolve a TEXT: entity to a canonical ID via the full normalization chain + LLM fallback."""
+def suggest_canonical_id(name: str = "", entity_type: str = "", context: str = ""):
+    """Resolve a TEXT: entity to a canonical ID via the database normalization chain."""
     if not name:
         return JSONResponse({"id": None})
     try:
-        import re as _re, json as _json
         from src.postextraction.entity_normalization import normalize_entity
 
         clean  = _clean_entity_name(name)
-        etype  = entity_type.upper() if entity_type else "GENE"
-        result = normalize_entity(clean, etype, existing_id=None)
+        etype  = entity_type.upper() if entity_type else "OTHER"
+        result = normalize_entity(clean, etype, existing_id=None, context=context)
         canon  = result.get("canonical_id", "")
         source = result.get("id_source", "")
 
@@ -64,34 +63,108 @@ async def suggest_canonical_id(name: str = "", entity_type: str = ""):
                 "synonyms":      result.get("synonyms", ""),
             })
 
-        # Chain failed — ask LLM as last resort
+        # No database match — IDs never come from the LLM.
+        return JSONResponse({"id": None})
+    except Exception as e:
+        return JSONResponse({"id": None, "error": str(e)})
+
+
+@router.get("/api/suggest-correction")
+def suggest_correction(
+    subject: str = "", relation: str = "", object: str = "",
+    subject_type: str = "", object_type: str = "",
+    source_text: str = "", review_reason: str = "",
+):
+    """LLM-suggested correction for a SKIPPED/REJECTED triple."""
+    if not subject or not relation or not object:
+        return JSONResponse({"correction": None})
+    try:
+        import re as _re, json as _json
         from src.llm_client import call_llm
+
+        # Taxonomy relations only
+        try:
+            from src.schema.taxonomy import RelationType
+            valid_relations = ", ".join(sorted(r.value for r in RelationType))
+        except Exception:
+            valid_relations = ""
+
+        context_line   = f'\nSource text: "{source_text[:400]}"' if source_text else ""
+        reason_line    = f'\nValidation issue: "{review_reason[:300]}"' if review_reason else ""
+        taxonomy_line  = f'\nVALID RELATION TYPES (relation field must be one of these):\n{valid_relations}' if valid_relations else ""
+
         prompt = (
-            f'You are a biomedical ontology expert. Provide the canonical ontology ID for this entity.\n'
-            f'Entity name: "{clean}"\n'
+            f'You are a biomedical knowledge graph expert. A relation was extracted from scientific text but failed validation.\n'
+            f'Extracted triple:\n'
+            f'  Subject: {subject} (type: {subject_type or "unknown"})\n'
+            f'  Relation: {relation}\n'
+            f'  Object: {object} (type: {object_type or "unknown"})\n'
+            f'{context_line}{reason_line}{taxonomy_line}\n\n'
+            f'Your task: suggest the corrected triple that accurately represents what the text states.\n'
+            f'Rules:\n'
+            f'- Keep entities that are correct; only change what is wrong\n'
+            f'- The "relation" field MUST be one of the valid relation types listed above — never invent a new name\n'
+            f'- Use OTHER only if no listed relation fits\n'
+            f'- If the relation direction is reversed, swap subject and object\n'
+            f'- If an entity name is vague, suggest the precise biological term\n\n'
             f'Respond ONLY with a valid JSON object:\n'
-            f'{{"id": "<prefix:number>", "source": "<HGNC|MeSH|ChEBI|NCBIGene|UniProt|GO>", '
-            f'"confidence": "<high|medium|low>", "full_name": "<official full name>"}}\n'
-            f'Use prefix:number format (e.g. hgnc:7804, mesh:D002784, chebi:15422, ncbigene:4784).\n'
-            f'If you are not confident, set confidence to "low" but still provide your best guess.\n'
-            f'If it is clearly not a biomedical entity, return {{"id": null}}.'
+            f'{{"subject": "<corrected subject or same if correct>", '
+            f'"relation": "<one relation from the valid list>", '
+            f'"object": "<corrected object or same if correct>", '
+            f'"explanation": "<one sentence explaining what was wrong and what you changed>", '
+            f'"confidence": "<high|medium|low>"}}'
         )
-        text = call_llm([{"role": "user", "content": prompt}], max_tokens=150, temperature=0.0)
+        text = call_llm([{"role": "user", "content": prompt}], max_tokens=200, temperature=0.0)
         if isinstance(text, str):
             text = text.strip()
         m = _re.search(r'\{[^}]+\}', text, _re.DOTALL)
         if not m:
-            return JSONResponse({"id": None})
+            return JSONResponse({"correction": None})
         data = _json.loads(m.group())
-        if not data.get("id"):
-            return JSONResponse({"id": None})
-        data["verified"] = False
-        data["official_name"] = data.get("full_name", "")
-        if data.get("confidence") not in ("low",):
-            data["confidence"] = "low"
-        return JSONResponse(data)
+        if not data.get("relation"):
+            return JSONResponse({"correction": None})
+        return JSONResponse({"correction": data})
     except Exception as e:
-        return JSONResponse({"id": None, "error": str(e)})
+        return JSONResponse({"correction": None, "error": str(e)})
+
+
+import threading as _thr
+_verification_locks: dict = {}
+_verification_pending: dict = {}
+_verification_locks_mu = _thr.Lock()
+
+def _get_verification_lock(run_dir_str: str):
+    with _verification_locks_mu:
+        if run_dir_str not in _verification_locks:
+            _verification_locks[run_dir_str] = _thr.Lock()
+            _verification_pending[run_dir_str] = False
+        return _verification_locks[run_dir_str]
+
+def _take_verification_pending(run_dir_str: str) -> bool:
+    """Atomically read-and-clear the pending flag. True means a re-run is needed."""
+    with _verification_locks_mu:
+        v = _verification_pending.get(run_dir_str, False)
+        _verification_pending[run_dir_str] = False
+        return v
+
+
+def _acquire_or_mark_pending(run_dir_str: str, lock) -> bool:
+    """Take the verification lock, or mark a re-run for the current holder — atomically."""
+    with _verification_locks_mu:
+        if lock.acquire(blocking=False):
+            return True
+        _verification_pending[run_dir_str] = True
+        return False
+
+
+def _release_unless_pending(run_dir_str: str, lock) -> bool:
+    """Release the lock if no re-run is pending (True = done); else clear the flag and keep it."""
+    with _verification_locks_mu:
+        if _verification_pending.get(run_dir_str, False):
+            _verification_pending[run_dir_str] = False
+            return False
+        lock.release()
+        return True
 
 
 @router.post("/api/human-review/action")
@@ -103,7 +176,6 @@ async def review_action(
 ):
     """Approve or reject human review triples."""
     import json as _json
-    import threading as _thr
     try:
         recs    = _json.loads(records)
         hr_path = Path(run_dir)
@@ -114,10 +186,10 @@ async def review_action(
         if not sdb.is_absolute(): sdb = _ROOT / sdb
 
         def _rebuild_after_approve(sdb_path, run_dir_str):
+            """Commit → export CSVs → rebuild graph → re-run verification."""
             try:
                 from src.postextraction.deduplication import commit_staging_to_main
                 from tools.visualize_graph import build_graph_data, render_html
-                from tools.verify_kg import run_verification
                 from src.publish.output_layer import export_csvs_from_db
 
                 for fmt in ("neo4j", "metta"):
@@ -142,18 +214,39 @@ async def review_action(
                             _n, _e = build_graph_data([_neo4j_csv])
                             render_html(_n, _e, _run_path / "graph.html", title="Paper Knowledge Graph")
                         except Exception: pass
+
+                # Re-run verification so the report reflects the current approved set.
+                # If verification is already running, mark it pending so it runs again
+                lock = _get_verification_lock(run_dir_str)
+                if _acquire_or_mark_pending(run_dir_str, lock):
+                    done = False
                     try:
-                        run_verification(fetch_text=True, formats="neo4j",
-                            db_path=str(sdb_path) if sdb_path.exists() else None,
-                            out_html=_run_path / "verification_report.html",
-                            out_json=_run_path / "verification_report.json")
-                    except Exception: pass
-                    try:
-                        run_verification(fetch_text=True, formats="metta",
-                            db_path=str(sdb_path) if sdb_path.exists() else None,
-                            out_html=_run_path / "verification_report_metta.html",
-                            out_json=_run_path / "verification_report_metta.json")
-                    except Exception: pass
+                        from tools.verify_kg import run_verification
+                        _take_verification_pending(run_dir_str)
+                        while True:
+                            if _run_path.exists():
+                                for fmt, out_html, out_json in [
+                                    ("neo4j",
+                                     _run_path / "verification_report.html",
+                                     _run_path / "verification_report.json"),
+                                    ("metta",
+                                     _run_path / "verification_report_metta.html",
+                                     _run_path / "verification_report_metta.json"),
+                                ]:
+                                    try:
+                                        run_verification(
+                                            fetch_text=True, formats=fmt,
+                                            db_path=str(sdb_path) if sdb_path.exists() else None,
+                                            out_html=out_html, out_json=out_json,
+                                        )
+                                    except Exception: pass
+                            # Exit and lock release are atomic with new approvals marking "pending".
+                            if _release_unless_pending(run_dir_str, lock):
+                                done = True
+                                break
+                    finally:
+                        if not done:
+                            lock.release()
             except Exception: pass
 
         def _delayed_rebuild(sdb_path, rdir):

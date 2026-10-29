@@ -92,3 +92,29 @@ def route(records: list) -> tuple:
             })
 
     return auto_insert, human_review
+
+
+def split_discards(human_review: list) -> tuple:
+    """Split gate failures into (human_review, discarded); discards are logged."""
+    keep, discarded = [], []
+    for r in human_review:
+        if r.get("is_contradiction"):          # conflicting findings are always shown to a human
+            keep.append(r)
+            continue
+        reasons = []
+        if r.get("subject_id") and r.get("subject_id") == r.get("object_id"):
+            reasons.append("subject and object are the same entity")
+        if r.get("validation_verdict") == "REJECT":
+            reasons.append("semantic validation REJECT: " + (r.get("validation_reasoning") or "")[:200])
+        for side in ("subject", "object"):
+            nc = r.get(f"{side}_non_canonical")
+            if nc:
+                reasons.append(f"{side} '{r.get(f'{side}_name', '')}' is a {nc}")
+            elif ((_is_text_label(r.get(f"{side}_id")) or _is_hard_unresolved(r.get(f"{side}_id")))
+                    and not r.get(f"{side}_network_degraded")):
+                reasons.append(f"{side} '{r.get(f'{side}_name', '')}' has no verified ontology ID")
+        if reasons:
+            discarded.append({**r, "insert_path": "discarded", "discard_reason": " | ".join(reasons)})
+        else:
+            keep.append(r)
+    return keep, discarded

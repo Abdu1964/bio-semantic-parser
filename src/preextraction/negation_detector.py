@@ -13,8 +13,11 @@ import re
 
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
+import threading
+_infer_lock = threading.Lock()
 
 
+# Contrastive conjunctions
 _CONTRASTIVE = re.compile(
     r'\b(but not|however|although|whereas|while yet|despite|'
     r'in contrast|on the other hand|except|rather than|'
@@ -31,8 +34,11 @@ def _extract_entity_clause(sentence: str, entity_text: str) -> str:
     for part in parts:
         if len(part.split()) <= 2:
             continue
+        # Skip very short parts
         if entity_text.lower() in part.lower():
+            # Clause with the entity
             stripped = part.strip().strip(",;.")
+            # Long enough to be a clause
             if len(stripped) > 10:
                 return stripped
 
@@ -77,7 +83,7 @@ class NegationDetector:
             truncation=True,
             max_length=512,
         )
-        with torch.no_grad():
+        with _infer_lock, torch.no_grad():   # shared model — one forward pass at a time
             probs = torch.softmax(self._model(**inputs).logits, dim=-1)[0]
         contradiction_score = float(probs[0])
         return contradiction_score > self._THRESHOLD, round(contradiction_score, 3)

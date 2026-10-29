@@ -175,6 +175,18 @@ def _count_run_edges(run_dir, fmt="neo4j"):
         return 0
 
 
+def _count_run_nodes(run_dir):
+    """Count unique nodes from nodes_*.csv files in the neo4j output."""
+    try:
+        count = 0
+        for csv in (run_dir / "neo4j").rglob("nodes_*.csv"):
+            with open(csv) as f:
+                count += max(0, sum(1 for _ in f) - 1)
+        return count
+    except Exception:
+        return 0
+
+
 def _resolve_input(input_type, input_value, source_name, all_sources, scheduler):
     """Return (source_dict, doc_id, fetch_url)."""
     import hashlib, re

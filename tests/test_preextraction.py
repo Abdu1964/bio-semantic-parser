@@ -6,7 +6,7 @@ from src.preextraction.doi_extractor import DOIExtractor
 from src.preextraction.accession_detector import AccessionDetector
 from src.preextraction.ner_tagger import NERTagger
 from src.preextraction.negation_detector import NegationDetector, _extract_entity_clause
-from src.preextraction.preextractor import Preextractor, _merge_entities
+from src.preextraction.preextractor import Preextractor, _resolve_overlaps, _relocalize_to_chunk
 
 
 # DOIExtractor
@@ -323,54 +323,74 @@ class TestNegationDetector:
 
 
 
-# _merge_entities
+# _resolve_overlaps / _relocalize_to_chunk
 
-class TestMergeEntities:
-    def test_pubtator_entities_take_priority(self):
-        ensemble = [
-            {"text": "BRCA1", "normalized": "brca1", "label": "GENE"},
-            {"text": "insulin", "normalized": "insulin", "label": "CHEMICAL"},
+class TestResolveOverlaps:
+    def test_exact_match_keeps_identifier(self):
+        entities = [
+            {"text": "BRCA1", "start": 0, "end": 5, "label": "GENE", "confidence": 1.0},
+            {"text": "BRCA1", "start": 0, "end": 5, "label": "Gene", "confidence": 0.9, "identifier": "672"},
         ]
-        pubtator = [
-            {"text": "BRCA1", "normalized": "brca1", "label": "Gene", "identifier": "672"},
-        ]
-        result = _merge_entities(ensemble, pubtator)
-        # pubtator entity with identifier should be in result
-        pt_hits = [e for e in result if e.get("identifier") == "672"]
-        assert len(pt_hits) == 1
-
-    def test_ensemble_fills_gaps(self):
-        ensemble = [
-            {"text": "BRCA1", "normalized": "brca1", "label": "GENE"},
-            {"text": "insulin", "normalized": "insulin", "label": "CHEMICAL"},
-        ]
-        pubtator = [
-            {"text": "BRCA1", "normalized": "brca1", "label": "Gene", "identifier": "672"},
-        ]
-        result = _merge_entities(ensemble, pubtator)
-        # "insulin" not in pubtator, comes from ensemble
-        gap_fillers = [e for e in result if e["normalized"] == "insulin"]
-        assert len(gap_fillers) == 1
-
-    def test_no_duplicates_from_overlap(self):
-        ensemble = [{"text": "p53", "normalized": "p53", "label": "GENE"}]
-        pubtator = [{"text": "p53", "normalized": "p53", "label": "Gene", "identifier": "7157"}]
-        result = _merge_entities(ensemble, pubtator)
-        hits = [e for e in result if e["normalized"] == "p53"]
-        assert len(hits) == 1
-
-    def test_empty_pubtator_returns_all_ensemble(self):
-        ensemble = [
-            {"text": "BRCA1", "normalized": "brca1"},
-            {"text": "VEGF", "normalized": "vegf"},
-        ]
-        result = _merge_entities(ensemble, [])
-        assert len(result) == 2
-
-    def test_empty_ensemble_returns_all_pubtator(self):
-        pubtator = [{"text": "p53", "normalized": "p53", "identifier": "7157"}]
-        result = _merge_entities([], pubtator)
+        result = _resolve_overlaps(entities)
         assert len(result) == 1
+        assert result[0]["identifier"] == "672"
+
+    def test_non_overlapping_entities_both_kept(self):
+        entities = [
+            {"text": "BRCA1", "start": 0, "end": 5, "confidence": 1.0},
+            {"text": "insulin", "start": 10, "end": 17, "confidence": 0.8},
+        ]
+        result = _resolve_overlaps(entities)
+        assert {e["text"] for e in result} == {"BRCA1", "insulin"}
+
+    def test_partial_overlap_longest_span_wins(self):
+        entities = [
+            {"text": "BRCA1 mutation", "start": 0, "end": 14, "confidence": 1.0},
+            {"text": "BRCA1", "start": 0, "end": 5, "confidence": 0.9},
+        ]
+        result = _resolve_overlaps(entities)
+        assert len(result) == 1
+        assert result[0]["text"] == "BRCA1 mutation"
+
+    def test_partial_overlap_equal_length_confidence_tiebreak(self):
+        entities = [
+            {"text": "BRCA1", "start": 0, "end": 5, "confidence": 0.5},
+            {"text": "RCA1X", "start": 1, "end": 6, "confidence": 0.95},
+        ]
+        result = _resolve_overlaps(entities)
+        assert len(result) == 1
+        assert result[0]["text"] == "RCA1X"
+
+    def test_empty_input_returns_empty(self):
+        assert _resolve_overlaps([]) == []
+
+    def test_entities_missing_offsets_are_dropped(self):
+        entities = [{"text": "p53", "start": -1, "end": -1, "confidence": 1.0}]
+        assert _resolve_overlaps(entities) == []
+
+    def test_exact_tie_uses_source_priority_not_input_order(self):
+        gliner = {"text": "BRCA1", "start": 0, "end": 5, "label": "GENE", "confidence": 0.9, "source": "gliner"}
+        hf     = {"text": "BRCA1", "start": 0, "end": 5, "label": "DISEASE", "confidence": 0.9, "source": "hf_ner"}
+        for entities in ([gliner, hf], [hf, gliner]):
+            result = _resolve_overlaps(entities)
+            assert len(result) == 1
+            assert result[0]["label"] == "GENE"
+            assert result[0]["alt_label"] == "DISEASE"
+            assert result[0]["alt_confidence"] == 0.9
+
+
+class TestRelocalizeToChunk:
+    def test_remaps_offsets_to_chunk_local(self):
+        chunk_text = "The protein BRCA1 interacts with RAD51."
+        entities = [{"text": "BRCA1", "start": 99999, "end": 100004}]
+        result = _relocalize_to_chunk(entities, chunk_text)
+        assert len(result) == 1
+        assert chunk_text[result[0]["start"]:result[0]["end"]] == "BRCA1"
+
+    def test_drops_entities_not_present_in_chunk(self):
+        chunk_text = "The protein BRCA1 interacts with RAD51."
+        entities = [{"text": "not in this chunk", "start": 0, "end": 5}]
+        assert _relocalize_to_chunk(entities, chunk_text) == []
 
 
 

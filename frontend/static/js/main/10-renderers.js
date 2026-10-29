@@ -274,6 +274,32 @@ async function loadHumanReview(runDir, stagingDb) {
   });
 }
 
+// Review suggestions: max 2 in flight, cancellable.
+const _SUGGEST_MAX = 2;
+let _suggestActive = 0, _suggestWaiting = [], _suggestAbort = new AbortController();
+
+function _suggestFetch(url) {
+  const signal = _suggestAbort.signal;
+  return new Promise((resolve, reject) => {
+    const go = () => {
+      if (signal.aborted) return reject(new DOMException('cancelled', 'AbortError'));
+      _suggestActive++;
+      fetch(url, { signal }).then(resolve, reject).finally(() => {
+        _suggestActive--;
+        const next = _suggestWaiting.shift();
+        if (next) next();
+      });
+    };
+    _suggestActive < _SUGGEST_MAX ? go() : _suggestWaiting.push(go);
+  });
+}
+
+function _cancelSuggestions() {
+  _suggestAbort.abort();
+  _suggestWaiting = [];
+  _suggestAbort = new AbortController();
+}
+
 async function _fetchCanonicalId(entityName, entityType, cardIdx, role, context) {
   const inputEl = document.getElementById(`${role}-id-${cardIdx}`);
   const hintEl  = document.getElementById(`${role}-id-hint-${cardIdx}`);
@@ -281,7 +307,7 @@ async function _fetchCanonicalId(entityName, entityType, cardIdx, role, context)
   let verified = false;
   try {
     const ctx = context ? `&context=${encodeURIComponent((context || '').slice(0, 400))}` : '';
-    const resp = await fetch(`/api/suggest-id?name=${encodeURIComponent(entityName)}&entity_type=${encodeURIComponent(entityType)}${ctx}`);
+    const resp = await _suggestFetch(`/api/suggest-id?name=${encodeURIComponent(entityName)}&entity_type=${encodeURIComponent(entityType)}${ctx}`);
     const data = await resp.json();
     if (data.id) {
       if (!inputEl.value || inputEl.value === '') {
@@ -358,7 +384,7 @@ async function _fetchSuggestedCorrection(record, cardIdx) {
   });
 
   try {
-    const resp = await fetch(`/api/suggest-correction?${params}`);
+    const resp = await _suggestFetch(`/api/suggest-correction?${params}`);
     const data = await resp.json();
     const c    = data.correction;
     if (!c || !c.relation) return;

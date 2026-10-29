@@ -4,6 +4,8 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 import fitz
 
+PAGE_BREAK = "\f"
+
 
 class JSONHandler:
     def extract(self, content: str, text_field: str = None) -> str:
@@ -155,4 +157,4 @@ class PDFHandler:
             # local file path
             doc = fitz.open(content)
         texts = [page.get_text() for page in doc]
-        return " ".join(texts)
+        return PAGE_BREAK.join(texts)   # page boundaries kept for Layer 3 cleaning

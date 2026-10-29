@@ -200,6 +200,78 @@ def _update_meta_layer(doc_id: str, layer: int) -> None:
     path.write_text(json.dumps(meta, indent=2, default=str))
 
 
+# ── Sub-step checkpoints (within a layer) ────────────────────────────────────
+# Supported sub-steps: Layer 7 step 1 (after normalization), step 6 (after validation)
+
+def _substep_file(doc_id: str, layer: int, step: int) -> Path:
+    return _ckpt_dir(doc_id) / f"layer{layer}_substep{step}.json"
+
+
+def save_substep(doc_id: str, layer: int, step: int, data: list) -> None:
+    path = _substep_file(doc_id, layer, step)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, default=str))
+    meta_path = _meta_file(doc_id)
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except Exception:
+            pass
+    substeps = meta.get("substeps", {})
+    key = str(layer)
+    completed = substeps.get(key, [])
+    if step not in completed:
+        completed.append(step)
+    substeps[key] = sorted(completed)
+    meta["substeps"] = substeps
+    meta_path.write_text(json.dumps(meta, indent=2, default=str))
+
+
+def load_substep(doc_id: str, layer: int, step: int):
+    path = _substep_file(doc_id, layer, step)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def get_completed_substeps(doc_id: str, layer: int) -> list:
+    meta_path = _meta_file(doc_id)
+    if not meta_path.exists():
+        return []
+    try:
+        return json.loads(meta_path.read_text()).get("substeps", {}).get(str(layer), [])
+    except Exception:
+        return []
+
+
+def clear_substeps_from(doc_id: str, layer: int, from_step: int) -> None:
+    """Remove sub-step files and meta entries for steps >= from_step."""
+    meta_path = _meta_file(doc_id)
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except Exception:
+            pass
+    substeps = meta.get("substeps", {})
+    key = str(layer)
+    all_steps = substeps.get(key, [])
+    for step in all_steps:
+        if step >= from_step:
+            _substep_file(doc_id, layer, step).unlink(missing_ok=True)
+    kept = [s for s in all_steps if s < from_step]
+    if kept:
+        substeps[key] = kept
+    else:
+        substeps.pop(key, None)
+    meta["substeps"] = substeps
+    meta_path.write_text(json.dumps(meta, indent=2, default=str))
+
+
 # ── Load ──────────────────────────────────────────────────────────────────────
 
 def load(doc_id: str, layer: int) -> Any | None:

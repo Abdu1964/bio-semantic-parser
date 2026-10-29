@@ -80,11 +80,13 @@ GLINER_MAP = {
 _model: Optional[object] = None
 _model_id: str = ""
 _model_lock = _threading.Lock()
+_infer_lock = _threading.Lock()   # one prediction at a time on the shared model
 
 
 def _get_model():
     """Lazy-load GLiNER-BioMed Base (cached after first call)."""
     global _model, _model_id
+    # Model ID from env, with a default
     model_id = os.getenv("GLINER_MODEL", "Ihor/gliner-biomed-base-v1.0")
     if _model is not None and _model_id == model_id:
         return _model
@@ -108,6 +110,7 @@ def should_run() -> bool:
 
 def tag_entities(text: str) -> list[dict]:
     """Run GLiNER zero-shot NER; returns entity dicts in NERTagger.from_doc() format."""
+    # Skip if GLiNER is disabled
     if not should_run():
         return []
 
@@ -115,15 +118,18 @@ def tag_entities(text: str) -> list[dict]:
 
     try:
         model   = _get_model()
-        results = model.predict_entities(
-            text[:8000], GLINER_LABELS, threshold=threshold, flat_ner=True
-        )
+        # Predict entities
+        with _infer_lock:
+            results = model.predict_entities(
+                text[:8000], GLINER_LABELS, threshold=threshold, flat_ner=True
+            )
     except Exception:
         return []
 
     entities = []
     seen     = set()
 
+    # Filter and normalise results
     for r in results:
         word  = (r.get("text") or "").strip()
         label = r.get("label", "")
@@ -131,11 +137,11 @@ def tag_entities(text: str) -> list[dict]:
 
         if not word or len(word) < 3:
             continue
-
+        # Map label to entity type
         entity_type = GLINER_MAP.get(label, "OTHER")
         if entity_type == "OTHER":
             continue   # skip unmapped labels
-
+        # Character offsets
         start = int(r.get("start", -1))
         end   = int(r.get("end", -1))
         if start < 0 or end <= start:

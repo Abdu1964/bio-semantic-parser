@@ -23,6 +23,7 @@ _MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 _QUEUE_PATH  = Path(os.getenv("REJECTED_QUEUE", "data/rejected.jsonl"))
 _OUT_RESERVE      = int(os.getenv("LLM_OUTPUT_TOKENS", "2048"))
 _WALL_TIMEOUT     = int(os.getenv("LLM_WALL_TIMEOUT",  "300"))
+_HEALTH_TIMEOUT   = float(os.getenv("LLM_HEALTH_TIMEOUT", "8"))   # raise for slow networks
 _COMPACT_TAXONOMY = os.getenv("LLM_COMPACT_TAXONOMY", "0").strip().lower() in ("1", "true", "yes")
 _MAX_ENTITIES     = int(os.getenv("LLM_MAX_ENTITIES", "0"))
 _CACHED_SYSTEM_PROMPT: str = ""
@@ -181,6 +182,11 @@ def _system_prompt() -> str:
         "9. Do not collapse similar clinical terms — 'developmental delay' and 'intellectual disability' "
         "   are distinct. Extract each named entity separately; never suppress a triple because a "
         "   similar one already exists.\n"
+        "10. Subjects and objects must be specific, named biological entities. Never use a bare "
+        "   category word ('gene', 'mutant', 'allele', 'transcripts', 'SNP', 'functional') or a "
+        "   study-specific group label ('O lines', 'delayed-breeding populations', '156 genes', "
+        "   'treated group'). Use the specific entity the text refers to (e.g. the organism, gene or "
+        "   phenotype); if there is none, set extraction_viable=false for that relation.\n"
     )
 
 
@@ -293,11 +299,11 @@ def extract(chunk: dict, _depth: int = 0) -> ExtractionResult:
     # Health-check once before the retry loop
     _server_root = _BASE_URL.rstrip("/").removesuffix("v1").rstrip("/")
     try:
-        httpx.get(f"{_server_root}/health", timeout=8.0)
+        httpx.get(f"{_server_root}/health", timeout=_HEALTH_TIMEOUT)
     except Exception:
         try:
             httpx.get(f"{_server_root}/v1/models",
-                      headers={"Authorization": f"Bearer {_API_KEY}"}, timeout=8.0)
+                      headers={"Authorization": f"Bearer {_API_KEY}"}, timeout=_HEALTH_TIMEOUT)
         except Exception as _he:
             raise ConnectionError(f"vLLM server unreachable at {_BASE_URL} — {_he}")
 

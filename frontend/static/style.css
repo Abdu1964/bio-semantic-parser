@@ -762,6 +762,7 @@ header {
 .oc-verify { background:#05966922; color:var(--green); }
 .oc-compare{ background:#d9770622; color:var(--yellow); }
 .oc-pln    { background:#a855f722; color:var(--pln); border-color:var(--pln2) !important; }
+.oc-edit   { background:#0891b222; color:var(--blue); }
 
 /* PLN card gets purple hover */
 .out-card.pln-card:hover { border-color:var(--pln); box-shadow:0 4px 16px rgba(168,85,247,.2); }

@@ -33,9 +33,9 @@ async def rebuild_all_compare():
                             out_html=_udir / "verification_report.html",
                             out_json=_udir / "verification_report.json")
                     except Exception: pass
-            for run in kg_root.iterdir():
-                if not run.is_dir() or not (run / "graph.html").exists(): continue
-                if run.name.startswith("unified"): continue
+            from src.publish.output_layer import all_run_dirs
+            for run in all_run_dirs(kg_root):                   # nested runs too
+                if not (run / "graph.html").exists(): continue
                 try:
                     _build_compare_page(
                         run / "graph.html", uni_neo4j / "graph.html",
@@ -276,8 +276,9 @@ async def commit_existing_outputs(
                         except Exception: pass
                 except Exception: pass
                 try:
-                    for _other_run in kg_root.iterdir():
-                        if not _other_run.is_dir() or _other_run == _run: continue
+                    from src.publish.output_layer import all_run_dirs
+                    for _other_run in all_run_dirs(kg_root):
+                        if _other_run == _run: continue
                         _other_graph = _other_run / "graph.html"
                         if not _other_graph.exists(): continue
                         if output_format in ("neo4j", "both"):
@@ -438,6 +439,32 @@ async def commit_status(job_id: str = ""):
     if not job:
         return JSONResponse({"status": "unknown"})
     return JSONResponse(job)
+
+
+@router.get("/api/species")
+async def list_species():
+    """Distinct species in the unified store, with triple counts, for the species filter dropdown."""
+    import sqlite3
+    from src.postextraction.deduplication import db_path_for_format
+
+    counts: dict = {}
+    for fmt in ("neo4j", "metta"):
+        db_path = db_path_for_format(fmt)
+        if not db_path.exists():
+            continue
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT species, COUNT(*) FROM triples WHERE species IS NOT NULL AND species != '' GROUP BY species"
+            ).fetchall()
+        finally:
+            conn.close()
+        for name, n in rows:
+            counts[name] = max(counts.get(name, 0), n)   # stores can differ (format-specific commits)
+
+    from tools.export_unified import _slug
+    species = [{"name": name, "slug": _slug(name), "count": n} for name, n in sorted(counts.items())]
+    return JSONResponse({"species": species})
 
 
 @router.post("/api/rebuild-compare")

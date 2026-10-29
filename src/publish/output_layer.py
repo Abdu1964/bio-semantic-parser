@@ -1,9 +1,10 @@
 """Layer 8 — Output Layer Orchestrator: validation gate → KG write → verification."""
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.publish.validation_gate    import route
+from src.publish.validation_gate    import route, split_discards
 from src.publish.human_review       import append as queue_for_review
 from src.publish.atomspace_inserter import insert_to_atomspace
 from src.publish.output_verifier    import verify_run
@@ -64,22 +65,45 @@ def _doc_id_slug(doc_id: str) -> str:
     return _slug(d, 40)
 
 
-def _run_dir(paper_name: str = "", doc_id: str = "") -> Path:
-    """
-    Create a timestamped directory for this run.
-    Folder name = YYYY-MM-DD_HH-MM-SS_{doc_id_slug}
-    Falls back to paper_name slug if doc_id is not available.
-    """
+_RUN_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_|$)")
+
+
+def all_run_dirs(root: Path = None) -> list:
+    """Every run folder, flat or nested under {species}/{entity_id}/, newest first."""
+    root = Path(root or _KG_ROOT)
+    found = []
+    for dirpath, dirnames, _ in os.walk(root):
+        if Path(dirpath) == root:
+            dirnames[:] = [d for d in dirnames if not d.startswith("unified")]
+        for d in list(dirnames):
+            if _RUN_NAME.match(d):
+                found.append(Path(dirpath) / d)
+                dirnames.remove(d)                 # don't walk into a run's own files
+    return sorted(found, key=lambda p: p.name, reverse=True)
+
+
+def run_dirs_for(doc_id: str, root: Path = None) -> list:
+    """Run folders of one paper — same suffix the publisher writes (_doc_id_slug), newest first."""
+    suffix = _doc_id_slug(doc_id).lower()
+    return [d for d in all_run_dirs(root) if suffix and d.name.lower().endswith("_" + suffix)]
+
+
+def _run_dir(paper_name: str = "", doc_id: str = "", species: str = "", entity_id: str = "") -> Path:
+    """Create a timestamped run directory, nested under {species}/{entity_id}/ if given."""
     ts      = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
     suffix  = _doc_id_slug(doc_id) or _slug(paper_name)
     name    = f"{ts}_{suffix}" if suffix else ts
-    run     = _KG_ROOT / name
+    root    = _KG_ROOT
+    if species and entity_id:
+        root = root / _slug(species) / _slug(entity_id, max_len=64)
+    run = root / name
     run.mkdir(parents=True, exist_ok=True)
     return run
 
 
 def process(records: list, verbose: bool = False, text_by_doc: dict = None,
-            formats: str = "both", paper_name: str = "", doc_id: str = "") -> dict:
+            formats: str = "both", paper_name: str = "", doc_id: str = "",
+            species: str = "", entity_id: str = "") -> dict:
     """
     Run Layer 8 on all records from Layer 7.
 
@@ -102,7 +126,7 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
     # Auto-extract doc_id from records if not provided
     if not doc_id and records:
         doc_id = records[0].get("document_id", "") if records else ""
-    run = _run_dir(paper_name, doc_id=doc_id)
+    run = _run_dir(paper_name, doc_id=doc_id, species=species, entity_id=entity_id)
     log(f"Run directory: {run}")
 
     # Build text lookup using BOTH document_id and chunk_index as key.
@@ -125,7 +149,15 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
     # ── Validation Gate ───────────────────────────────────────────────────────
     log("Validation Gate")
     auto_insert, human_review = route(records)
-    log(f"  → {len(auto_insert)} auto-insert  |  {len(human_review)} → human review")
+    human_review, discarded = split_discards(human_review)
+    auto_insert, generic = split_discards(auto_insert)     # generic entities can pass the validator too
+    discarded += generic
+    log(f"  → {len(auto_insert)} auto-insert  |  {len(human_review)} → human review  |  "
+        f"{len(discarded)} discarded (rejected.jsonl)")
+    if discarded:
+        _write_rejected(discarded, run)
+    _write_alignment(auto_insert + human_review + discarded, run)
+    _write_fact_merges(auto_insert + human_review + discarded, run)
 
     # ── Sync gate decision back to staging DB ────────────────────────────────
     # Layer 7 Step 2 (deduplication) wrote ALL records to the staging DB before
@@ -137,6 +169,10 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
         import sqlite3 as _sq
         try:
             _sc = _sq.connect(_staging_path)
+            # Rows were staged before repairs, re-resolution and species backfill — write final values.
+            from src.postextraction.deduplication import sync_record
+            for _r in auto_insert + human_review:
+                _r["triple_id"] = sync_record(_sc, _r) or _r.get("triple_id")
             # Mark every staged triple as flagged by default, then clear the ones
             # that actually passed the gate.
             _sc.execute("UPDATE triples SET flagged_for_review=1")
@@ -172,12 +208,14 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
         log(f"     Location: {run}/human_review.jsonl")
 
     # ── Auto-Insert → Atomspace ───────────────────────────────────────────────
-    summary = {"auto_insert": 0, "human_review": len(human_review),
+    summary = {"auto_insert": 0, "human_review": len(human_review), "discarded": len(discarded),
                "neo4j": {}, "metta": {}, "run_dir": str(run)}
 
     if auto_insert:
         log(f"Writing {len(auto_insert)} record(s) to Atomspace (Neo4j CSV + MeTTa)…")
         result = insert_to_atomspace(auto_insert, run_dir=run, formats=formats)
+        if formats in ("metta", "both"):
+            _write_identity_atoms(run)
         summary["auto_insert"] = result["records"]
         summary["neo4j"]       = result["neo4j"]
         summary["metta"]       = result["metta"]
@@ -239,7 +277,12 @@ def export_csvs_from_db(staging_db: str, run_dir: str, formats: str = "neo4j") -
     except Exception:
         return
 
-    if not rows:
+    if not rows:                               # nothing approved left: empty the exports, don't keep stale ones
+        import shutil as _sh
+        for fmt in ("neo4j", "metta"):
+            if formats in (fmt, "both"):
+                _sh.rmtree(run / fmt, ignore_errors=True)
+                (run / fmt).mkdir(parents=True, exist_ok=True)
         return
 
     records = [dict(r) for r in rows]
@@ -266,7 +309,75 @@ def export_csvs_from_db(staging_db: str, run_dir: str, formats: str = "neo4j") -
 
     try:
         insert_to_atomspace(records, run_dir=run, formats=formats)
+        if formats in ("metta", "both"):
+            _write_identity_atoms(run)
     except Exception:
         pass
 
 
+def _write_alignment(records: list, run_dir) -> None:
+    """Write concept merges to <run_dir>/alignment.jsonl."""
+    import json as _json
+    merges: dict = {}
+    for r in records:
+        for side in ("subject", "object"):
+            for m in (r.get(f"{side}_alignment"), r.get(f"{side}_kg_identity")):
+                if m and m.get("from"):
+                    merges.setdefault((m["from"], m.get("to")), m)
+    if not merges:
+        return
+    path = Path(run_dir) / "alignment.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for m in merges.values():
+            f.write(_json.dumps(m, default=str) + "\n")
+
+
+def _write_identity_atoms(run_dir) -> None:
+    """metta/identity.metta from alignment.jsonl — call after each MeTTa export (it clears metta/)."""
+    import json as _json
+    src = Path(run_dir) / "alignment.jsonl"
+    if not src.exists():
+        return
+    atoms = []
+    for line in src.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        m = _json.loads(line)
+        strength, conf = (1.0, 0.95) if m.get("method") in ("cross_reference", "synonym") \
+            else (0.9, round(float(m.get("score") or 0.8), 3))          # strength by method
+        atoms.append(f'(IdenticalTo (Concept "{m["from"]}") (Concept "{m["to"]}") (stv {strength} {conf}))')
+    if atoms:
+        metta_dir = Path(run_dir) / "metta"
+        metta_dir.mkdir(parents=True, exist_ok=True)
+        (metta_dir / "identity.metta").write_text("\n".join(atoms) + "\n", encoding="utf-8")
+
+
+def _write_fact_merges(records: list, run_dir) -> None:
+    """Write fact merges to <run_dir>/fact_alignment.jsonl."""
+    import json as _json
+    rows = [{"kept": {"subject": r.get("subject_name"), "relation": getattr(r.get("relation"), "value", r.get("relation")),
+                      "object": r.get("object_name"), "subject_id": r.get("subject_id"), "object_id": r.get("object_id")},
+             "merged": r["merged_facts"]}
+            for r in records if r.get("merged_facts")]
+    if not rows:
+        return
+    path = Path(run_dir) / "fact_alignment.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(_json.dumps(row, default=str) + "\n")
+
+
+def _write_rejected(records: list, run_dir) -> None:
+    """Append discarded triples to <run_dir>/rejected.jsonl for audit."""
+    import json as _json
+    from datetime import datetime, timezone
+    path = Path(run_dir) / "rejected.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    with path.open("a", encoding="utf-8") as f:
+        for r in records:
+            row = {k: (getattr(v, "value", v)) for k, v in r.items() if not k.startswith("_")}
+            row["discarded_at"] = now
+            f.write(_json.dumps(row, default=str) + "\n")

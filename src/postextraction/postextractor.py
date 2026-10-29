@@ -10,6 +10,7 @@ from src.postextraction import (
     semantic_validation,
     atomspace_alignment,
     concept_alignment,
+    fact_alignment,
 )
 
 
@@ -84,13 +85,42 @@ def _relation_to_record(
     }
 
 
+def _renormalize_renamed(fixed: dict, original: dict, context: str) -> None:
+    """Re-normalize entities renamed by a repair."""
+    from src.postextraction.name_matching import term_key
+    for side in ("subject", "object"):
+        new_name = str(fixed.get(f"{side}_name") or "")
+        if term_key(new_name) == term_key(str(original.get(f"{side}_name") or "")):
+            continue
+        etype = getattr(fixed.get(f"{side}_type"), "value", fixed.get(f"{side}_type")) or "OTHER"
+        norm = entity_normalization.normalize_entity(new_name, etype, context=context)
+        fixed[f"{side}_id"]             = norm["canonical_id"]
+        fixed[f"{side}_canonical_name"] = norm.get("canonical_name", "")
+        fixed[f"{side}_id_source"]      = norm.get("id_source", "")
+        fixed[f"{side}_needs_review"]   = norm.get("needs_review", True)
+        fixed[f"{side}_source_url"]     = norm.get("source_url", "")
+        fixed[f"{side}_synonyms"]       = norm.get("synonyms", "")
+        fixed[f"{side}_non_canonical"]  = entity_normalization._non_canonical_reason(
+            new_name, norm["canonical_id"], norm.get("canonical_name", ""))
+
+
 def process(
     extraction_pairs: list,
     verbose: bool = False,
-    step_cb=None,      # optional callable(step: int, label: str, detail: str)
-    batch_cb=None,     # optional callable(batch_done: int, batch_total: int, n_valid: int)
+    step_cb=None,
+    batch_cb=None,
+    resume_from_step: int = 1,
+    preloaded_records: list = None,
+    preloaded_validated: list = None,
+    step_save_cb=None,
 ) -> list:
-    """Run all 7 Layer 7 steps on the output of Layer 6."""
+    """Run all 7 Layer 7 steps on the output of Layer 6.
+
+    resume_from_step: skip steps below this number (1 = run all).
+    preloaded_records: records saved after step 1 — used when resume_from_step >= 2.
+    preloaded_validated: records saved after step 6 — used when resume_from_step >= 7.
+    step_save_cb: callable(step, data) called after steps 1 and 6 so caller can checkpoint.
+    """
     def log(msg: str):
         if verbose:
             print(f"  [Layer 7] {msg}")
@@ -121,42 +151,50 @@ def process(
 
     log(f"{len(raw_records)} viable relations to process")
 
-    if not raw_records:
+    if not raw_records and not preloaded_records and not preloaded_validated:
         return []
 
     # ── Step 1: Entity Normalization ──────────────────────────────
-    if step_cb: step_cb(1, "Entity Normalization", f"{len(raw_records)} relations")
-    log("Step 1 — Entity Normalization")
-    records = []
-    _n_total = len(raw_records)
-    for _i, record in enumerate(raw_records, 1):
-        chunk_for_record = _chunk_map.get(
-            (record["document_id"], record.get("chunk_index", 0)), {}
+    if resume_from_step <= 1:
+        if step_cb: step_cb(1, "Entity Normalization", f"{len(raw_records)} relations")
+        log("Step 1 — Entity Normalization")
+        entity_normalization.reset_document_cache()   # one ID per concept within this paper
+        _n_total = len(raw_records)
+
+        def _progress(done, total):
+            if done % 5 == 0 or done == total:
+                if step_cb: step_cb(1, "Entity Normalization", f"{done}/{total} normalized")
+                log(f"  Entity normalization: {done}/{total} records")
+
+        records = entity_normalization.normalize_records_parallel(
+            raw_records,
+            lambda rec: _chunk_map.get((rec["document_id"], rec.get("chunk_index", 0)), {}),
+            workers=int(os.getenv("NORMALIZATION_WORKERS", "8")),
+            progress=_progress,
         )
-        norm = entity_normalization.normalize_record(record, chunk_for_record)
-        records.append(norm)
-        if _i % 5 == 0 or _i == _n_total:
-            if step_cb: step_cb(1, "Entity Normalization",
-                                f"{_i}/{_n_total} normalized")
-            log(f"  Entity normalization: {_i}/{_n_total} records")
+        for norm in records:
+            s_id  = norm.get("subject_id", "?")
+            s_src = norm.get("subject_id_source", "?")
+            o_id  = norm.get("object_id", "?")
+            o_src = norm.get("object_id_source", "?")
+            s_flag = " ⚠ NEEDS REVIEW" if norm.get("subject_needs_review") else ""
+            o_flag = " ⚠ NEEDS REVIEW" if norm.get("object_needs_review") else ""
+            detail(f"Subject : [{norm['subject_name']}] ({norm['subject_type']})"
+                   f" → {s_id}  [via {s_src}]{s_flag}")
+            detail(f"Object  : [{norm['object_name']}] ({norm['object_type']})"
+                   f" → {o_id}  [via {o_src}]{o_flag}")
+            detail(f"Relation: {norm['relation']}")
+            detail("")
 
-        # Show what happened to each entity
-        s_id  = norm.get("subject_id", "?")
-        s_src = norm.get("subject_id_source", "?")
-        o_id  = norm.get("object_id", "?")
-        o_src = norm.get("object_id_source", "?")
-        s_flag = " ⚠ NEEDS REVIEW" if norm.get("subject_needs_review") else ""
-        o_flag = " ⚠ NEEDS REVIEW" if norm.get("object_needs_review") else ""
-        detail(f"Subject : [{norm['subject_name']}] ({norm['subject_type']})"
-               f" → {s_id}  [via {s_src}]{s_flag}")
-        detail(f"Object  : [{norm['object_name']}] ({norm['object_type']})"
-               f" → {o_id}  [via {o_src}]{o_flag}")
-        detail(f"Relation: {norm['relation']}")
-        detail("")
-
-    n_resolved = sum(1 for r in records if not (r.get("subject_needs_review") or r.get("object_needs_review")))
-    n_review   = sum(1 for r in records if r.get('subject_needs_review') or r.get('object_needs_review'))
-    log(f"  → {n_resolved} fully resolved | {n_review} need review")
+        n_resolved = sum(1 for r in records if not (r.get("subject_needs_review") or r.get("object_needs_review")))
+        n_review   = sum(1 for r in records if r.get('subject_needs_review') or r.get('object_needs_review'))
+        log(f"  → {n_resolved} fully resolved | {n_review} need review")
+        if step_save_cb:
+            step_save_cb(1, records)
+    else:
+        records = list(preloaded_records or [])
+        if step_cb: step_cb(1, "Entity Normalization", f"checkpoint loaded ({len(records)} records)")
+        log(f"Step 1 — Entity Normalization: skipped (checkpoint, {len(records)} records)")
 
     # ── Relation / subject-type constraint check ──────────────────────────────
     # has_phenotype requires a molecular subject; has_symptom requires a disease/condition.
@@ -224,6 +262,11 @@ def process(
     if step_cb: step_cb(1, "Entity Normalization", "aligning near-duplicate concepts")
     log("  Concept alignment — merging same-concept entities across mentions")
     records = concept_alignment.align_concepts(records)
+    log("  KG alignment — reusing existing nodes for the same concepts")
+    records = atomspace_alignment.align_with_kg(records)
+    log("  Fact alignment — one edge per claim")
+    records = fact_alignment.align_facts(records)
+    records = fact_alignment.align_facts_with_kg(records)
 
     # ── Step 2: Deduplication ─────────────────────────────────────
     if step_cb: step_cb(2, "Deduplication", "")
@@ -307,181 +350,190 @@ def process(
         log("Step 5 — Two-Pass Resolution (skipped — all entities resolved)")
 
     # ── Step 6: Semantic Validation (batched + parallel) ─────────────────────
-    log("Step 6 — Semantic Validation")
-    from src.postextraction.semantic_validation import _BATCH_SIZE, _BATCH_WORKERS, validate_batch as _vbatch
-    log(f"  Batch size: {_BATCH_SIZE} relations/call  ·  Workers: {_BATCH_WORKERS} parallel calls")
-    log("  Each batch checks 5 dimensions: subject · object · relation · negation · support")
+    if resume_from_step >= 7:
+        records = list(preloaded_validated or [])
+        if step_cb: step_cb(6, "Semantic Validation", f"checkpoint loaded ({len(records)} records)")
+        log(f"Step 6 — Semantic Validation: skipped (checkpoint, {len(records)} records)")
+    else:
+        from src.postextraction.semantic_validation import _BATCH_SIZE, _BATCH_WORKERS, validate_batch as _vbatch
+        log("Step 6 — Semantic Validation")
+        log(f"  Batch size: {_BATCH_SIZE} relations/call  ·  Workers: {_BATCH_WORKERS} parallel calls")
 
-    # Pair records with their chunk-specific source texts
-    active = [r for r in records if not r.get("is_contradiction")]
-    skipped_contra = [r for r in records if r.get("is_contradiction")]
+        active = [r for r in records if not r.get("is_contradiction")]
 
-    # Group by chunk text so each batch shares ONE full source text (no truncation)
-    from collections import defaultdict
-    by_chunk: dict = defaultdict(list)
-    for r in active:
-        chunk_text = r.get("_chunk_text") or text_by_doc.get(r.get("document_id", ""), "")
-        by_chunk[chunk_text].append((r, chunk_text))
+        from collections import defaultdict
+        by_chunk: dict = defaultdict(list)
+        for r in active:
+            chunk_text = r.get("_chunk_text") or text_by_doc.get(r.get("document_id", ""), "")
+            by_chunk[chunk_text].append((r, chunk_text))
 
-    # Build batches: split each chunk group by _BATCH_SIZE
-    batches = []
-    for chunk_text, chunk_pairs in by_chunk.items():
-        for i in range(0, len(chunk_pairs), _BATCH_SIZE):
-            batches.append(chunk_pairs[i:i+_BATCH_SIZE])
+        batches = []
+        for chunk_text, chunk_pairs in by_chunk.items():
+            for i in range(0, len(chunk_pairs), _BATCH_SIZE):
+                batches.append(chunk_pairs[i:i+_BATCH_SIZE])
 
-    # Now that active + batches are defined, fire the step callback
-    if step_cb: step_cb(6, "Semantic Validation (LLM)",
-                        f"{len(active)} relations → {len(batches)} batch(es)")
+        if step_cb: step_cb(6, "Semantic Validation (LLM)",
+                            f"{len(active)} relations → {len(batches)} batch(es)")
+        log(f"  {len(active)} relations → {len(batches)} batch(es) grouped by chunk")
 
-    pairs = [(r, t) for b in batches for r, t in b]  # flattened for reassembly
-    log(f"  {len(active)} relations → {len(batches)} batch(es) grouped by chunk (full text, no truncation)")
+        import concurrent.futures
+        validated_map: dict = {}
 
-    import concurrent.futures
-    validated_map: dict = {}
+        def _run_batch(idx_batch):
+            idx, batch = idx_batch
+            results = _vbatch(batch)
+            return idx, batch, results
 
-    def _run_batch(idx_batch):
-        idx, batch = idx_batch
-        results = _vbatch(batch)
-        return idx, batch, results
+        done_batches = [0]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_BATCH_WORKERS) as pool:
+            futures = [pool.submit(_run_batch, (i, b)) for i, b in enumerate(batches)]
+            for future in concurrent.futures.as_completed(futures):
+                idx, batch, results = future.result()
+                for (record, _), result in zip(batch, results):
+                    validated_map[id(record)] = result
+                done_batches[0] += 1
+                n_valid_batch = sum(1 for r in results if r.get('validation_verdict') == 'VALID')
+                if batch_cb:
+                    batch_cb(done_batches[0], len(batches), n_valid_batch)
+                log(f"  Batch {idx+1}/{len(batches)} complete — "
+                    f"{n_valid_batch} VALID · "
+                    f"{sum(1 for r in results if r.get('validation_verdict')=='REJECT')} REJECT")
 
-    done_batches = [0]   # mutable counter for thread-safe updates
-    with concurrent.futures.ThreadPoolExecutor(max_workers=_BATCH_WORKERS) as pool:
-        futures = [pool.submit(_run_batch, (i, b)) for i, b in enumerate(batches)]
-        for future in concurrent.futures.as_completed(futures):
-            idx, batch, results = future.result()
-            for (record, _), result in zip(batch, results):
-                key = id(record)
-                validated_map[key] = result
-            done_batches[0] += 1
-            n_valid_batch = sum(1 for r in results if r.get('validation_verdict') == 'VALID')
-            if batch_cb:
-                batch_cb(done_batches[0], len(batches), n_valid_batch)
-            log(f"  Batch {idx+1}/{len(batches)} complete — "
-                f"{n_valid_batch} VALID · "
-                f"{sum(1 for r in results if r.get('validation_verdict')=='REJECT')} REJECT")
+        validated = []
+        for record in records:
+            if record.get("is_contradiction"):
+                validated.append({**record, "validation_verdict": "SKIPPED",
+                                  "validation_reasoning": "already contradiction-flagged"})
+            else:
+                validated.append(validated_map.get(id(record), {
+                    **record, "validation_verdict": "SKIPPED",
+                    "validation_reasoning": "not processed"
+                }))
 
-    # Reassemble in original order, adding back skipped contradiction records
-    validated = []
-    for record in records:
-        if record.get("is_contradiction"):
-            validated.append({**record, "validation_verdict": "SKIPPED",
-                              "validation_reasoning": "already contradiction-flagged"})
-        else:
-            validated.append(validated_map.get(id(record), {
-                **record, "validation_verdict": "SKIPPED",
-                "validation_reasoning": "not processed"
-            }))
+        for result in validated:
+            verdict  = result.get("validation_verdict", "SKIPPED")
+            name     = f"[{result.get('subject_name','')}] -{result.get('relation','')}→ [{result.get('object_name','')}]"
+            issues_by_dim = {}
+            for iss in result.get("validation_issues", []):
+                if ": " in iss:
+                    dim_name, desc = iss.split(": ", 1)
+                    issues_by_dim[dim_name.lower()] = desc
+            detail(name)
+            dim_map = [
+                ("val_subject_correct",  "subject  "),
+                ("val_object_correct",   "object   "),
+                ("val_relation_correct", "relation "),
+                ("val_negation_correct", "negation "),
+                ("val_support_strong",   "support  "),
+            ]
+            for key, label in dim_map:
+                ok     = result.get(key, True)
+                sym    = "✓" if ok else "✗"
+                issue  = issues_by_dim.get(label.strip(), "")
+                status = issue[:70] if issue else ("OK" if ok else "FAILED")
+                detail(f"  {sym} {label}: {status}")
+            reason = result.get("validation_reasoning", "")[:120]
+            detail(f"  → verdict: {verdict}  —  {reason}")
+            if result.get("suggested_correction"):
+                detail(f"  → suggested: {result['suggested_correction'][:80]}")
+            detail("")
 
-    for result in validated:
-        verdict  = result.get("validation_verdict", "SKIPPED")
-        name     = f"[{result.get('subject_name','')}] -{result.get('relation','')}→ [{result.get('object_name','')}]"
-        issues_by_dim = {}
-        for iss in result.get("validation_issues", []):
-            if ": " in iss:
-                dim_name, desc = iss.split(": ", 1)
-                issues_by_dim[dim_name.lower()] = desc
-        detail(name)
-        dim_map = [
-            ("val_subject_correct",  "subject  "),
-            ("val_object_correct",   "object   "),
-            ("val_relation_correct", "relation "),
-            ("val_negation_correct", "negation "),
-            ("val_support_strong",   "support  "),
-        ]
-        for key, label in dim_map:
-            ok     = result.get(key, True)
-            sym    = "✓" if ok else "✗"
-            issue  = issues_by_dim.get(label.strip(), "")
-            status = issue[:70] if issue else ("OK" if ok else "FAILED")
-            detail(f"  {sym} {label}: {status}")
-        reason = result.get("validation_reasoning", "")[:120]
-        detail(f"  → verdict: {verdict}  —  {reason}")
-        if result.get("suggested_correction"):
-            detail(f"  → suggested: {result['suggested_correction'][:80]}")
-        detail("")
+        # ── REJECT retry ────────────────────────────────────────────
+        _MAX_FIX_RETRIES = 2
+        rejects = [(i, r) for i, r in enumerate(validated)
+                   if r.get("validation_verdict") == "REJECT"
+                   and r.get("suggested_correction")]
 
-    # ── REJECT retry: send rejection reason back to LLM, re-validate ────
-    # Mirrors extractor.py retry loop — REJECT is final fallback, not first stop.
-    _MAX_FIX_RETRIES = 2
-    rejects = [(i, r) for i, r in enumerate(validated)
-               if r.get("validation_verdict") == "REJECT"
-               and r.get("suggested_correction")]
+        if rejects:
+            log(f"  Attempting LLM correction on {len(rejects)} REJECT(s)…")
+            if step_cb: step_cb(6, "REJECT retry", f"{len(rejects)} record(s) — LLM re-validation")
+            import sys as _sys
+            _sys.stderr.write(f"[Layer 7] REJECT retry — {len(rejects)} record(s) to fix (up to {_MAX_FIX_RETRIES} LLM calls each)\n")
+            _sys.stderr.flush()
+            from src.extraction.extractor import _get_system_prompt, _parse_json, _client, _RELATION_VALUES, _ENTITY_VALUES
+            from src.schema.pydantic_model import BiologicalRelation as _BR
 
-    if rejects:
-        log(f"  Attempting LLM correction on {len(rejects)} REJECT(s) "
-            f"(max {_MAX_FIX_RETRIES} retries each)…")
-        from src.extraction.extractor import _get_system_prompt, _parse_json, _client, _RELATION_VALUES, _ENTITY_VALUES
-        from src.schema.pydantic_model import BiologicalRelation as _BR
-
-        for list_idx, rec in rejects:
-            chunk_text = rec.get("_chunk_text", "")
-            if not chunk_text:
-                continue
-
-            current = rec
-            for attempt in range(1, _MAX_FIX_RETRIES + 1):
-                reason     = current.get("validation_reasoning", "")[:300]
-                correction = current.get("suggested_correction", "")[:300]
-                fix_user = (
-                    f"SECTION: {rec.get('section','unknown')}\n\n"
-                    f"TEXT:\n{chunk_text}\n\n"
-                    f"PREVIOUS EXTRACTION WAS REJECTED:\n"
-                    f"  Subject : {rec.get('subject_name','')}\n"
-                    f"  Relation: {rec.get('relation','')}\n"
-                    f"  Object  : {rec.get('object_name','')}\n\n"
-                    f"REJECTION REASON: {reason}\n"
-                    f"SUGGESTED CORRECTION: {correction}\n\n"
-                    f"Please provide the corrected extraction as JSON. "
-                    f"Use ONLY valid relation values: {_RELATION_VALUES[:300]}…\n"
-                    f"Return JSON only — same 13-field format as before."
-                )
-                try:
-                    from src.llm_client import call_llm as _call_llm_post
-                    raw  = _call_llm_post(
-                        messages=[
-                            {"role": "system", "content": _get_system_prompt()},
-                            {"role": "user",   "content": fix_user},
-                        ],
-                        model=os.getenv("LLM_MODEL", "gemma4"),
-                        temperature=0.0,
-                        max_tokens=int(os.getenv("LLM_OUTPUT_TOKENS", "2048")),
+            for list_idx, rec in rejects:
+                chunk_text = rec.get("_chunk_text", "")
+                if not chunk_text:
+                    continue
+                current = rec
+                for attempt in range(1, _MAX_FIX_RETRIES + 1):
+                    reason     = current.get("validation_reasoning", "")[:300]
+                    correction = current.get("suggested_correction", "")[:300]
+                    fix_user = (
+                        f"SECTION: {rec.get('section','unknown')}\n\n"
+                        f"TEXT:\n{chunk_text}\n\n"
+                        f"PREVIOUS EXTRACTION WAS REJECTED:\n"
+                        f"  Subject : {rec.get('subject_name','')}\n"
+                        f"  Relation: {rec.get('relation','')}\n"
+                        f"  Object  : {rec.get('object_name','')}\n\n"
+                        f"REJECTION REASON: {reason}\n"
+                        f"SUGGESTED CORRECTION: {correction}\n\n"
+                        f"Please provide the corrected extraction as JSON. "
+                        f"Use ONLY valid relation values: {_RELATION_VALUES[:300]}…\n"
+                        f"Return JSON only — same 13-field format as before."
                     )
-                    data = _parse_json(raw)
-                    rels = data.get("relations", [data])
-                    fixed_rel = next(
-                        (_BR(**r) for r in rels if r.get("extraction_viable", True)), None
-                    )
-                    if not fixed_rel:
+                    try:
+                        from src.llm_client import call_llm as _call_llm_post
+                        raw  = _call_llm_post(
+                            messages=[
+                                {"role": "system", "content": _get_system_prompt()},
+                                {"role": "user",   "content": fix_user},
+                            ],
+                            model=os.getenv("LLM_MODEL", "gemma4"),
+                            temperature=0.0,
+                            max_tokens=int(os.getenv("LLM_OUTPUT_TOKENS", "2048")),
+                        )
+                        data = _parse_json(raw)
+                        rels = data.get("relations", [data])
+                        fixed_rel = next(
+                            (_BR(**r) for r in rels if r.get("extraction_viable", True)), None
+                        )
+                        if not fixed_rel:
+                            break
+                        fixed_record = dict(rec)
+                        fixed_record["subject_name"] = fixed_rel.subject_name
+                        fixed_record["subject_type"] = fixed_rel.subject_type
+                        fixed_record["relation"]     = fixed_rel.relation
+                        fixed_record["object_name"]  = fixed_rel.object_name
+                        fixed_record["object_type"]  = fixed_rel.object_type
+                        fixed_record["negated"]      = fixed_rel.negated
+                        fixed_record["reasoning"]    = fixed_rel.reasoning
+                        _renormalize_renamed(fixed_record, rec, chunk_text)
+                        re_validated = semantic_validation.validate(fixed_record, chunk_text)
+                        new_verdict  = re_validated.get("validation_verdict", "REJECT")
+                        log(f"    Fix attempt {attempt}/{_MAX_FIX_RETRIES}: {new_verdict}")
+                        if new_verdict in ("VALID", "REVIEW"):
+                            re_validated["_fix_attempts"] = attempt
+                            validated[list_idx] = re_validated
+                            break
+                        current = re_validated
+                    except Exception as exc:
+                        log(f"    Fix attempt {attempt} failed: {exc}")
                         break
-                    # Re-validate the corrected extraction
-                    fixed_record = dict(rec)
-                    fixed_record["subject_name"] = fixed_rel.subject_name
-                    fixed_record["subject_type"] = fixed_rel.subject_type
-                    fixed_record["relation"]     = fixed_rel.relation
-                    fixed_record["object_name"]  = fixed_rel.object_name
-                    fixed_record["object_type"]  = fixed_rel.object_type
-                    fixed_record["negated"]      = fixed_rel.negated
-                    fixed_record["reasoning"]    = fixed_rel.reasoning
-                    re_validated = semantic_validation.validate(fixed_record, chunk_text)
-                    new_verdict  = re_validated.get("validation_verdict", "REJECT")
-                    log(f"    Fix attempt {attempt}/{_MAX_FIX_RETRIES} for "
-                        f"[{rec.get('subject_name','')}→{rec.get('relation','')}→"
-                        f"{rec.get('object_name','')}]: {new_verdict}")
-                    if new_verdict in ("VALID", "REVIEW"):
-                        re_validated["_fix_attempts"] = attempt
-                        validated[list_idx] = re_validated
-                        break
-                    current = re_validated   # carry forward new rejection reason for next retry
-                except Exception as exc:
-                    log(f"    Fix attempt {attempt} failed: {exc}")
-                    break
 
-    records = validated
-    valid_count  = sum(1 for r in records if r.get("validation_verdict") == "VALID")
-    review_count = sum(1 for r in records if r.get("validation_verdict") == "REVIEW")
-    reject_count = sum(1 for r in records if r.get("validation_verdict") == "REJECT")
-    skip_count   = sum(1 for r in records if r.get("validation_verdict") == "SKIPPED")
-    log(f"  → VALID={valid_count} | REVIEW={review_count} | REJECT={reject_count} | SKIPPED={skip_count}")
+        # ── Second opinion on REVIEW/SKIPPED ──
+        n_second = sum(1 for r in validated if r.get("validation_verdict") in ("REVIEW", "SKIPPED")
+                       and not r.get("is_contradiction"))
+        if n_second:
+            log(f"  Second opinion on {n_second} REVIEW/SKIPPED record(s)…")
+            if step_cb: step_cb(6, "Second opinion", f"{n_second} record(s)")
+            validated, n_changed = semantic_validation.second_opinions(
+                validated,
+                lambda r: r.get("_chunk_text") or text_by_doc.get(r.get("document_id", ""), ""),
+                workers=_BATCH_WORKERS,
+            )
+            log(f"    → {n_changed} verdict(s) settled by the second opinion")
+
+        records = validated
+        valid_count  = sum(1 for r in records if r.get("validation_verdict") == "VALID")
+        review_count = sum(1 for r in records if r.get("validation_verdict") == "REVIEW")
+        reject_count = sum(1 for r in records if r.get("validation_verdict") == "REJECT")
+        skip_count   = sum(1 for r in records if r.get("validation_verdict") == "SKIPPED")
+        log(f"  → VALID={valid_count} | REVIEW={review_count} | REJECT={reject_count} | SKIPPED={skip_count}")
+        if step_save_cb:
+            step_save_cb(6, records)
 
     # ── Step 7: Atomspace Alignment ───────────────────────────────
     if step_cb: step_cb(7, "Atomspace Alignment", "")
@@ -530,6 +582,32 @@ def process(
     for r in records:
         doc_id = r.get("document_id", "")
         r["_source_text"] = text_by_doc.get(doc_id, "")
+
+    # ── Auto-resolution — resolve flagged items before human review ───────────
+    # Runs full normalization chain (Ensembl→UniProt→OLS4→...→LLM) with source
+    # context, plus LLM relation correction for REVIEW/REJECT/SKIPPED verdicts.
+    # Fixes clear the flag; relation fixes are re-validated first.
+    try:
+        import sys as _sys2
+        from src.postextraction.auto_resolver import auto_resolve_flagged
+        n_flagged_before = sum(1 for r in records if r.get("flagged_for_review"))
+        if n_flagged_before:
+            if step_cb: step_cb(7, "Auto-resolution", f"{n_flagged_before} flagged item(s) — LLM fixing")
+            _sys2.stderr.write(f"[Layer 7] Auto-resolution — {n_flagged_before} flagged item(s) to fix\n")
+            _sys2.stderr.flush()
+            log(f"Auto-resolution — attempting to fix {n_flagged_before} flagged item(s) before human review")
+            records, n_auto = auto_resolve_flagged(records, text_by_doc)
+            n_flagged_after = sum(1 for r in records if r.get("flagged_for_review"))
+            if step_cb: step_cb(7, "Auto-resolution", f"{n_auto} resolved — {n_flagged_after} remain for human review")
+            _sys2.stderr.write(f"[Layer 7] Auto-resolution done — {n_auto} resolved, {n_flagged_after} remain for human review\n")
+            _sys2.stderr.flush()
+            log(f"  → {n_auto} auto-resolved | {n_flagged_after} remain for human review")
+        else:
+            _sys2.stderr.write(f"[Layer 7] Auto-resolution — no flagged items\n")
+            _sys2.stderr.flush()
+    except Exception as _exc:
+        log(f"Auto-resolution step failed (non-fatal): {_exc}")
+
     return records
 
 
