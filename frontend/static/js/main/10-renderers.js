@@ -139,6 +139,21 @@ function openModalInTab() {
 
 function closeViewer() { closeModal(); }
 
+// Figure facts: show the figure image so the reviewer can check the relation against it.
+function _figureBlock(r) {
+  const f = r.figure;
+  if (!f || !f.file) return '';
+  const m = (r.reasoning || '').match(/^\[[^\]]*?,\s*panel\s+([^\]]+)\]/i);
+  const where = [f.label || 'Figure', f.page ? `page ${f.page}` : '', m ? `panel ${m[1]}` : ''].filter(Boolean).join(' · ');
+  const src = '/api/file?path=' + encodeURIComponent(f.file);
+  return `<div style="margin:8px 0;padding:8px 10px;background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.35);border-radius:8px">
+    <div style="color:#a855f7;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:6px">Read from figure — ${esc(where)}</div>
+    <a href="${src}" target="_blank" onclick="event.stopPropagation()" title="Open full size">
+      <img src="${src}" loading="lazy" alt="${esc(f.label || 'figure')}"
+        style="max-width:100%;max-height:420px;display:block;border-radius:6px;background:#fff;cursor:zoom-in"></a>
+  </div>`;
+}
+
 async function loadHumanReview(runDir, stagingDb) {
   const sec = document.getElementById('review-section');
   const cards = document.getElementById('review-cards');
@@ -206,6 +221,7 @@ async function loadHumanReview(runDir, stagingDb) {
             style="background:rgba(56,189,248,.15);border:1px solid var(--blue);border-radius:6px;padding:3px 12px;color:var(--blue);font-size:11px;cursor:pointer;font-family:var(--font);font-weight:600;white-space:nowrap;align-self:flex-end">
             ↕ Apply suggestion</button>` : ''}
         </div>` : ''}
+        ${_figureBlock(r)}
 
         <div style="margin-top:10px;margin-bottom:6px">
           <button id="rc-sg-btn-${i}" data-subj="${esc(r.subject_name||'')}" data-obj="${esc(r.object_name||'')}" data-rel="${esc(r.relation||'')}" onclick="event.stopPropagation();verifyReviewSource(${i})"

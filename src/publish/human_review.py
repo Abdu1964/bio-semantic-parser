@@ -34,6 +34,7 @@ def append(records: list, run_dir: Path = None, target_format: str = "both") -> 
                 "document_id":        r.get("document_id", ""),
                 "source_name":        r.get("source_name", ""),
                 "section":            r.get("section", ""),
+                "figure":             r.get("figure"),   # {id, label, page, file, kind} when read from a figure
                 # The extraction
                 "subject_name":       r.get("subject_name", ""),
                 "subject_type":       r.get("subject_type", ""),
