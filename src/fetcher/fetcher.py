@@ -5,6 +5,7 @@ import requests
 from dotenv import load_dotenv
 from src.fetcher.format_detector import FormatDetector
 from src.fetcher.handlers import JSONHandler, XMLHandler, HTMLHandler, PDFHandler, TextHandler
+from src.fetcher.document_reader import read_document
 from src.fetcher.cleaner import TextCleaner
 from src.fetcher.coref_client import CorefClient
 from src.fetcher.section_splitter import SectionSplitter
@@ -35,13 +36,17 @@ class Fetcher:
             elif verbose:
                 print(msg)
 
-        # handle local file path (PDF or TXT fallback from recovery)
+        # local file: any supported document or archive
         if not url.startswith("http"):
             if not paper_url:
-                paper_url = url   # local path is the "source" for PDFs
+                paper_url = url   # local path is the "source"
             log("  Step 1 — Reading local file...")
-            raw_text = PDFHandler().extract(url)
-            log(f"           ✓ Extracted {len(raw_text):,} chars from file")
+            with open(url, "rb") as fh:
+                doc = read_document(fh.read(), filename=url, text_field=source.get("text_field"))
+            raw_text = doc.text
+            inner = f" ({doc.source_file})" if doc.source_file and doc.source_file != url else ""
+            log(f"           ✓ {doc.format.upper()}{inner}: {len(raw_text):,} chars"
+                + (f"  |  {len(doc.figures)} figure file(s)" if doc.figures else ""))
             return self._run_steps(raw_text, None, source, document_id, url, log,
                                    paper_url=paper_url or url)
 
@@ -123,7 +128,12 @@ class Fetcher:
         else:
             content_type = response.headers.get("Content-Type", "")
             format_type = self.format_detector.detect(content_type)
-            text = self._extract_text(format_type, response, source)
+            if format_type in ("json", "xml", "html", "text"):
+                text = self._extract_text(format_type, response, source)
+            else:                                           # PDF, archives, DOCX, unlabelled bytes
+                doc = read_document(response.content, filename=url, content_type=content_type,
+                                    text_field=source.get("text_field"))
+                text, format_type = doc.text, doc.format
             log(f"           ✓ Format: {format_type.upper()}  |  Extracted: {len(text):,} chars")
 
         # Step 3 — noise removal
