@@ -247,7 +247,7 @@ class EntityResolver:
         """Download + parse the cross-reference TSV; return {fbrf: {pmid, pmcid, doi}}."""
         cache_path = self._cache_path(db["name"], "crossref.json")
         cached     = self._load_cache(cache_path, db.get("cache_ttl_days", 30))
-        if cached is not None:
+        if cached:                                  # an empty index is a failed parse — rebuild
             return cached
 
         url = self._resolve_url(db, "crossref_tsv_url", "crossref_dir_url", "crossref_filename_regex")
@@ -284,23 +284,23 @@ class EntityResolver:
     def _iter_tsv_rows(self, raw: str, comment: str):
         """Yield {column: value} dicts from a tab-delimited file.
 
-        Pure comment lines (doubled comment char, e.g. "##...") are skipped.
-        A line prefixed with exactly one comment char (e.g. "#col1\\tcol2") is
-        treated as the header — common in bioinformatics TSV dumps that mark
-        the header row for grep/awk-based tooling.
+        The header is the last tab-separated comment line before the data
+        (e.g. "#col1\\tcol2"), else the first data line.
         """
         header = None
+        in_data = False
         for line in raw.splitlines():
             if not line.strip():
                 continue
-            if line.startswith(comment * 2):
+            if line.startswith(comment) and not in_data:
+                if "\t" in line and not line.startswith(comment * 2):
+                    header = line[len(comment):].split("\t")
                 continue
-            if line.startswith(comment):
-                line = line[len(comment):]
             parts = line.split("\t")
             if header is None:
                 header = parts
                 continue
+            in_data = True
             yield dict(zip(header, parts))
 
     def _parse_refs(self, refs_str: str, fmt: str, missing: str = "-", pmid_prefix: str = "") -> list[tuple[str, str]]:
@@ -331,7 +331,8 @@ class EntityResolver:
         cache_path = self._cache_path(db["name"], f"{entity_id}.json")
         cached     = self._load_cache(cache_path, db.get("cache_ttl_days", 30))
         if cached is not None:
-            return [Publication(**p) for p in cached]
+            fields = Publication.__dataclass_fields__
+            return [Publication(**{k: v for k, v in p.items() if k in fields}) for p in cached]
 
         try:
             base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"

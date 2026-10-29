@@ -6,11 +6,11 @@ _flybase_common: &flybase_common
   missing_value_token: "-"   # sentinel FlyBase uses for absent PMID/PMCID/DOI values
   crossref_dir_url: "https://s3ftp.flybase.org/releases/current/precomputed_files/references/"
   crossref_filename_regex: "^fbrf_pmid_pmcid_doi_fb_.*\\.tsv\\.gz$"
-  crossref_id_col: "FBrf_ID"
+  crossref_id_col: "FBrf"
   crossref_pmid_col: "PMID"
   crossref_pmcid_col: "PMCID"
   crossref_doi_col: "DOI"
-  pmid_prefix: "PMID:"        # crossref PMID column is prefixed like "PMID:1234567"
+  pmid_prefix: ""             # FlyBase PMIDs are plain numbers, e.g. "42166600"
   cache_ttl_days: 30
 
 entity_databases:
@@ -56,10 +56,9 @@ entity_databases:
     ref_id_column: "FlyBase_publication_id"
     pmid_column: "PubMed_id"
     missing_value_token: "-"
-    pmid_prefix: ""              # this file's PubMed_id column has no prefix, unlike the crossref file
     crossref_dir_url: "https://s3ftp.flybase.org/releases/current/precomputed_files/references/"
     crossref_filename_regex: "^fbrf_pmid_pmcid_doi_fb_.*\\.tsv\\.gz$"
-    crossref_id_col: "FBrf_ID"
+    crossref_id_col: "FBrf"
     crossref_pmid_col: "PMID"
     crossref_pmcid_col: "PMCID"
     crossref_doi_col: "DOI"
