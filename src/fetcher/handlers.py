@@ -158,3 +158,80 @@ class PDFHandler:
             doc = fitz.open(content)
         texts = [page.get_text() for page in doc]
         return PAGE_BREAK.join(texts)   # page boundaries kept for Layer 3 cleaning
+
+class DocxHandler:
+    """Word .docx: paragraph text from word/document.xml (headings become section lines)."""
+    _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+    def extract(self, content: bytes, text_field: str = None) -> str:
+        import io, zipfile
+        root = ET.fromstring(zipfile.ZipFile(io.BytesIO(content)).read("word/document.xml"))
+        lines = []
+        for p in root.iter(f"{self._W}p"):
+            text = "".join(t.text or "" for t in p.iter(f"{self._W}t")).strip()
+            if text:
+                lines.append(text)
+        return "\n".join(lines)
+
+
+class EpubHandler:
+    """EPUB: chapter text in reading order (OPF spine)."""
+
+    def extract(self, content: bytes, text_field: str = None) -> str:
+        import io, posixpath, zipfile
+        zf = zipfile.ZipFile(io.BytesIO(content))
+        container = ET.fromstring(zf.read("META-INF/container.xml"))
+        opf_path = next(el.get("full-path") for el in container.iter() if el.get("full-path"))
+        opf = ET.fromstring(zf.read(opf_path))
+        base = posixpath.dirname(opf_path)
+        items = {el.get("id"): el.get("href") for el in opf.iter() if el.tag.endswith("item")}
+        order = [el.get("idref") for el in opf.iter() if el.tag.endswith("itemref")]
+        texts = []
+        for idref in order:
+            href = items.get(idref)
+            if not href:
+                continue
+            try:
+                html = zf.read(posixpath.normpath(posixpath.join(base, href)))
+            except KeyError:
+                continue
+            texts.append(HTMLHandler().extract(html.decode("utf-8", errors="ignore")))
+        return PAGE_BREAK.join(t for t in texts if t)
+
+
+class MarkdownHandler:
+    """Markdown: text without markup; headings kept as their own lines."""
+
+    def extract(self, content: str, text_field: str = None) -> str:
+        text = re.sub(r"```.*?```", " ", content, flags=re.S)                 # code blocks
+        text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)                     # images
+        text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)                  # links → their text
+        text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)                     # heading marks
+        text = re.sub(r"(?m)^\s*([-*+]|\d+\.)\s+", "", text)                  # list markers
+        text = re.sub(r"[*_`>]{1,3}", "", text)                               # emphasis, quotes, code
+        return "\n".join(l.strip() for l in text.splitlines() if l.strip())
+
+
+class BioCHandler:
+    """BioC XML or JSON: passage text, with section types as headings when present."""
+
+    def extract(self, content, text_field: str = None) -> str:
+        content = content.decode("utf-8", errors="ignore") if isinstance(content, bytes) else content
+        out = []
+        if content.lstrip().startswith(("{", "[")):
+            data = json.loads(content)
+            docs = data if isinstance(data, list) else [data]
+            for collection in docs:
+                for doc in collection.get("documents", [collection]):
+                    for p in doc.get("passages", []):
+                        section = (p.get("infons") or {}).get("section_type", "")
+                        if p.get("text"):
+                            out.append(f"{section.lower()}\n{p['text']}" if section else p["text"])
+        else:
+            root = ET.fromstring(content)
+            for p in root.iter("passage"):
+                section = next((i.text for i in p.iter("infon") if i.get("key") == "section_type"), "")
+                text = (p.findtext("text") or "").strip()
+                if text:
+                    out.append(f"{section.lower()}\n{text}" if section else text)
+        return "\n".join(out)
