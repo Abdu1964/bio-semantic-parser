@@ -42,6 +42,9 @@ def _extract(fmt: str, data: bytes, text_field: str = None) -> str:
         return MarkdownHandler().extract(_decode(data))
     if fmt == "text":
         return TextHandler().extract(_decode(data), text_field)
+    if fmt == "image":
+        from src.figures.ocr import image_text
+        return image_text(data)
     raise UnsupportedFormat(f"unsupported format: {fmt}")
 
 

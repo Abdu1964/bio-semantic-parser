@@ -156,7 +156,8 @@ class PDFHandler:
         else:
             # local file path
             doc = fitz.open(content)
-        texts = [page.get_text() for page in doc]
+        from src.figures.ocr import page_text
+        texts = [page_text(page) for page in doc]          # OCR for scanned pages
         return PAGE_BREAK.join(texts)   # page boundaries kept for Layer 3 cleaning
 
 class DocxHandler:

@@ -9,13 +9,16 @@ _EXTENSIONS = {
     ".pdf": "pdf", ".docx": "docx", ".epub": "epub", ".zip": "zip", ".tar": "tar", ".tgz": "gzip",
     ".gz": "gzip", ".bz2": "bz2", ".xz": "xz", ".nxml": "jats", ".xml": "xml", ".html": "html",
     ".htm": "html", ".json": "json", ".md": "markdown", ".markdown": "markdown", ".txt": "text",
+    ".png": "image", ".jpg": "image", ".jpeg": "image", ".tif": "image", ".tiff": "image",
+    ".gif": "image", ".bmp": "image", ".webp": "image",
 }
+_IMAGE_SIGNATURES = (b"\x89PNG", b"\xff\xd8\xff", b"II*\x00", b"MM\x00*", b"GIF8")
 
 
 class FormatDetector:
 
     SUPPORTED_FORMATS = ["pdf", "docx", "epub", "jats", "bioc", "xml", "html", "json", "markdown", "text",
-                         *sorted(ARCHIVES)]
+                         "image", *sorted(ARCHIVES)]
 
     def detect(self, content_type: str = "", data: bytes = None, filename: str = "") -> str:
         """Format name, or 'unknown'."""
@@ -39,6 +42,9 @@ class FormatDetector:
             return "xz"
         if len(data) > 262 and data[257:262] == b"ustar":
             return "tar"
+        if (head.startswith(_IMAGE_SIGNATURES) or (head[:4] == b"RIFF" and head[8:12] == b"WEBP")
+                or (head[:2] == b"BM" and head[6:10] == b"\x00\x00\x00\x00")):
+            return "image"
         return self._text_kind(head)
 
     @staticmethod
@@ -87,7 +93,7 @@ class FormatDetector:
     def _from_content_type(content_type: str):
         ct = content_type.lower()
         for key, fmt in (("pdf", "pdf"), ("zip", "zip"), ("gzip", "gzip"), ("x-tar", "tar"),
-                         ("wordprocessingml", "docx"), ("epub", "epub"), ("json", "json"),
+                         ("wordprocessingml", "docx"), ("epub", "epub"), ("image/", "image"), ("json", "json"),
                          ("xml", "xml"), ("html", "html"), ("markdown", "markdown"), ("text", "text")):
             if key in ct:
                 return fmt
