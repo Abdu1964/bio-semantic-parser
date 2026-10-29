@@ -18,6 +18,7 @@ def _is_other_type(entity_type: str) -> bool:
 
 def route(records: list) -> tuple:
     """Split records into (auto_insert, human_review)."""
+    from src.figures.vision.relations import review_required
     auto_insert  = []
     human_review = []
 
@@ -41,6 +42,7 @@ def route(records: list) -> tuple:
             _is_other_type(subject_type) or
             _is_other_type(object_type)
         )
+        from_figure = review_required(r)
 
         passes = (
             verdict == "VALID"
@@ -48,6 +50,7 @@ def route(records: list) -> tuple:
             and not hard_unresolved
             and not text_label       # TEXT: entities need canonical ID correction first
             and not other_type       # OTHER entity type needs a human to assign the real type
+            and not from_figure      # read from a figure image: a human checks it first
         )
 
         if passes:
@@ -72,10 +75,14 @@ def route(records: list) -> tuple:
                 reason_parts.append("semantic validation needs REVIEW")
             elif verdict == "SKIPPED":
                 reason_parts.append("semantic validation was skipped — needs manual check")
-            else:
+            elif verdict != "VALID":
                 reason_parts.append(f"semantic validation verdict={verdict}")
             if contra:
                 reason_parts.append("contradiction detected")
+            if from_figure:
+                fig = r.get("figure") or {}
+                reason_parts.append(f"read from {fig.get('label') or 'a figure'}"
+                                    f"{' (page ' + str(fig['page']) + ')' if fig.get('page') else ''} — check it against the image")
             if hard_unresolved:
                 reason_parts.append(
                     f"unresolved entity IDs: "
