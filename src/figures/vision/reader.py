@@ -5,6 +5,7 @@ import os
 
 from pydantic import ValidationError
 
+from src.figures.vision.grounding import figure_text, grounded, tokens
 from src.llm_client import call_llm, parse_json
 from src.schema.pydantic_model import BiologicalRelation
 from src.schema.taxonomy import ENTITY_TAXONOMY, TAXONOMY
@@ -12,8 +13,10 @@ from src.schema.taxonomy import ENTITY_TAXONOMY, TAXONOMY
 logger = logging.getLogger(__name__)
 
 KINDS = ("diagram", "chart", "table", "photo", "text", "other")
-_MAX_SIDE = int(os.getenv("FIGURE_MAX_SIDE", "1600"))        # pixels sent to the model
+_MAX_SIDE = int(os.getenv("FIGURE_MAX_SIDE", "1600"))        # pixels per image sent to the model
+_TILE_FROM = int(os.getenv("FIGURE_TILE_FROM", "1200"))      # larger figures also go as 4 zoomed tiles
 _MAX_TOKENS = int(os.getenv("FIGURE_OUTPUT_TOKENS", "3000"))
+_MAX_OCR_CHARS = 4000
 
 _FORMAT = """\
 Return ONLY this JSON:
@@ -49,7 +52,10 @@ RULES:
    method names or panel titles.
 4. relation, subject_type and object_type MUST be values from the lists above.
 5. One object per distinct subject–relation–object triple; be exhaustive but precise.
-6. If the figure shows no relation, return an empty relations list."""
+6. If the figure shows no relation, return an empty relations list.
+7. The first image is the whole figure; any further images are zoomed quarters of it — use them to
+   read small labels. Spell every name exactly as in TEXT FOUND IN THE FIGURE.
+8. In tables, pair values from the SAME row only; follow each row across before moving to the next."""
 
 
 def _compact(title: str, taxonomy: dict) -> str:
@@ -67,39 +73,69 @@ def _system_prompt() -> str:
             + "\n\n" + _FORMAT + "\n\n" + _RULES)
 
 
-def _png(image: bytes) -> bytes:
-    """RGB PNG no larger than _MAX_SIDE on its longest side."""
+def _rgb(image: bytes):
     import pymupdf
     pix = pymupdf.Pixmap(image)
     if pix.alpha or pix.n > 3:
         pix = pymupdf.Pixmap(pymupdf.csRGB, pix) if pix.n - pix.alpha > 3 else pymupdf.Pixmap(pix, 0)
-    while max(pix.width, pix.height) > _MAX_SIDE:
-        pix.shrink(1)
-    return pix.tobytes("png")
+    return pix
+
+
+def _fit(pix, clip=None) -> bytes:
+    """PNG of the pixmap (or a clip of it), scaled down to at most _MAX_SIDE."""
+    import pymupdf
+    w, h = (clip.width, clip.height) if clip else (pix.width, pix.height)
+    f = min(1.0, _MAX_SIDE / max(w, h))
+    out = pymupdf.Pixmap(pix, max(1, int(w * f)), max(1, int(h * f)), clip) if (clip or f < 1) else pix
+    return out.tobytes("png")
+
+
+def _images(image: bytes) -> list:
+    """The whole figure, plus 4 overlapping zoomed quarters when it is large."""
+    import pymupdf
+    pix = _rgb(image)
+    out = [_fit(pix)]
+    if max(pix.width, pix.height) >= _TILE_FROM:
+        w, h = pix.width, pix.height
+        ox, oy = w // 10, h // 10                                      # 10% overlap
+        for x0, y0 in ((0, 0), (w // 2 - ox, 0), (0, h // 2 - oy), (w // 2 - ox, h // 2 - oy)):
+            out.append(_fit(pix, pymupdf.IRect(x0, y0, min(w, x0 + w // 2 + ox), min(h, y0 + h // 2 + oy))))
+    return out
 
 
 def read_figure(image: bytes, caption: str = "", label: str = "") -> dict:
-    """{'kind', 'summary', 'relations': [(panel, BiologicalRelation)], 'invalid': n}."""
-    url = "data:image/png;base64," + base64.b64encode(_png(image)).decode()
+    """{'kind', 'summary', 'relations': [(panel, BiologicalRelation)], 'invalid': n, 'ungrounded': n}."""
     user = (f"{label}. {caption}" if label else caption) or "(no caption)"
+    ocr = figure_text(image)
+    text = f"Caption: {user}"
+    if ocr.strip():
+        text += "\n\nTEXT FOUND IN THE FIGURE (OCR, exact spelling):\n" + " ".join(ocr.split())[:_MAX_OCR_CHARS]
+    content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}}
+               for png in _images(image)]
     raw = call_llm([
         {"role": "system", "content": _system_prompt()},
-        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}},
-                                     {"type": "text", "text": f"Caption: {user}\n\nReturn JSON only."}]},
+        {"role": "user", "content": content + [{"type": "text", "text": text + "\n\nReturn JSON only."}]},
     ], max_tokens=_MAX_TOKENS)
     data = parse_json(raw)
     kind = str(data.get("kind", "other")).strip().lower()
     kind = kind if kind in KINDS else "other"
-    relations, invalid = [], 0
+    known = tokens(ocr + " " + user) if ocr.strip() else None    # no OCR → no grounding check
+    relations, invalid, ungrounded = [], 0, 0
     if kind in ("diagram", "chart", "table"):
         for r in data.get("relations") or []:
             if not isinstance(r, dict) or r.get("extraction_viable") is False:
                 continue
             panel = str(r.pop("panel", "") or "").strip()
             try:
-                relations.append((panel, BiologicalRelation(**r)))
+                rel = BiologicalRelation(**r)
             except (ValidationError, TypeError) as e:
                 invalid += 1
                 logger.info("Figure relation dropped (invalid): %s", str(e)[:200])
+                continue
+            if known is not None and not (grounded(rel.subject_name, known) and grounded(rel.object_name, known)):
+                ungrounded += 1                                       # a name the figure doesn't contain
+                logger.info("Figure relation dropped (not in figure): %s -> %s", rel.subject_name, rel.object_name)
+                continue
+            relations.append((panel, rel))
     return {"kind": kind, "summary": str(data.get("summary", "")).strip(), "relations": relations,
-            "invalid": invalid}
+            "invalid": invalid, "ungrounded": ungrounded}

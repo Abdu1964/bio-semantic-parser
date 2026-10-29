@@ -78,7 +78,8 @@ def figure_results(document_id: str, template: dict, first_index: int, log=None)
             where = f"[{name}{', panel ' + panel if panel else ''}] "
             rels.append(rel.model_copy(update={"reasoning": where + rel.reasoning}))
         log(f"  {name} (page {fig.get('page') or '?'}): {out['kind']} — {len(rels)} relation(s)"
-            + (f", {out['invalid']} invalid dropped" if out["invalid"] else ""))
+            + (f", {out['invalid']} invalid dropped" if out["invalid"] else "")
+            + (f", {out['ungrounded']} not found in the figure dropped" if out.get("ungrounded") else ""))
         if rels:
             results.append(ExtractionResult(relations=rels))
             chunks.append(_chunk(fig, out["summary"], out["kind"], template, first_index + len(chunks)))
