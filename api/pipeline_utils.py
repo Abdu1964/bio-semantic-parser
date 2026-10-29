@@ -187,15 +187,24 @@ def _count_run_nodes(run_dir):
         return 0
 
 
+def _upload_id(path) -> str:
+    """Paper ID from an upload's file name, without archive suffixes ('paper.tar.gz' → 'paper')."""
+    name = Path(path).name
+    for suffix in (".tar.gz", ".tar.bz2", ".tar.xz", ".nxml.gz", ".xml.gz", ".pdf.gz"):
+        if name.lower().endswith(suffix):
+            return name[: -len(suffix)]
+    return Path(name).stem
+
+
 def _resolve_input(input_type, input_value, source_name, all_sources, scheduler):
     """Return (source_dict, doc_id, fetch_url)."""
     import hashlib, re
     src_map = {s["name"]: s for s in all_sources}
 
-    if input_type == "pdf":
+    if input_type == "pdf":                       # any uploaded file (PDF, DOCX, archive, ...)
         src = {"name": "pdf", "type": "file", "format": "pdf",
                "base_url": None, "id_field": None}
-        return src, Path(input_value).stem, str(input_value)
+        return src, _upload_id(input_value), str(input_value)
 
     if source_name and source_name in src_map:
         src    = src_map[source_name]
@@ -232,11 +241,12 @@ def _resolve_input(input_type, input_value, source_name, all_sources, scheduler)
         doc_id = hashlib.sha256(val.encode()).hexdigest()[:16]
         return src, doc_id, val
 
-    _upload_candidate = Path("data/uploads") / f"{val}.pdf"
-    if _upload_candidate.exists():
+    _uploads = [p for p in Path("data/uploads").glob(f"{val}.*") if _upload_id(p) == val] \
+        if Path("data/uploads").is_dir() else []
+    if _uploads:
         src = {"name": "pdf", "type": "file", "format": "pdf",
                "base_url": None, "id_field": None}
-        return src, val, str(_upload_candidate)
+        return src, val, str(_uploads[0])
 
     src    = src_map.get(input_type, all_sources[0])
     doc_id = hashlib.sha256(val.encode()).hexdigest()

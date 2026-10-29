@@ -247,7 +247,7 @@ async def start_run(
     if input_type == "pdf" and pdf_file:
         upload_dir = _ROOT / "data" / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
-        dest = upload_dir / pdf_file.filename
+        dest = upload_dir / Path(pdf_file.filename).name     # no directory parts from the client
         with open(dest, "wb") as f:
             shutil.copyfileobj(pdf_file.file, f)
         input_value = str(dest)
