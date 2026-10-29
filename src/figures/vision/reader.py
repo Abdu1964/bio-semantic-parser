@@ -55,7 +55,9 @@ RULES:
 6. If the figure shows no relation, return an empty relations list.
 7. The first image is the whole figure; any further images are zoomed quarters of it — use them to
    read small labels. Spell every name exactly as in TEXT FOUND IN THE FIGURE.
-8. In tables, pair values from the SAME row only; follow each row across before moving to the next."""
+8. In tables, pair values from the SAME row only; follow each row across before moving to the next.
+9. Charts and heatmaps: include the results the figure marks as significant (beyond a threshold line,
+   starred, highlighted or labelled enriched); skip the ones it shows as not significant."""
 
 
 def _compact(title: str, taxonomy: dict) -> str:
@@ -103,8 +105,24 @@ def _images(image: bytes) -> list:
     return out
 
 
-def read_figure(image: bytes, caption: str = "", label: str = "") -> dict:
-    """{'kind', 'summary', 'relations': [(panel, BiologicalRelation)], 'invalid': n, 'ungrounded': n}."""
+def _ask(messages: list) -> dict:
+    """The model's JSON answer; one retry on a malformed reply."""
+    for attempt in (1, 2):
+        try:
+            data = parse_json(call_llm(messages, max_tokens=_MAX_TOKENS))
+            if isinstance(data, dict):
+                return data
+        except ValueError as e:                                  # JSONDecodeError is a ValueError
+            if attempt == 2:
+                raise
+            logger.info("Figure reply was not valid JSON, retrying: %s", e)
+    raise ValueError("figure reply is not a JSON object")
+
+
+def read_figure(image: bytes, caption: str = "", label: str = "", context: set = None) -> dict:
+    """{'kind', 'summary', 'relations': [(panel, BiologicalRelation)], 'invalid': n, 'ungrounded': n}.
+
+    context: words of the paper's text; names found there are accepted too."""
     user = (f"{label}. {caption}" if label else caption) or "(no caption)"
     ocr = figure_text(image)
     text = f"Caption: {user}"
@@ -112,14 +130,15 @@ def read_figure(image: bytes, caption: str = "", label: str = "") -> dict:
         text += "\n\nTEXT FOUND IN THE FIGURE (OCR, exact spelling):\n" + " ".join(ocr.split())[:_MAX_OCR_CHARS]
     content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}}
                for png in _images(image)]
-    raw = call_llm([
+    data = _ask([
         {"role": "system", "content": _system_prompt()},
         {"role": "user", "content": content + [{"type": "text", "text": text + "\n\nReturn JSON only."}]},
-    ], max_tokens=_MAX_TOKENS)
-    data = parse_json(raw)
+    ])
     kind = str(data.get("kind", "other")).strip().lower()
     kind = kind if kind in KINDS else "other"
-    known = tokens(ocr + " " + user) if ocr.strip() else None    # no OCR → no grounding check
+    # Names must exist in the figure, its caption or the paper. Only without Tesseract and paper text is nothing checkable.
+    from src.figures.ocr import available
+    known = (tokens(ocr + " " + user) | (context or set())) if (available() or context) else None
     relations, invalid, ungrounded = [], 0, 0
     if kind in ("diagram", "chart", "table"):
         for r in data.get("relations") or []:
@@ -133,8 +152,9 @@ def read_figure(image: bytes, caption: str = "", label: str = "") -> dict:
                 logger.info("Figure relation dropped (invalid): %s", str(e)[:200])
                 continue
             if known is not None and not (grounded(rel.subject_name, known) and grounded(rel.object_name, known)):
-                ungrounded += 1                                       # a name the figure doesn't contain
-                logger.info("Figure relation dropped (not in figure): %s -> %s", rel.subject_name, rel.object_name)
+                ungrounded += 1                                       # a name the source doesn't contain
+                logger.info("Figure relation dropped (name not in figure or paper): %s -> %s",
+                            rel.subject_name, rel.object_name)
                 continue
             relations.append((panel, rel))
     return {"kind": kind, "summary": str(data.get("summary", "")).strip(), "relations": relations,

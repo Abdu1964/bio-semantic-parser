@@ -5,6 +5,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from src.figures.extract import figures_dir
+from src.figures.vision.grounding import tokens
 from src.figures.vision.reader import read_figure
 from src.schema.pydantic_model import ExtractionResult
 
@@ -48,18 +49,19 @@ def _chunk(fig: dict, summary: str, kind: str, template: dict, index: int) -> di
                        "file": fig["path"], "kind": kind}}
 
 
-def figure_results(document_id: str, template: dict, first_index: int, log=None) -> tuple:
+def figure_results(document_id: str, template: dict, first_index: int, log=None, paper_text: str = "") -> tuple:
     """([ExtractionResult], [chunk]) for every figure that shows relations."""
     log = log or (lambda m: None)
     figs = _figures(document_id)
     if not figs:
         return [], []
     log(f"Reading {len(figs)} figure(s) with the vision model…")
+    context = tokens(paper_text) if paper_text else None           # once per paper, shared by all figures
 
     def one(fig):
         try:
             with open(fig["path"], "rb") as fh:
-                return fig, read_figure(fh.read(), fig.get("caption", ""), fig.get("label", ""))
+                return fig, read_figure(fh.read(), fig.get("caption", ""), fig.get("label", ""), context)
         except Exception as e:
             logger.warning("Figure %s skipped: %s", fig["fig_id"], e)
             return fig, None
@@ -79,7 +81,7 @@ def figure_results(document_id: str, template: dict, first_index: int, log=None)
             rels.append(rel.model_copy(update={"reasoning": where + rel.reasoning}))
         log(f"  {name} (page {fig.get('page') or '?'}): {out['kind']} — {len(rels)} relation(s)"
             + (f", {out['invalid']} invalid dropped" if out["invalid"] else "")
-            + (f", {out['ungrounded']} not found in the figure dropped" if out.get("ungrounded") else ""))
+            + (f", {out['ungrounded']} with names not in the figure or paper dropped" if out.get("ungrounded") else ""))
         if rels:
             results.append(ExtractionResult(relations=rels))
             chunks.append(_chunk(fig, out["summary"], out["kind"], template, first_index + len(chunks)))
@@ -97,7 +99,8 @@ def add_figure_relations(document_id: str, tagged_chunks: list, results: list, s
     results.extend(ExtractionResult(relations=[]) for _ in range(len(tagged_chunks) - len(results)))
     try:
         template = tagged_chunks[0] if tagged_chunks else {"document_id": document_id}
-        fig_results, fig_chunks = figure_results(document_id, template, len(tagged_chunks), log)
+        paper_text = " ".join(str(c.get("text", "")) for c in tagged_chunks if c.get("section") != "figure")
+        fig_results, fig_chunks = figure_results(document_id, template, len(tagged_chunks), log, paper_text)
     except Exception as e:
         log(f"Figure relations skipped: {e}")
         return 0
