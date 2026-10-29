@@ -31,22 +31,29 @@ def _figures(document_id: str) -> list:
     index = d / "figures.json"
     if not index.exists():
         return []
-    figs = [f for f in json.loads(index.read_text(encoding="utf-8")) if f.get("file")]
+    # A PDF figure without a caption (graphical abstract, logo) has nothing to anchor it; uploads are kept.
+    figs = [f for f in json.loads(index.read_text(encoding="utf-8"))
+            if f.get("file") and (f.get("caption") or f.get("source") != "pdf")]
     figs.sort(key=lambda f: not f.get("caption"))
     return [{**f, "path": str(d / f["file"])} for f in figs[:_MAX_FIGURES]]
 
 
-def _chunk(fig: dict, summary: str, kind: str, template: dict, index: int) -> dict:
-    """A pseudo-chunk for one figure: caption + summary as text, figure provenance attached."""
+def _chunk(fig: dict, out: dict, rels: list, template: dict, index: int) -> dict:
+    """A pseudo-chunk for one figure. Its text is what Layer 7 checks figure facts against:
+    caption, summary, the visual evidence for each relation, and the figure's own words (OCR)."""
     label = fig.get("label") or fig["fig_id"]
     text = f"{label}. {fig.get('caption', '')}".strip()
-    if summary:
-        text += f"\nFigure content: {summary}"
+    if out["summary"]:
+        text += f"\nFigure content: {out['summary']}"
+    text += "\nShown in the figure:\n" + "\n".join(
+        f"- {r.subject_name} {r.relation.value.replace('_', ' ')} {r.object_name}: {r.reasoning}" for r in rels)
+    if out.get("ocr", "").strip():
+        text += "\nText in the figure: " + " ".join(out["ocr"].split())[:3000]
     return {**{k: template.get(k) for k in _CHUNK_KEYS if k in template},
             "text": text, "section": "figure", "chunk_index": index,
             "entities": [], "negated_entities": [], "has_negation": False,
             "figure": {"id": fig["fig_id"], "label": fig.get("label", ""), "page": fig.get("page", 0),
-                       "file": fig["path"], "kind": kind}}
+                       "file": fig["path"], "kind": out["kind"]}}
 
 
 def figure_results(document_id: str, template: dict, first_index: int, log=None, paper_text: str = "") -> tuple:
@@ -81,10 +88,11 @@ def figure_results(document_id: str, template: dict, first_index: int, log=None,
             rels.append(rel.model_copy(update={"reasoning": where + rel.reasoning}))
         log(f"  {name} (page {fig.get('page') or '?'}): {out['kind']} — {len(rels)} relation(s)"
             + (f", {out['invalid']} invalid dropped" if out["invalid"] else "")
-            + (f", {out['ungrounded']} with names not in the figure or paper dropped" if out.get("ungrounded") else ""))
+            + (f", {out['ungrounded']} with names not in the figure or paper dropped" if out.get("ungrounded") else "")
+            + (f", {out['not_entities']} self-loops or group names dropped" if out.get("not_entities") else ""))
         if rels:
             results.append(ExtractionResult(relations=rels))
-            chunks.append(_chunk(fig, out["summary"], out["kind"], template, first_index + len(chunks)))
+            chunks.append(_chunk(fig, out, rels, template, first_index + len(chunks)))
     return results, chunks
 
 

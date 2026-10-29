@@ -17,6 +17,18 @@ _MAX_SIDE = int(os.getenv("FIGURE_MAX_SIDE", "1600"))        # pixels per image 
 _TILE_FROM = int(os.getenv("FIGURE_TILE_FROM", "1200"))      # larger figures also go as 4 zoomed tiles
 _MAX_TOKENS = int(os.getenv("FIGURE_OUTPUT_TOKENS", "3000"))
 _MAX_OCR_CHARS = 4000
+# Plural heads that make a name a group, not one entity ("target genes", "top sequence motifs").
+_GROUP_HEADS = {"genes", "snps", "variants", "motifs", "modules", "tfs", "proteins", "peaks", "regions",
+                "loci", "sites", "factors", "traits", "diseases", "pathways", "groups", "clusters", "samples"}
+
+
+def _not_an_entity(name: str) -> str:
+    """Why a figure name is a group or category rather than one entity, else ''."""
+    from src.postextraction.entity_normalization import _non_canonical_reason
+    words = name.lower().split()
+    if words and words[-1] in _GROUP_HEADS:
+        return "group of entities"
+    return _non_canonical_reason(name, "")
 
 _FORMAT = """\
 Return ONLY this JSON:
@@ -57,7 +69,11 @@ RULES:
    read small labels. Spell every name exactly as in TEXT FOUND IN THE FIGURE.
 8. In tables, pair values from the SAME row only; follow each row across before moving to the next.
 9. Charts and heatmaps: include the results the figure marks as significant (beyond a threshold line,
-   starred, highlighted or labelled enriched); skip the ones it shows as not significant."""
+   starred, highlighted or labelled enriched); skip the ones it shows as not significant.
+10. Never relate an entity to itself. A similarity or correlation matrix comparing the same kinds of
+   things (cell types vs cell types, samples vs samples) shows no biological relation — skip it.
+11. Each name must be one specific entity, never a group or category ('target genes', 'SNPs',
+   'altered TFs', 'top motifs', 'modules'). A cell type found in a tissue is part_of that tissue."""
 
 
 def _compact(title: str, taxonomy: dict) -> str:
@@ -139,7 +155,7 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
     # Names must exist in the figure, its caption or the paper. Only without Tesseract and paper text is nothing checkable.
     from src.figures.ocr import available
     known = (tokens(ocr + " " + user) | (context or set())) if (available() or context) else None
-    relations, invalid, ungrounded = [], 0, 0
+    relations, invalid, ungrounded, not_entities = [], 0, 0, 0
     if kind in ("diagram", "chart", "table"):
         for r in data.get("relations") or []:
             if not isinstance(r, dict) or r.get("extraction_viable") is False:
@@ -156,6 +172,12 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
                 logger.info("Figure relation dropped (name not in figure or paper): %s -> %s",
                             rel.subject_name, rel.object_name)
                 continue
+            why = ("self-loop" if tokens(rel.subject_name) == tokens(rel.object_name)
+                   else _not_an_entity(rel.subject_name) or _not_an_entity(rel.object_name))
+            if why:
+                not_entities += 1
+                logger.info("Figure relation dropped (%s): %s -> %s", why, rel.subject_name, rel.object_name)
+                continue
             relations.append((panel, rel))
     return {"kind": kind, "summary": str(data.get("summary", "")).strip(), "relations": relations,
-            "invalid": invalid, "ungrounded": ungrounded}
+            "invalid": invalid, "ungrounded": ungrounded, "not_entities": not_entities, "ocr": ocr}
