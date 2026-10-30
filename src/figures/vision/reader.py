@@ -1,14 +1,16 @@
 """Read a figure with the vision model: its kind, a short summary and the relations it shows."""
 import base64
+import json
 import logging
 import os
+import re
 
 from pydantic import ValidationError
 
 from src.figures.vision.grounding import figure_text, grounded, tokens
 from src.llm_client import call_llm, parse_json
 from src.schema.pydantic_model import BiologicalRelation
-from src.schema.taxonomy import ENTITY_TAXONOMY, TAXONOMY
+from src.schema.taxonomy import ENTITY_TAXONOMY, TAXONOMY, RelationType
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +18,12 @@ KINDS = ("diagram", "chart", "table", "photo", "text", "other")
 _MAX_SIDE = int(os.getenv("FIGURE_MAX_SIDE", "1600"))        # pixels per image sent to the model
 _TILE_FROM = int(os.getenv("FIGURE_TILE_FROM", "1200"))      # larger figures also go as 4 zoomed tiles
 _MAX_TOKENS = int(os.getenv("FIGURE_OUTPUT_TOKENS", "3000"))
+_MAX_RELATIONS = int(os.getenv("FIGURE_MAX_RELATIONS", "30"))   # keeps dense figures within the output limit
+_TIMEOUT = int(os.getenv("FIGURE_TIMEOUT", "240"))              # seconds per model call
 _MAX_OCR_CHARS = 4000
+# expressed_in is for genes and their products; a cell type in a tissue is part_of it.
+_MOLECULAR = {"GENE", "PROTEIN", "TRANSCRIPT", "EXON", "NON_CODING_RNA", "MICRO_RNA", "SI_RNA"}
+_PLACES = {"ANATOMY", "TISSUE", "GROSS_ANATOMICAL_STRUCTURE", "CELL_TYPE"}
 # Plural heads that make a name a group, not one entity ("target genes", "top sequence motifs").
 _GROUP_HEADS = {"genes", "snps", "variants", "motifs", "modules", "tfs", "proteins", "peaks", "regions",
                 "loci", "sites", "factors", "traits", "diseases", "pathways", "groups", "clusters", "samples"}
@@ -29,6 +36,33 @@ def _not_an_entity(name: str) -> str:
     if words and words[-1] in _GROUP_HEADS:
         return "group of entities"
     return _non_canonical_reason(name, "")
+
+
+def _fix_type(rel: BiologicalRelation):
+    """The relation with a type its subject allows, or None when no valid type applies."""
+    if rel.relation.value != "expressed_in" or rel.subject_type.value in _MOLECULAR:
+        return rel
+    if rel.subject_type.value == "CELL_TYPE" and rel.object_type.value in _PLACES:
+        return rel.model_copy(update={"relation": RelationType.PART_OF})
+    return None
+
+
+def _salvage(raw: str):
+    """Kind, summary and every complete relation from a reply cut off at the output limit."""
+    start = raw.find("[", raw.find('"relations"'))
+    if start < 0:
+        return None
+    dec, rels, i = json.JSONDecoder(), [], start + 1
+    while True:
+        while i < len(raw) and raw[i] in " \t\r\n,":
+            i += 1
+        try:
+            obj, i = dec.raw_decode(raw, i)
+        except ValueError:
+            break
+        rels.append(obj)
+    field = lambda k: (m.group(1) if (m := re.search(rf'"{k}"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)) else "")
+    return {"kind": field("kind") or "other", "summary": field("summary"), "relations": rels, "truncated": True}
 
 _FORMAT = """\
 Return ONLY this JSON:
@@ -63,7 +97,8 @@ RULES:
    as rs IDs, proteins, cell types, diseases, chemicals). Never numbers, p-values, axis labels,
    method names or panel titles.
 4. relation, subject_type and object_type MUST be values from the lists above.
-5. One object per distinct subject–relation–object triple; be exhaustive but precise.
+5. One object per distinct subject–relation–object triple; be precise. Give at most {max_relations}
+   relations — the ones the figure shows most clearly.
 6. If the figure shows no relation, return an empty relations list.
 7. The first image is the whole figure; any further images are zoomed quarters of it — use them to
    read small labels. Spell every name exactly as in TEXT FOUND IN THE FIGURE.
@@ -88,7 +123,7 @@ def _compact(title: str, taxonomy: dict) -> str:
 def _system_prompt() -> str:
     return ("You are a biomedical relation extraction expert reading a FIGURE from a scientific paper.\n\n"
             + _compact("RELATION TYPES", TAXONOMY) + "\n\n" + _compact("ENTITY TYPES", ENTITY_TAXONOMY)
-            + "\n\n" + _FORMAT + "\n\n" + _RULES)
+            + "\n\n" + _FORMAT + "\n\n" + _RULES.replace("{max_relations}", str(_MAX_RELATIONS)))
 
 
 def _rgb(image: bytes):
@@ -122,13 +157,19 @@ def _images(image: bytes) -> list:
 
 
 def _ask(messages: list) -> dict:
-    """The model's JSON answer; one retry on a malformed reply."""
+    """The model's JSON answer. A reply cut off at the output limit keeps its complete relations;
+    any other malformed reply is retried once."""
     for attempt in (1, 2):
+        raw = call_llm(messages, max_tokens=_MAX_TOKENS, wall_timeout=_TIMEOUT)
         try:
-            data = parse_json(call_llm(messages, max_tokens=_MAX_TOKENS))
+            data = parse_json(raw)
             if isinstance(data, dict):
                 return data
         except ValueError as e:                                  # JSONDecodeError is a ValueError
+            salvaged = _salvage(raw)
+            if salvaged and salvaged["relations"]:
+                logger.info("Figure reply cut off; kept %d complete relations", len(salvaged["relations"]))
+                return salvaged
             if attempt == 2:
                 raise
             logger.info("Figure reply was not valid JSON, retrying: %s", e)
@@ -162,10 +203,13 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
                 continue
             panel = str(r.pop("panel", "") or "").strip()
             try:
-                rel = BiologicalRelation(**r)
+                rel = _fix_type(BiologicalRelation(**r))
             except (ValidationError, TypeError) as e:
                 invalid += 1
                 logger.info("Figure relation dropped (invalid): %s", str(e)[:200])
+                continue
+            if rel is None:                                           # no relation type fits this subject
+                invalid += 1
                 continue
             if known is not None and not (grounded(rel.subject_name, known) and grounded(rel.object_name, known)):
                 ungrounded += 1                                       # a name the source doesn't contain

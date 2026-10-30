@@ -107,6 +107,7 @@ def run_layer6(emit, doc_id, _safe_id, tagged_chunks, _completed_layers):
             if b:
                 results.extend(b)
 
+        _l6_figures_path.unlink(missing_ok=True)            # never pair new results with old figure chunks
         try:                                                # Phase 3: relations read from figures
             from src.figures.vision import add_figure_relations
             n_figure = add_figure_relations(doc_id, tagged_chunks, results, _l6_figures_path,
