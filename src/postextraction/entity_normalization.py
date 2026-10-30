@@ -1020,6 +1020,29 @@ def _ensembl_search_uncached(text: str, species: str = "human",
     if last_err:
         logger.warning("Ensembl xrefs/symbol lookup failed for %r (species=%s) after %d attempt(s): %s",
                         text, species, retries, last_err)
+        if species.lower() in _HUMAN:               # Ensembl times out on well-studied genes; HGNC does not
+            for candidate in candidates:
+                hit = _hgnc_gene(candidate)
+                if hit:
+                    return hit
+    return None
+
+
+_HUMAN = {"human", "homo_sapiens", "homo sapiens"}
+
+
+def _hgnc_gene(symbol: str, timeout=_TIMEOUT) -> Optional[tuple]:
+    """HGNC REST — (ENSEMBL id, approved symbol, '') for a human gene symbol, previous or alias symbol."""
+    for field in ("symbol", "prev_symbol", "alias_symbol"):
+        try:
+            r = _http_get(f"https://rest.genenames.org/fetch/{field}/{quote(symbol, safe='')}",
+                          headers={"Accept": "application/json"}, timeout=timeout)
+            docs = r.json().get("response", {}).get("docs", [])
+        except Exception as e:
+            logger.warning("HGNC lookup failed for %r: %s", symbol, e)
+            return None
+        if len(docs) == 1 and docs[0].get("ensembl_gene_id"):      # an alias shared by genes is ambiguous
+            return (f"ENSEMBL:{docs[0]['ensembl_gene_id']}", docs[0].get("symbol") or symbol, "")
     return None
 
 
