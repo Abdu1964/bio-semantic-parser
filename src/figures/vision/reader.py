@@ -38,6 +38,14 @@ def _not_an_entity(name: str) -> str:
     return _non_canonical_reason(name, "")
 
 
+# A trailing source tag on a figure label: "(30061737)" (a PubMed ID) or "(UKB)" — not "(CD8+)" or "(Ovarian)".
+_SOURCE_TAG = re.compile(r"\s*\((?:\d+|[A-Z]{2,5})\)\s*$")
+
+
+def _clean_name(name: str) -> str:
+    return _SOURCE_TAG.sub("", name).strip() or name
+
+
 def _fix_type(rel: BiologicalRelation):
     """The relation with a type its subject allows, or None when no valid type applies."""
     if rel.relation.value != "expressed_in" or rel.subject_type.value in _MOLECULAR:
@@ -202,6 +210,9 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
             if not isinstance(r, dict) or r.get("extraction_viable") is False:
                 continue
             panel = str(r.pop("panel", "") or "").strip()
+            for side in ("subject_name", "object_name"):
+                if isinstance(r.get(side), str):
+                    r[side] = _clean_name(r[side])
             try:
                 rel = _fix_type(BiologicalRelation(**r))
             except (ValidationError, TypeError) as e:
