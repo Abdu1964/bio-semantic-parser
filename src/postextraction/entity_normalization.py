@@ -299,10 +299,16 @@ _LABEL_ORGANISMS = {
 }
 
 
+def _genus(species: str) -> str:
+    """Genus of a species name, common names included ('human' → 'homo')."""
+    name = (species or "").strip().lower().replace("_", " ")
+    return _COMMON_TO_BINOMIAL.get(name, name).split(" ")[0]
+
+
 def _wrong_organism(label: str, species: str) -> bool:
     """Label names another organism, e.g. '(yeast)' in a fly paper."""
     m = re.search(r"\(([^()]+)\)\s*$", label or "")
-    genus = (species or "").strip().split(" ")[0].lower()
+    genus = _genus(species)
     if not m or not genus:
         return False
     tag = m.group(1).strip().lower()
@@ -1671,7 +1677,7 @@ def _kind_conflict(entity_type: str, cid: str) -> bool:
 
 def _organism_conflict(cid: str, species: str) -> bool:
     """A gene/protein ID from another organism than the one the relation names."""
-    genus = (species or "").strip().split(" ")[0].lower()
+    genus = _genus(species)
     id_genus = next((g for prefix, g in _ID_GENUS if (cid or "").startswith(prefix)), "")
     return bool(genus and id_genus and genus != id_genus)
 
