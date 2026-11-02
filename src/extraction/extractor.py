@@ -263,6 +263,44 @@ def _is_truncation_error(error: str) -> bool:
     ]
     return any(s.lower() in error.lower() for s in truncation_signals)
 
+_MAX_SPLIT_DEPTH = 2           # halves, then quarters
+
+
+def _valid_relations(raw_relations: list) -> list:
+    """Every relation that validates; one bad relation no longer loses the rest.
+    Raises the first error when none are valid, so the reply is retried."""
+    relations, first_error = [], None
+    for r in raw_relations:
+        try:
+            relations.append(BiologicalRelation(**r))
+        except (ValidationError, TypeError) as e:
+            first_error = first_error or e
+    if raw_relations and not relations and first_error:
+        raise first_error
+    return relations
+
+
+def _salvage_relations(raw: str) -> list:
+    """The complete relations of a reply cut off at the output limit."""
+    start = raw.find("[", raw.find('"relations"'))
+    if start < 0:
+        return []
+    decoder, found, i = json.JSONDecoder(), [], start + 1
+    while True:
+        while i < len(raw) and raw[i] in " \t\r\n,":
+            i += 1
+        try:
+            obj, i = decoder.raw_decode(raw, i)
+        except ValueError:
+            break
+        if isinstance(obj, dict):
+            found.append(obj)
+    try:
+        return _valid_relations(found)
+    except (ValidationError, TypeError):
+        return []
+
+
 def _split_chunk(chunk: dict) -> list:
     """Split a chunk's text in half at a sentence boundary, returning two sub-chunks (with other metadata)."""
     text = chunk.get("text", "")
@@ -336,18 +374,17 @@ def extract(chunk: dict, _depth: int = 0) -> ExtractionResult:
 
             data          = _parse_json(last_raw)
             raw_relations = data.get("relations", [data])
-            relations     = [BiologicalRelation(**r) for r in raw_relations]
-            return ExtractionResult(relations=relations)
+            return ExtractionResult(relations=_valid_relations(raw_relations))
 
         except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
             last_error = str(exc)
 
-            if _is_truncation_error(last_error) and _depth == 0:
-                sub_chunks    = _split_chunk(chunk)
-                all_relations = []
-                for sc in sub_chunks:
-                    sub_result = extract(sc, _depth=1)
-                    all_relations.extend(sub_result.relations)
+            if _is_truncation_error(last_error):
+                # Keep what the cut-off reply finished, then read the chunk in smaller parts
+                all_relations = _salvage_relations(last_raw)
+                if _depth < _MAX_SPLIT_DEPTH and ". " in chunk.get("text", ""):
+                    for sc in _split_chunk(chunk):
+                        all_relations.extend(extract(sc, _depth=_depth + 1).relations)
                 seen, unique = set(), []
                 for r in all_relations:
                     key = (getattr(r, "subject_name", "").lower(),
