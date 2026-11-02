@@ -77,19 +77,38 @@ class XMLHandler:
         # must contain at least one real word (3+ consecutive letters)
         return bool(re.search(r'[a-zA-Z]{3,}', text))
 
+    # Back matter that is not paper content
+    _SKIP = {"title", "label", "ref-list", "fn-group", "ack", "glossary"}
+
     def _extract_pmc_sections(self, root) -> str:
+        # Each paragraph once, in document order, under its nearest section title
         sections = []
-        for sec in root.iter("sec"):
-            title = sec.find("title")
-            title_text = title.text.strip() if title is not None and title.text else "unknown"
-            paragraphs = []
-            for p in sec.iter("p"):
-                texts = "".join(p.itertext()).strip()
-                if texts:
-                    paragraphs.append(texts)
+
+        def emit(title, paragraphs):
             if paragraphs:
-                sections.append(f"{title_text}\n" + " ".join(paragraphs))
-        
+                sections.append((f"{title}\n" if title else "") + " ".join(paragraphs))
+
+        def walk(el, title):
+            paragraphs = []
+            for child in el:
+                if child.tag == "p":
+                    text = "".join(child.itertext()).strip()
+                    if text:
+                        paragraphs.append(text)
+                elif child.tag not in self._SKIP:
+                    emit(title, paragraphs)
+                    paragraphs = []
+                    if child.tag == "sec":
+                        t = child.find("title")
+                        walk(child, "".join(t.itertext()).strip() if t is not None else "unknown")
+                    else:
+                        walk(child, title)              # figures, lists, boxed text
+            emit(title, paragraphs)
+
+        for part in (root.find(".//body"), root.find(".//back")):
+            if part is not None:
+                walk(part, "")
+
         abstract = root.find(".//abstract")
         if abstract is not None:
             abstract_text = " ".join("".join(p.itertext()).strip() for p in abstract.iter("p"))
