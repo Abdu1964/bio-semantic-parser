@@ -10,6 +10,7 @@ from src.fetcher.coref_client import CorefClient
 from src.fetcher.section_splitter import SectionSplitter
 from src.fetcher.chunker import Chunker
 from src.fetcher.metadata_attacher import MetadataAttacher
+from src.quality import coverage_line, repeated_line
 
 load_dotenv()
 
@@ -168,6 +169,8 @@ class Fetcher:
         log("  Step 6 — Chunking sections...")
         chunks = self.chunker.chunk_document(sections)
         log(f"           ✓ {len(chunks)} chunk(s) produced")
+        log(coverage_line(text, chunks))
+        log(repeated_line(text))
 
         # Step 7 — metadata attachment
         log("  Step 7 — Attaching metadata...")
