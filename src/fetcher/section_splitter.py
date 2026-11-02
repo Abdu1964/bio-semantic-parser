@@ -33,6 +33,7 @@ class SectionSplitter:
             detected = self._detect_section(line.strip())
             # Header line: close the current section, start a new one
             if detected:
+                preamble = current_lines if current_section is None else []
                 if current_lines and current_section:
                     sections.append({
                         "section": current_section,
@@ -42,6 +43,11 @@ class SectionSplitter:
                 remainder = self._remove_section_label(line.strip(), detected)
                 # Keep any text after the header label
                 current_lines = [remainder] if remainder else []
+                # Text before the first header (title, unlabelled abstract) is kept as the abstract
+                if preamble and detected == "abstract":
+                    current_lines = preamble + current_lines
+                elif preamble:
+                    sections.append({"section": "abstract", "text": " ".join(preamble).strip()})
             else:
                 if line.strip():
                     current_lines.append(line.strip())
@@ -57,30 +63,29 @@ class SectionSplitter:
     # Sections whose headers appear inline after a sentence end.
     def _split_inline(self, text: str) -> list:
         sections = []
-        found_positions = []
+        strong, weak = {}, {}
         for section_name, patterns in SECTION_PATTERNS.items():
             for pattern in patterns:
                 inline_pattern = pattern.lstrip("^")
-                # Header must start the text, a line, or a sentence
-                for match in re.finditer(inline_pattern, text, re.IGNORECASE):
+                # An all-caps header ("INTRODUCTION") counts anywhere
+                for match in re.finditer(rf"\b{inline_pattern.upper()}\b", text):
+                    strong.setdefault(section_name, []).append((match.start(), match.end(), section_name))
+                # Otherwise the header must start the text, a line, or a sentence
+                for match in re.finditer(rf"{inline_pattern}\b", text, re.IGNORECASE):
                     start = match.start()
                     if start == 0 or text[start-1] == "\n" or text[max(0, start-2):start] in [". ", ".\n"]:
-                        found_positions.append((start, match.end(), section_name))
+                        weak.setdefault(section_name, []).append((start, match.end(), section_name))
 
-        if not found_positions:
+        # First occurrence of each section, all-caps headers first
+        unique_positions = [min(strong.get(name) or weak[name]) for name in set(strong) | set(weak)]
+        if not unique_positions:
             return [{"section": "abstract", "text": text.strip()}]
 
-        found_positions.sort(key=lambda x: x[0])
-
-        # remove duplicates keeping first occurrence of each section
-        seen = {}
-        unique_positions = []
-        for pos in found_positions:
-            if pos[2] not in seen:
-                seen[pos[2]] = True
-                unique_positions.append(pos)
-
         unique_positions.sort(key=lambda x: x[0])
+        # Text before the first header (title, unlabelled abstract) is kept as the abstract
+        preamble = text[:unique_positions[0][0]].strip()
+        if preamble and unique_positions[0][2] != "abstract":
+            sections.append({"section": "abstract", "text": preamble})
 
         for i, (start, end, section_name) in enumerate(unique_positions):
             next_start = unique_positions[i + 1][0] if i + 1 < len(unique_positions) else len(text)
