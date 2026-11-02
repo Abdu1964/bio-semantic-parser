@@ -154,6 +154,34 @@ function _figureBlock(r) {
   </div>`;
 }
 
+// Figure facts inserted without review (the paper's text states the same) — listed for audit with their image.
+async function loadFigureFactsAuto(runDir) {
+  document.getElementById('figure-auto-section')?.remove();
+  const review = document.getElementById('review-section');
+  if (!review || !runDir) return;
+  const resp = await fetch('/api/file?path=' + encodeURIComponent(runDir + '/figure_facts_auto.jsonl'));
+  if (!resp.ok) return;
+  const rows = (await resp.text()).split('\n').filter(Boolean).map(l => JSON.parse(l));
+  if (!rows.length) return;
+  const sec = document.createElement('div');
+  sec.id = 'figure-auto-section';
+  sec.style.marginTop = '20px';
+  sec.innerHTML = `<div style="color:#a855f7;font-weight:700;margin-bottom:8px">Added automatically from figures (${rows.length})
+      <span style="color:var(--text3);font-weight:400;font-size:12px"> — the paper's text states the same fact</span></div>`
+    + rows.map(r => {
+      const p = r.provenance || {}, t = p.confirmed_by_text || {};
+      return `<details style="padding:8px 10px;margin-bottom:8px;background:var(--bg2);border:1px solid rgba(168,85,247,.35);border-radius:8px">
+        <summary style="cursor:pointer">${esc(r.subject_name)} <b>${esc(String(r.relation).replace('RelationType.', ''))}</b> ${esc(r.object_name)}
+          <span style="color:var(--text3);font-size:11px"> · ${esc((p.figure || {}).label || 'figure')}</span></summary>
+        ${_figureBlock({ ...r, figure: p.figure })}
+        <div style="font-size:12px;color:var(--text2)">Confirmed by text (${esc(t.section || '')}):
+          ${esc(t.subject_name || '')} <b>${esc(String(t.relation || '').replace('RelationType.', ''))}</b> ${esc(t.object_name || '')}
+          ${t.reasoning ? `<div style="font-style:italic;margin-top:4px">"${esc(t.reasoning)}"</div>` : ''}</div>
+      </details>`;
+    }).join('');
+  review.after(sec);
+}
+
 async function loadHumanReview(runDir, stagingDb) {
   const sec = document.getElementById('review-section');
   const cards = document.getElementById('review-cards');
@@ -792,6 +820,7 @@ function renderOutput(d) {
   renderInspectActions(d);
   // Load human review triples if any
   if (d.run_dir && d.staging_db) loadHumanReview(d.run_dir, d.staging_db);
+  if (d.run_dir) loadFigureFactsAuto(d.run_dir);
   document.getElementById('output').classList.add('show');
 
   // Refresh verification stats from server (verification_report.json may have been

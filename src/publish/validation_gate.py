@@ -16,11 +16,22 @@ def _is_other_type(entity_type: str) -> bool:
     return entity_type == "OTHER"
 
 
+def _figure_provenance(r: dict, text_facts: list) -> dict:
+    """For a figure fact inserted without review: the figure and the text fact that confirmed it, kept for audit."""
+    from src.figures.vision.relations import corroborating_fact
+    if r.get("section") != "figure":
+        return {}
+    t = corroborating_fact(r, text_facts) or {}
+    confirmed = {k: t.get(k) for k in ("subject_name", "relation", "object_name", "section", "reasoning")} if t else None
+    return {"provenance": {"figure": r.get("figure"), "confirmed_by_text": confirmed}}
+
+
 def route(records: list) -> tuple:
     """Split records into (auto_insert, human_review)."""
     from src.figures.vision.relations import review_required
     auto_insert  = []
     human_review = []
+    text_facts   = [r for r in records if r.get("section") != "figure"]
 
     for r in records:
         verdict     = r.get("validation_verdict", "SKIPPED")
@@ -42,7 +53,7 @@ def route(records: list) -> tuple:
             _is_other_type(subject_type) or
             _is_other_type(object_type)
         )
-        from_figure = review_required(r)
+        from_figure = review_required(r, text_facts)
 
         passes = (
             verdict == "VALID"
@@ -54,7 +65,7 @@ def route(records: list) -> tuple:
         )
 
         if passes:
-            auto_insert.append({**r, "insert_path": "auto"})
+            auto_insert.append({**r, "insert_path": "auto", **_figure_provenance(r, text_facts)})
         else:
             reason_parts = []
             if text_label and verdict == "VALID":

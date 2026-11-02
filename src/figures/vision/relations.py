@@ -20,9 +20,46 @@ def enabled() -> bool:
     return os.getenv("FIGURE_RELATIONS_ENABLED", "true").lower() == "true"
 
 
-def review_required(record: dict) -> bool:
-    """Figure facts go to human review until their precision is measured (FIGURE_FACTS_REVIEW)."""
-    return record.get("section") == "figure" and os.getenv("FIGURE_FACTS_REVIEW", "true").lower() == "true"
+def review_required(record: dict, text_facts: list = ()) -> bool:
+    """Whether a figure fact needs a human (FIGURE_FACTS_REVIEW):
+    'uncorroborated' (default) — unless the paper's text states the same fact; 'all'; 'none'."""
+    if record.get("section") != "figure":
+        return False
+    mode = os.getenv("FIGURE_FACTS_REVIEW", "uncorroborated").lower()
+    if mode in ("none", "false"):
+        return False
+    if mode in ("all", "true"):
+        return True
+    return corroborating_fact(record, text_facts) is None
+
+
+def _event_type(relation) -> str:
+    """The relation's standard BioNLP event type from the taxonomy, else the relation itself."""
+    from src.schema.taxonomy import CROSS_SCHEMA_MAP, RelationType
+    value = str(getattr(relation, "value", relation))
+    try:
+        return CROSS_SCHEMA_MAP.get(RelationType(value), {}).get("bionlp") or value
+    except ValueError:
+        return value
+
+
+def _verified(cid) -> bool:
+    return bool(cid) and not str(cid).startswith("TEXT:") and cid != "NEEDS_REVIEW"
+
+
+def corroborating_fact(record: dict, text_facts: list):
+    """A fact from the paper's text with the same entities (ontology IDs), the same event type
+    and the same negation as this figure fact, or None."""
+    s, o = record.get("subject_id"), record.get("object_id")
+    if not (_verified(s) and _verified(o)):
+        return None
+    event = _event_type(record.get("relation"))
+    for t in text_facts:
+        if (t.get("section") != "figure" and t.get("subject_id") == s and t.get("object_id") == o
+                and bool(t.get("negated")) == bool(record.get("negated"))
+                and _event_type(t.get("relation")) == event):
+            return t
+    return None
 
 
 def _figures(document_id: str) -> list:
