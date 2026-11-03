@@ -42,6 +42,21 @@ def _not_an_entity(name: str) -> str:
 _SOURCE_TAG = re.compile(r"\s*\((?:\d+|[A-Z]{2,5})\)\s*$")
 
 
+def _organism(text: str) -> str:
+    """The text if the taxonomy knows it as an organism ('Homo sapiens', 'rat'), else '' ('not stated')."""
+    text = text.strip()
+    if not text or len(text.split()) > 4:
+        return ""
+    from src.postextraction.entity_normalization import normalize_entity
+    try:
+        hit = normalize_entity(text, "ORGANISM")
+    except Exception:
+        return ""
+    if not hit.get("canonical_id", "").startswith("NCBITaxon:"):
+        return ""
+    return hit.get("canonical_name") or text          # the taxonomy's name: 'Homo sapiens', not the caption phrase
+
+
 def _clean_name(name: str) -> str:
     return _SOURCE_TAG.sub("", name).strip() or name
 
@@ -70,13 +85,15 @@ def _salvage(raw: str):
             break
         rels.append(obj)
     field = lambda k: (m.group(1) if (m := re.search(rf'"{k}"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)) else "")
-    return {"kind": field("kind") or "other", "summary": field("summary"), "relations": rels, "truncated": True}
+    return {"kind": field("kind") or "other", "summary": field("summary"), "species": field("species"),
+            "relations": rels, "truncated": True}
 
 _FORMAT = """\
 Return ONLY this JSON:
 {
   "kind": "diagram | chart | table | photo | text | other",
   "summary": "<2-5 sentences: what each panel shows, in words>",
+  "species": "<organism the figure's data come from, as the caption or labels state it; empty if not stated>",
   "relations": [
     {
       "extraction_viable": true,
@@ -205,11 +222,14 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
     from src.figures.ocr import available
     known = (tokens(ocr + " " + user) | (context or set())) if (available() or context) else None
     relations, invalid, ungrounded, not_entities = [], 0, 0, 0
+    figure_species = _organism(str(data.get("species") or ""))
     if kind in ("diagram", "chart", "table"):
         for r in data.get("relations") or []:
             if not isinstance(r, dict) or r.get("extraction_viable") is False:
                 continue
             panel = str(r.pop("panel", "") or "").strip()
+            if not str(r.get("species") or "").strip():
+                r["species"] = figure_species         # the figure's organism unless the relation names one
             for side in ("subject_name", "object_name"):
                 if isinstance(r.get(side), str):
                     r[side] = _clean_name(r[side])

@@ -21,16 +21,37 @@ def enabled() -> bool:
 
 
 def review_required(record: dict, text_facts: list = ()) -> bool:
-    """Whether a figure fact needs a human (FIGURE_FACTS_REVIEW):
-    'uncorroborated' (default) — unless the paper's text states the same fact; 'all'; 'none'."""
+    """Whether a figure fact needs a human, beyond the checks every fact passes (FIGURE_FACTS_REVIEW):
+    'conflicting' (default) — only when it contradicts the paper's text; 'uncorroborated' — unless the text
+    states the same fact; 'all'; 'none'."""
     if record.get("section") != "figure":
         return False
-    mode = os.getenv("FIGURE_FACTS_REVIEW", "uncorroborated").lower()
+    mode = os.getenv("FIGURE_FACTS_REVIEW", "conflicting").lower()
     if mode in ("none", "false"):
         return False
     if mode in ("all", "true"):
         return True
-    return corroborating_fact(record, text_facts) is None
+    if mode == "uncorroborated":
+        return corroborating_fact(record, text_facts) is None
+    return conflicting_fact(record, text_facts) is not None
+
+
+# Opposite directions, from the taxonomy's BioNLP event types
+_OPPOSITE_EVENTS = {"Positive_regulation": "Negative_regulation", "Negative_regulation": "Positive_regulation"}
+
+
+def conflicting_fact(record: dict, text_facts: list):
+    """A fact from the paper's text about the same entities with the opposite direction, or the same
+    relation with the opposite negation — e.g. a figure misread as 'downregulates' where the text says 'activates'."""
+    event = _event_type(record.get("relation"))
+    for t in text_facts:
+        if t.get("section") == "figure" or not (_same_entity(record, t, "subject") and _same_entity(record, t, "object")):
+            continue
+        t_event = _event_type(t.get("relation"))
+        same_negation = bool(t.get("negated")) == bool(record.get("negated"))
+        if (same_negation and _OPPOSITE_EVENTS.get(event) == t_event) or (not same_negation and t_event == event):
+            return t
+    return None
 
 
 def _event_type(relation) -> str:
@@ -47,15 +68,41 @@ def _verified(cid) -> bool:
     return bool(cid) and not str(cid).startswith("TEXT:") and cid != "NEEDS_REVIEW"
 
 
+def _names(record: dict, side: str) -> set:
+    """The entity's name, its database name and the database's synonyms, as comparable keys."""
+    from src.postextraction.name_matching import term_key
+    syns = record.get(f"{side}_synonyms") or ""
+    syns = syns.split(";") if isinstance(syns, str) else list(syns)
+    names = [record.get(f"{side}_name"), record.get(f"{side}_canonical_name"), *syns]
+    return {k for k in (term_key(str(n or "")) for n in names) if len(k) >= 2}
+
+
+def _genus(species: str) -> str:
+    """Genus of a species name, common names included ('human' → 'homo')."""
+    from src.postextraction.entity_normalization import _COMMON_TO_BINOMIAL
+    name = (species or "").strip().lower().replace("_", " ")
+    return _COMMON_TO_BINOMIAL.get(name, name).split(" ")[0]
+
+
+def _same_entity(a: dict, b: dict, side: str) -> bool:
+    """Same ID; or, in the same known species, one molecule under two ID systems (gene vs protein),
+    recognised by the databases' own names and synonyms."""
+    if not (_verified(a.get(f"{side}_id")) and _verified(b.get(f"{side}_id"))):
+        return False
+    if a.get(f"{side}_id") == b.get(f"{side}_id"):
+        return True
+    ga, gb = _genus(a.get("species") or ""), _genus(b.get("species") or "")
+    return bool(ga) and ga == gb and bool(_names(a, side) & _names(b, side))
+
+
 def corroborating_fact(record: dict, text_facts: list):
-    """A fact from the paper's text with the same entities (ontology IDs), the same event type
+    """A fact from the paper's text with the same entities, the same event type
     and the same negation as this figure fact, or None."""
-    s, o = record.get("subject_id"), record.get("object_id")
-    if not (_verified(s) and _verified(o)):
+    if not (_verified(record.get("subject_id")) and _verified(record.get("object_id"))):
         return None
     event = _event_type(record.get("relation"))
     for t in text_facts:
-        if (t.get("section") != "figure" and t.get("subject_id") == s and t.get("object_id") == o
+        if (t.get("section") != "figure" and _same_entity(record, t, "subject") and _same_entity(record, t, "object")
                 and bool(t.get("negated")) == bool(record.get("negated"))
                 and _event_type(t.get("relation")) == event):
             return t

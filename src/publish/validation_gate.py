@@ -93,7 +93,8 @@ def route(records: list) -> tuple:
             if from_figure:
                 fig = r.get("figure") or {}
                 reason_parts.append(f"read from {fig.get('label') or 'a figure'}"
-                                    f"{' (page ' + str(fig['page']) + ')' if fig.get('page') else ''} — check it against the image")
+                                    f"{' (page ' + str(fig['page']) + ')' if fig.get('page') else ''}"
+                                    " contradicts the paper's text — check it against the image")
             if hard_unresolved:
                 reason_parts.append(
                     f"unresolved entity IDs: "

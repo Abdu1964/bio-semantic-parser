@@ -167,16 +167,18 @@ async function loadFigureFactsAuto(runDir) {
   sec.id = 'figure-auto-section';
   sec.style.marginTop = '20px';
   sec.innerHTML = `<div style="color:#a855f7;font-weight:700;margin-bottom:8px">Added automatically from figures (${rows.length})
-      <span style="color:var(--text3);font-weight:400;font-size:12px"> — the paper's text states the same fact</span></div>`
+      <span style="color:var(--text3);font-weight:400;font-size:12px"> — validated, and not contradicted by the paper's text</span></div>`
     + rows.map(r => {
       const p = r.provenance || {}, t = p.confirmed_by_text || {};
       return `<details style="padding:8px 10px;margin-bottom:8px;background:var(--bg2);border:1px solid rgba(168,85,247,.35);border-radius:8px">
         <summary style="cursor:pointer">${esc(r.subject_name)} <b>${esc(String(r.relation).replace('RelationType.', ''))}</b> ${esc(r.object_name)}
           <span style="color:var(--text3);font-size:11px"> · ${esc((p.figure || {}).label || 'figure')}</span></summary>
         ${_figureBlock({ ...r, figure: p.figure })}
-        <div style="font-size:12px;color:var(--text2)">Confirmed by text (${esc(t.section || '')}):
-          ${esc(t.subject_name || '')} <b>${esc(String(t.relation || '').replace('RelationType.', ''))}</b> ${esc(t.object_name || '')}
-          ${t.reasoning ? `<div style="font-style:italic;margin-top:4px">"${esc(t.reasoning)}"</div>` : ''}</div>
+        ${t.subject_name ? `<div style="font-size:12px;color:var(--text2)">Confirmed by text (${esc(t.section || '')}):
+          ${esc(t.subject_name)} <b>${esc(String(t.relation || '').replace('RelationType.', ''))}</b> ${esc(t.object_name || '')}
+          ${t.reasoning ? `<div style="font-style:italic;margin-top:4px">"${esc(t.reasoning)}"</div>` : ''}</div>`
+          : `<div style="font-size:12px;color:var(--text2)">Validated against the figure — no sentence in the text states it.
+          ${r.reasoning ? `<div style="font-style:italic;margin-top:4px">"${esc(r.reasoning)}"</div>` : ''}</div>`}
       </details>`;
     }).join('');
   review.after(sec);
