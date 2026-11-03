@@ -61,7 +61,7 @@ class TextCleaner:
         r"©.*?\.",
         r"copyright.*?\.",
         r"all rights reserved.*?\.",
-        r"doi:.*?\s",
+        r"doi:\s*10\.\d{4,9}/[^\s—–]+[—–]?",     # DOI syntax and its separator dash; the next word stays
         r"pmid:.*?\s",
         r"epub ahead of print.*?\.",
         r"conflict of interest.*?\.",

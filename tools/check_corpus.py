@@ -12,6 +12,7 @@ from src.fetcher.handlers import PDFHandler
 from src.fetcher.section_splitter import SectionSplitter
 from src.quality.repeated_text import MAX_REPEATED, repeated_share
 from src.quality.text_coverage import MIN_COVERAGE, text_coverage
+from src.quality.unreadable import MAX_UNREADABLE, unreadable_count
 
 _TEXT = {".txt", ".md", ".xml", ".nxml", ".html", ".htm", ".json"}
 
@@ -34,7 +35,8 @@ def check(path: Path) -> dict:
     sections = SectionSplitter().split(text)
     chunks = Chunker().chunk_document(sections)
     return {"paper": path.name, "chars": len(text), "coverage": text_coverage(text, chunks),
-            "repeated": repeated_share(text), "sections": [s["section"] for s in sections]}
+            "repeated": repeated_share(text), "unreadable": unreadable_count(text),
+            "sections": [s["section"] for s in sections]}
 
 
 def _problem(r: dict) -> str:
@@ -44,6 +46,8 @@ def _problem(r: dict) -> str:
         return "LOST"
     if r["repeated"] > MAX_REPEATED:
         return "REPEAT"
+    if r["unreadable"] > MAX_UNREADABLE:
+        return "SYMBOLS"
     return ""
 
 
@@ -61,9 +65,9 @@ def main(args: list) -> int:
         problem = _problem(r)
         failed += bool(problem)
         print(f"{problem or 'ok':7} {r['paper'][:50]:50} {r['chars']:8,} chars  coverage {r['coverage']:6.1%}  "
-              f"repeated {r['repeated']:5.1%}  {r['sections']}")
-    print(f"\n{len(files) - failed}/{len(files)} papers passed "
-          f"(coverage >= {MIN_COVERAGE:.0%}, repeated <= {MAX_REPEATED:.0%}, not empty)")
+              f"repeated {r['repeated']:5.1%}  unreadable {r['unreadable']:3}  {r['sections']}")
+    print(f"\n{len(files) - failed}/{len(files)} papers passed (coverage >= {MIN_COVERAGE:.0%}, "
+          f"repeated <= {MAX_REPEATED:.0%}, unreadable <= {MAX_UNREADABLE}, not empty)")
     return 1 if failed else 0
 
 

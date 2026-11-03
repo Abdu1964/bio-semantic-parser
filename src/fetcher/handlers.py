@@ -81,14 +81,14 @@ class XMLHandler:
     _SKIP = {"title", "label", "ref-list", "fn-group", "ack", "glossary"}
 
     def _extract_pmc_sections(self, root) -> str:
-        # Each paragraph once, in document order, under its nearest section title
+        # Each paragraph once, in document order; each section title once, on its own line
         sections = []
 
-        def emit(title, paragraphs):
+        def emit(paragraphs):
             if paragraphs:
-                sections.append((f"{title}\n" if title else "") + " ".join(paragraphs))
+                sections.append(" ".join(paragraphs))
 
-        def walk(el, title):
+        def walk(el):
             paragraphs = []
             for child in el:
                 if child.tag == "p":
@@ -96,18 +96,18 @@ class XMLHandler:
                     if text:
                         paragraphs.append(text)
                 elif child.tag not in self._SKIP:
-                    emit(title, paragraphs)
+                    emit(paragraphs)
                     paragraphs = []
-                    if child.tag == "sec":
-                        t = child.find("title")
-                        walk(child, "".join(t.itertext()).strip() if t is not None else "unknown")
-                    else:
-                        walk(child, title)              # figures, lists, boxed text
-            emit(title, paragraphs)
+                    t = child.find("title") if child.tag == "sec" else None
+                    title = " ".join("".join(t.itertext()).split()) if t is not None else ""
+                    if title:
+                        sections.append(title)          # also for sections made only of subsections
+                    walk(child)                         # subsections, figures, lists, boxed text
+            emit(paragraphs)
 
         for part in (root.find(".//body"), root.find(".//back")):
             if part is not None:
-                walk(part, "")
+                walk(part)
 
         abstract = root.find(".//abstract")
         if abstract is not None:
@@ -175,5 +175,6 @@ class PDFHandler:
         else:
             # local file path
             doc = fitz.open(content)
-        texts = [page.get_text() for page in doc]
+        from src.fetcher.pdf_glyphs import repair_glyphs
+        texts = [repair_glyphs(page, page.get_text()) for page in doc]   # symbol-font glyphs (β, κ, °)
         return PAGE_BREAK.join(texts)   # page boundaries kept for Layer 3 cleaning

@@ -7,10 +7,11 @@ from src.fetcher.format_detector import FormatDetector
 from src.fetcher.handlers import JSONHandler, XMLHandler, HTMLHandler, PDFHandler, TextHandler
 from src.fetcher.cleaner import TextCleaner
 from src.fetcher.coref_client import CorefClient
+from src.fetcher.coref_guard import guard
 from src.fetcher.section_splitter import SectionSplitter
 from src.fetcher.chunker import Chunker
 from src.fetcher.metadata_attacher import MetadataAttacher
-from src.quality import coverage_line, repeated_line
+from src.quality import coverage_line, repeated_line, unreadable_line
 
 load_dotenv()
 
@@ -148,7 +149,9 @@ class Fetcher:
             )
         log(f"           Service : ONLINE  ({coref_url})")
         text_before = text
-        text = self.coref_client.resolve(text)
+        text, kept, refused = guard(text_before, self.coref_client.resolve(text))   # pronouns only
+        if kept or refused:
+            log(f"           Guard: {kept} pronoun rewrite(s) kept, {refused} name/phrase rewrite(s) refused")
         rewrites = _find_coref_rewrites(text_before, text)
         if rewrites:
             log(f"           Rewrites: {len(rewrites)} sentence(s) changed")
@@ -171,6 +174,7 @@ class Fetcher:
         log(f"           ✓ {len(chunks)} chunk(s) produced")
         log(coverage_line(text, chunks))
         log(repeated_line(text))
+        log(unreadable_line(text))
 
         # Step 7 — metadata attachment
         log("  Step 7 — Attaching metadata...")
