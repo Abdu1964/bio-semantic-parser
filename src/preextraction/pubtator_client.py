@@ -22,7 +22,8 @@ def fetch_pubtator_entities(pmid: str, timeout: int = 15) -> List[Dict]:
     Returns an empty list on network failure or missing PMID.
     """
     try:
-        resp = requests.get(_PUBTATOR3_URL, params={"pmids": pmid}, timeout=timeout)
+        from src.api_cache import cached_get
+        resp = cached_get(_PUBTATOR3_URL, params={"pmids": pmid}, timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
     except requests.exceptions.Timeout:
