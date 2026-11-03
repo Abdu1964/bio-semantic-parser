@@ -138,6 +138,7 @@ def cached_get(url: str, **kwargs):
     hit = lookup("GET", url, **kwargs)
     if hit is not None:
         return hit
-    resp = requests.get(url, **kwargs)
+    from src.registry import host_limits
+    resp = host_limits.send(requests.get, url, **kwargs)     # registered pace and key
     remember("GET", url, resp, **kwargs)
     return resp

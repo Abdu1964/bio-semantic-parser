@@ -57,10 +57,11 @@ def _http_request_online(send, url, *args, **kwargs):
     if time.time() < _host_paused_until.get(host, 0):
         _net_state.errors = getattr(_net_state, "errors", 0) + 1
         raise HostPausedError(f"{host} paused after repeated failures")
+    from src.registry import host_limits
     try:
-        resp = send(url, *args, **kwargs)
+        resp = host_limits.send(send, url, *args, **kwargs)        # registered pace and key; 429 waits and retries
         code = getattr(resp, "status_code", 200)
-        if code == 429 or code >= 500:                            # overloaded or down: retry later, like a timeout
+        if code == 429 or code >= 500:                            # still refused, or down: retry later
             raise requests.exceptions.ConnectionError(f"{host} answered HTTP {code}")
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
         _net_state.errors = getattr(_net_state, "errors", 0) + 1
@@ -1049,9 +1050,21 @@ _GENE_SUFFIX_STRIP = re.compile(
 )
 
 
+_MOLECULE_FORM = re.compile(r"^(\S+)\s+(mRNAs?|transcripts?|proteins?)$", re.I)
+
+
+def _symbol_like(word: str) -> bool:
+    """One token shaped like a gene symbol: has a digit, or no lowercase ASCII letter ('IL6', 'PPARG', 'IL-1β')."""
+    return bool(re.search(r"\d", word)) or not re.search(r"[a-z]", word)
+
+
 def _strip_gene_suffix(text: str) -> Optional[str]:
-    """Strip qualifier suffix from gene names (e.g. 'PIGV mutations' → 'PIGV'). Returns None if nothing to strip."""
+    """Strip qualifier suffix from gene names (e.g. 'PIGV mutations' → 'PIGV', 'PTGS2 mRNAs' → 'PTGS2').
+    Returns None if nothing to strip."""
     stripped = _GENE_SUFFIX_STRIP.sub("", text).strip()
+    m = _MOLECULE_FORM.match(stripped)
+    if m and _symbol_like(m.group(1)):             # 'C-reactive protein' stays whole
+        stripped = m.group(1)
     return stripped if stripped and stripped.lower() != text.lower() else None
 
 
@@ -1067,6 +1080,21 @@ def _ensembl_search(text: str, species: str = "human",
     return result
 
 
+def _ensembl_local_gene(candidates: list, species: str) -> Optional[tuple]:
+    """(ENSEMBL id, symbol, '') from the local Ensembl index when exactly one gene has this symbol;
+    the symbol as written first, then without hyphens, dots or spaces ('IL-6' → Il6)."""
+    from src import ensembl_local
+    slug = species if "_" in species else _ensembl_species_slug(species)
+    if not ensembl_local.has_species(slug):
+        return None
+    forms = [c for c in candidates if c] + [re.sub(r"[-.\s]", "", c) for c in candidates if c]
+    for form in dict.fromkeys(forms):
+        hits = ensembl_local.symbol(form, slug)
+        if len(hits) == 1:                         # one gene with this symbol; several = ambiguous → REST
+            return (f"ENSEMBL:{hits[0][0]}", hits[0][1], "")
+    return None
+
+
 def _ensembl_search_uncached(text: str, species: str = "human",
                              timeout: int = _TIMEOUT, retries: int = 2) -> Optional[tuple]:
     """Ensembl gene for a symbol — returns (canonical_id, display_name). Ensembl's own released gene index
@@ -1076,13 +1104,9 @@ def _ensembl_search_uncached(text: str, species: str = "human",
     if stripped:
         candidates.append(stripped)
 
-    from src import ensembl_local
-    slug = species if "_" in species else _ensembl_species_slug(species)
-    if ensembl_local.has_species(slug):
-        for candidate in candidates:
-            hits = ensembl_local.symbol(candidate, slug)
-            if len(hits) == 1:                     # one gene with this symbol; several = ambiguous → REST
-                return (f"ENSEMBL:{hits[0][0]}", hits[0][1], "")
+    local = _ensembl_local_gene(candidates, species)
+    if local:
+        return local
 
     last_err = None
     for candidate in candidates:
@@ -1941,6 +1965,14 @@ def _normalize_entity_core(
             if not _is_confidently_wrong(text, ulabel, usynonyms):
                 return {"canonical_id": uid, "canonical_name": ulabel, "id_source": "uniprot",
                         "ontology_prefix": uprefix, "needs_review": False, "synonyms": usynonyms}
+
+    # ── Priority 4b: a protein named by its gene's symbol — the local Ensembl index, no network ──
+    if entity_type == "PROTEIN":
+        species_slug = _ensembl_species_slug(species)
+        local = _ensembl_local_gene([text, _strip_gene_suffix(text)], species_slug)
+        if local:
+            return {"canonical_id": local[0], "canonical_name": local[1], "id_source": "ensembl",
+                    "ontology_prefix": "", "needs_review": False, "ensembl_species": species_slug}
 
     # ── Priority 5: OLS4 universal search ──────────────────────────────────────
     ontologies = _TYPE_TO_ONTOLOGIES.get(entity_type, [])
