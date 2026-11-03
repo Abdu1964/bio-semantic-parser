@@ -452,12 +452,12 @@ TAXONOMY: Dict[RelationType, dict] = {
         "not_this": "Use DOWNREGULATES if the effect is on mRNA or protein abundance. Use PREVENTS if A stops a process or event from occurring.",
     },
     RelationType.UPREGULATES: {
-        "definition": "A increases the expression level of B — specifically mRNA abundance or protein abundance as measured by sequencing, qPCR, or proteomics.",
+        "definition": "A increases the expression level of B — specifically mRNA abundance or protein abundance as measured by sequencing, qPCR, or proteomics. B must be a gene, transcript or protein; A may be a molecule, treatment, condition or disease state compared with its control.",
         "example": "Fasting upregulates SIRT1 mRNA expression 2.5-fold in mouse liver.",
         "not_this": "Use ACTIVATES if the effect is on protein activity rather than abundance. Use TRANSCRIBES_TO if the transcription event itself is described.",
     },
     RelationType.DOWNREGULATES: {
-        "definition": "A decreases the expression level of B — specifically mRNA or protein abundance as measured by molecular assays (sequencing, qPCR, proteomics). Strictly molecular: subject and object must be genes, proteins, or molecular entities.",
+        "definition": "A decreases the expression level of B — specifically mRNA or protein abundance as measured by molecular assays (sequencing, qPCR, proteomics). B must be a gene, transcript or protein; A may be a molecule, treatment, condition or disease state compared with its control.",
         "example": "Ageing downregulates FOXO3 protein levels in human skeletal muscle.",
         "not_this": "Use INHIBITS if the effect is on protein activity rather than abundance. Use PREVENTS if A blocks a process. Use REGULATES if the subject is a dietary factor, clinical intervention, or physiological condition affecting a non-molecular outcome (e.g. sodium intake and blood pressure — use REGULATES, not DOWNREGULATES).",
     },
