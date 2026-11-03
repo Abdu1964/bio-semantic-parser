@@ -39,9 +39,13 @@ _SLOW_HOSTS = {"rest.ensembl.org": int(os.getenv("ENSEMBL_READ_TIMEOUT", "50"))}
 
 
 def _http_request(send, url, *args, **kwargs):
+    from src import local_sources
     from src.api_cache import lookup, remember
     method = "POST" if send is requests.post else "GET"
-    stored = lookup(method, url, **kwargs)          # the local copy first; online only the first time
+    copy = local_sources.answer(method, url, **kwargs)  # a full local copy of the source answers first
+    if copy is not None:
+        return copy
+    stored = lookup(method, url, **kwargs)          # then a stored answer; online only the first time
     if stored is not None:
         return stored
     resp = _http_request_online(send, url, *args, **kwargs)
@@ -1112,6 +1116,10 @@ def _ensembl_local_gene(candidates: list, species: str) -> Optional[tuple]:
         hits = ensembl_local.symbol(form, slug)
         if len(hits) == 1:                         # one gene with this symbol; several = ambiguous → REST
             return (f"ENSEMBL:{hits[0][0]}", hits[0][1], "")
+    for form in dict.fromkeys(forms):              # an alias ('TNF-alpha'): NCBI Gene's synonyms, Ensembl link
+        hit = _ncbi_gene_local(form, slug.replace("_", " "))
+        if hit and hit["canonical_id"].startswith("ENSEMBL:") and ensembl_local.gene(hit["canonical_id"][8:]):
+            return (hit["canonical_id"], hit["canonical_name"], "")
     return None
 
 
@@ -1420,6 +1428,11 @@ _ABBREV_BINOMIAL_RE = re.compile(r"^([A-Z])\.\s*([a-z][a-z-]+)$")
 
 def _ncbi_taxon_candidates(term: str, retmax: int = 5, timeout: int = _TIMEOUT) -> list:
     """NCBI Taxonomy eSearch + eSummary → [(taxid, scientific_name, common_name, rank)]."""
+    if "[" not in term:                                   # plain names: the local copy knows every exact name
+        from src.local_sources import ontology
+        local = ontology.taxon_candidates(term, retmax)
+        if local:
+            return local
     try:
         r = _http_get(f"{_NCBI_BASE}/esearch.fcgi",
                          params={"db": "taxonomy", "term": term, "retmax": retmax, "retmode": "json"},
@@ -1783,8 +1796,35 @@ def _expand_abbreviated_binomial(text: str) -> Optional[str]:
     return None
 
 
+def _taxid(species: str) -> str:
+    """NCBI Taxonomy ID of an organism name, from the local copy or the common-organism table ('' if unknown)."""
+    from src.local_sources import ontology
+    hits = ontology.taxon_candidates(species or "Homo sapiens") or []
+    return hits[0][0] if hits else (_local_taxon(species or "Homo sapiens") or "")
+
+
+def _ncbi_gene_local(text: str, species: str) -> Optional[dict]:
+    """NCBI Gene from its local copy: the gene whose symbol, else synonym, is the text in this organism."""
+    from src.local_sources import ncbi_gene
+    tax = _taxid(species)
+    if not (ncbi_gene.available() and ncbi_gene.has_taxon(tax)):
+        return None
+    hit = ncbi_gene.find(text, tax)
+    if not hit:
+        return None
+    risk = text.strip().lower() not in {hit["symbol"].lower()} | {s.strip().lower() for s in hit["synonyms"].split("; ")}
+    if hit["ensembl"]:
+        return {"canonical_id": f"ENSEMBL:{hit['ensembl']}", "canonical_name": hit["symbol"], "id_source": "ensembl",
+                "ontology_prefix": "", "needs_review": risk, "synonyms": hit["synonyms"]}
+    return {"canonical_id": f"NCBI_GENE:{hit['gene_id']}", "canonical_name": hit["symbol"], "id_source": "ncbi_gene",
+            "ontology_prefix": "", "needs_review": risk, "synonyms": hit["synonyms"]}
+
+
 def _ncbi_gene(text: str, species: str = "") -> Optional[dict]:
     """NCBI Gene lookup in the stated species (any organism); Ensembl ID when NCBI links one."""
+    local = _ncbi_gene_local(text, species)
+    if local:
+        return local
     gid = _ncbi_search(text, "gene", "NCBI_GENE:", f"{species or 'Homo sapiens'}[Organism]",
                        fields=("sym", "Gene Name"))
     if not gid:
@@ -2602,7 +2642,9 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
     out: list = [None] * len(records)
     done = [0]
     from src.api_cache import reset_stats
+    from src import local_sources
     reset_stats()
+    local_sources.reset_stats()
     _failed_requests.clear()
     named = collections.Counter(r.get("species") for r in records if r.get("species"))
     if named:
@@ -2660,8 +2702,9 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
         still = sum(1 for i in retry if out[i].get("subject_network_degraded") or out[i].get("object_network_degraded"))
         say(f"{'✓' if not still else '⚠'} Retry {rnd}/{_NETWORK_RETRY_ROUNDS}: {len(retry) - still} resolved, {still} still failing")
     from src.api_cache import stats
-    st = stats()
-    if st["local"] or st["online"]:
-        say(f"Lookups: {st['local']:,} answered from the local store, {st['online']:,} online"
-            f" ({st['stored']:,} stored for next time)")
+    from src import local_sources
+    st, copies = stats(), local_sources.stats()["answered"]
+    if st["local"] or st["online"] or copies:
+        say(f"Lookups: {copies:,} answered from local copies, {st['local']:,} from stored answers, "
+            f"{st['online']:,} online ({st['stored']:,} stored for next time)")
     return merge_same_molecule(merge_synonym_concepts(out))
