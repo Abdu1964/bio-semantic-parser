@@ -171,6 +171,7 @@ def process(
             lambda rec: _chunk_map.get((rec["document_id"], rec.get("chunk_index", 0)), {}),
             workers=int(os.getenv("NORMALIZATION_WORKERS", "8")),
             progress=_progress,
+            notify=lambda msg: step_cb(1, "Entity Normalization", msg) if step_cb else log(msg),
         )
         for norm in records:
             s_id  = norm.get("subject_id", "?")
