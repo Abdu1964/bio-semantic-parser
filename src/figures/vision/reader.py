@@ -20,6 +20,7 @@ _TILE_FROM = int(os.getenv("FIGURE_TILE_FROM", "1200"))      # larger figures al
 _MAX_TOKENS = int(os.getenv("FIGURE_OUTPUT_TOKENS", "3000"))
 _MAX_RELATIONS = int(os.getenv("FIGURE_MAX_RELATIONS", "30"))   # keeps dense figures within the output limit
 _TIMEOUT = int(os.getenv("FIGURE_TIMEOUT", "240"))              # seconds per model call
+_TIMEOUT = max(_TIMEOUT, _MAX_TOKENS // 10 + 60)                 # a full answer at 10 tokens/s still fits
 _MAX_OCR_CHARS = 4000
 # expressed_in is for genes and their products; a cell type in a tissue is part_of it.
 _MOLECULAR = {"GENE", "PROTEIN", "TRANSCRIPT", "EXON", "NON_CODING_RNA", "MICRO_RNA", "SI_RNA"}
