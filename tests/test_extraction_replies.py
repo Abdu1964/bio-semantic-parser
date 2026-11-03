@@ -62,3 +62,22 @@ def test_long_chunk_is_split_until_replies_fit(fake_llm):
     result = extractor.extract({"text": text})
     assert not result.rejected
     assert {r.object_name for r in result.relations} == set(genes)
+
+
+def test_negation_pass_adds_negative_findings_once(fake_llm):
+    def answer(prompt):
+        if "negative findings" in prompt:
+            return _reply([dict(_rel("RTD-1", "GAPDH", "regulates"), negated=True)])
+        return _reply([_rel("RTD-1", "CCL7")])
+    fake_llm(answer)
+    result = extractor.extract({"text": "RTD-1 suppressed CCL7. GAPDH was unaffected by RTD-1."})
+    assert [(r.object_name, r.negated) for r in result.relations] == [("CCL7", False), ("GAPDH", True)]
+
+
+def test_non_viable_relation_without_type_does_not_break_negation_pass(fake_llm):
+    not_viable = {"extraction_viable": False, "subject_name": "", "subject_type": "OTHER", "relation": None,
+                  "object_name": "", "object_type": "OTHER", "negated": False, "confidence": 0.0,
+                  "reasoning": "No biological relation is stated in this methods sentence about tissue handling."}
+    fake_llm(lambda prompt: _reply([] if "negative findings" in prompt else [_rel("RTD-1", "CCL7"), not_viable]))
+    result = extractor.extract({"text": "RTD-1 suppressed CCL7. Tissue was stored at -80C."})
+    assert not result.rejected and "CCL7" in [r.object_name for r in result.relations]

@@ -34,3 +34,8 @@ def test_long_paper_has_no_repeated_text():
                    f"<p>Subsection {i} shows that knockdown of G{i} reduces the expression of target T{i} "
                    f"in the same fibroblasts.</p></sec></sec>" for i in range(20))
     assert repeated_share(_read(secs)) == 0
+
+
+def test_section_made_only_of_subsections_keeps_its_title():
+    text = _read("<sec><title>RESULTS</title><sec><title>3.1 Lifespan</title><p>Median lifespan rose by 25%.</p></sec></sec>")
+    assert text.index("RESULTS") < text.index("3.1 Lifespan") < text.index("Median lifespan")
