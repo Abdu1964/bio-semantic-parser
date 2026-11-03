@@ -74,7 +74,7 @@ def run_layer6(emit, doc_id, _safe_id, tagged_chunks, _completed_layers):
                     _log(emit, 6, f"  Chunk {i+1} [{chunk.get('section', '?')}]: REJECTED after 3 retries")
                 elif viable_rels:
                     for rel in viable_rels:
-                        _log(emit, 6, f"  Chunk {i+1} [{chunk.get('section', '?')}]: {rel.subject_name} →{rel.relation}→ {rel.object_name} (conf: {rel.confidence:.2f})")
+                        _log(emit, 6, f"  Chunk {i+1} [{chunk.get('section', '?')}]: {rel.subject_name} →{getattr(rel.relation, 'value', rel.relation)}→ {rel.object_name} (conf: {rel.confidence:.2f})")
                 else:
                     _log(emit, 6, f"  Chunk {i+1} [{chunk.get('section', '?')}]: no viable relation")
             return i, batch

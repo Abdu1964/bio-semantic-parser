@@ -46,6 +46,14 @@ _REF_HEADING = re.compile(
 # DOI/URL trailing an entry.
 _TRAILING_LINK = re.compile(r"\s*(?:https?://\S+|doi:\s*\S+)")
 
+# Reference lists in any citation style: a long chain of author names with initials
+# ("Ahrens D, Koch AE," "Fulco, C.P., Nasser, J.,"), names close together.
+_REF_AUTHOR = re.compile(r"\b[A-Z][a-zA-Z'’\-]{1,30},?\s{1,3}(?:[A-Z]\.?\s?){1,3}(?:,|\.(?=\s)|\s(?:and|&)\s)")
+_REF_CHAIN_GAP, _REF_MERGE_GAP = 400, 800        # chars between names / between chains
+_REF_MIN_NAMES, _REF_MIN_SPAN = 15, 1500         # a byline is shorter than a reference list
+_REF_ENTRY_END = re.compile(r"(?:19|20)\d\d[a-z]?\)?[.;]|\d+\s?[–-]\s?\d+\.|doi:\s?\S+|https?://\S+")
+_REF_NUMBER = re.compile(r"(?:\[\d{1,4}\]|\b\d{1,4}\.)\s*$")
+
 
 class TextCleaner:
 
@@ -53,7 +61,7 @@ class TextCleaner:
         r"©.*?\.",
         r"copyright.*?\.",
         r"all rights reserved.*?\.",
-        r"doi:.*?\s",
+        r"doi:\s*10\.\d{4,9}/[^\s—–]+[—–]?",     # DOI syntax and its separator dash; the next word stays
         r"pmid:.*?\s",
         r"epub ahead of print.*?\.",
         r"conflict of interest.*?\.",
@@ -64,6 +72,7 @@ class TextCleaner:
 
     def __init__(self):
         self.references_removed = 0
+        self.reference_chars_removed = 0
         self.furniture_lines_removed = 0
         self.toc_pages_removed = 0
         self.hyphens_rejoined = 0
@@ -74,6 +83,7 @@ class TextCleaner:
         text = self._remove_page_noise(text)
         text = self._rejoin_hyphenation(text)
         text = self._remove_reference_entries(text)
+        text = self._remove_reference_blocks(text)
         text = self._remove_boilerplate(text)
         text = self._normalize_whitespace(text)
         return text.strip()
@@ -189,6 +199,40 @@ class TextCleaner:
         self.references_removed = len(spans)
         cleaned = "".join(out)
         return _REF_HEADING.sub(" ", cleaned)
+
+    def _remove_reference_blocks(self, text: str) -> str:
+        """Drop reference lists by shape — dense chains of author names — whatever the citation style."""
+        names = [m for m in _REF_AUTHOR.finditer(text)]
+        chains = []
+        for m in names:
+            if chains and m.start() - chains[-1][-1].end() <= _REF_CHAIN_GAP:
+                chains[-1].append(m)
+            else:
+                chains.append([m])
+        merged = []
+        for c in chains:
+            if merged and c[0].start() - merged[-1][-1].end() <= _REF_MERGE_GAP:
+                merged[-1] += c
+            else:
+                merged.append(c)
+        blocks = []
+        for c in merged:
+            if len(c) < _REF_MIN_NAMES or c[-1].end() - c[0].start() < _REF_MIN_SPAN:
+                continue
+            start = c[0].start()
+            num = _REF_NUMBER.search(text, max(0, start - 8), start)
+            if num:
+                start = num.start()                               # entry number "12." or "[12]"
+            end = c[-1].end()
+            for m in _REF_ENTRY_END.finditer(text, end, min(len(text), end + 500)):
+                if m.start() - end > 200:
+                    break
+                end = m.end()                                     # last entry's title, journal, year, DOI
+            blocks.append((start, end))
+        self.reference_chars_removed = sum(e - s for s, e in blocks)
+        for start, end in reversed(blocks):
+            text = text[:start] + " " + text[end:]
+        return _REF_HEADING.sub(" ", text) if blocks else text
 
     def _remove_boilerplate(self, text: str) -> str:
         for pattern in self.BOILERPLATE_PATTERNS:

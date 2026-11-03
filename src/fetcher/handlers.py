@@ -77,19 +77,38 @@ class XMLHandler:
         # must contain at least one real word (3+ consecutive letters)
         return bool(re.search(r'[a-zA-Z]{3,}', text))
 
+    # Back matter that is not paper content
+    _SKIP = {"title", "label", "ref-list", "fn-group", "ack", "glossary"}
+
     def _extract_pmc_sections(self, root) -> str:
+        # Each paragraph once, in document order; each section title once, on its own line
         sections = []
-        for sec in root.iter("sec"):
-            title = sec.find("title")
-            title_text = title.text.strip() if title is not None and title.text else "unknown"
-            paragraphs = []
-            for p in sec.iter("p"):
-                texts = "".join(p.itertext()).strip()
-                if texts:
-                    paragraphs.append(texts)
+
+        def emit(paragraphs):
             if paragraphs:
-                sections.append(f"{title_text}\n" + " ".join(paragraphs))
-        
+                sections.append(" ".join(paragraphs))
+
+        def walk(el):
+            paragraphs = []
+            for child in el:
+                if child.tag == "p":
+                    text = "".join(child.itertext()).strip()
+                    if text:
+                        paragraphs.append(text)
+                elif child.tag not in self._SKIP:
+                    emit(paragraphs)
+                    paragraphs = []
+                    t = child.find("title") if child.tag == "sec" else None
+                    title = " ".join("".join(t.itertext()).split()) if t is not None else ""
+                    if title:
+                        sections.append(title)          # also for sections made only of subsections
+                    walk(child)                         # subsections, figures, lists, boxed text
+            emit(paragraphs)
+
+        for part in (root.find(".//body"), root.find(".//back")):
+            if part is not None:
+                walk(part)
+
         abstract = root.find(".//abstract")
         if abstract is not None:
             abstract_text = " ".join("".join(p.itertext()).strip() for p in abstract.iter("p"))
@@ -157,7 +176,8 @@ class PDFHandler:
             # local file path
             doc = fitz.open(content)
         from src.figures.ocr import page_text
-        texts = [page_text(page) for page in doc]          # OCR for scanned pages
+        from src.fetcher.pdf_glyphs import repair_glyphs
+        texts = [repair_glyphs(page, page_text(page)) for page in doc]   # OCR for scanned pages; symbol glyphs
         return PAGE_BREAK.join(texts)   # page boundaries kept for Layer 3 cleaning
 
 class DocxHandler:

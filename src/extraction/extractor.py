@@ -2,6 +2,7 @@ from __future__ import annotations
 """Layer 6 — LLM extraction engine. Builds prompts, calls Gemma, validates via Pydantic."""
 import concurrent.futures
 import json
+import logging
 import os
 import re
 import time
@@ -13,6 +14,8 @@ import httpx
 
 from src.schema.taxonomy import TAXONOMY, ENTITY_TAXONOMY, RelationType, EntityType
 from src.schema.pydantic_model import BiologicalRelation, ExtractionResult
+
+logger = logging.getLogger(__name__)
 
 # ── Config from .env ──────────────────────────────────────────────────────────
 _BASE_URL    = os.getenv("LLM_BASE_URL",    "http://localhost:11434/v1")
@@ -187,6 +190,17 @@ def _system_prompt() -> str:
         "   study-specific group label ('O lines', 'delayed-breeding populations', '156 genes', "
         "   'treated group'). Use the specific entity the text refers to (e.g. the organism, gene or "
         "   phenotype); if there is none, set extraction_viable=false for that relation.\n"
+        "11. Negative findings are relations too. When the text reports that A did NOT change, affect, "
+        "   regulate or associate with B (B was unaffected, unaltered or not elevated), extract that "
+        "   relation with negated=true — even when Layer 4 flagged no negation.\n"
+        "12. Use a directional relation (upregulates/downregulates, activates/inhibits) only when the text "
+        "   states the direction for that entity. If it says levels were reversed, restored or normalized, "
+        "   the direction is opposite to the change the text reports for that entity; if no such change is "
+        "   stated, use regulates.\n"
+        "13. When the text reports a change in an entity's level, extract the change (with the tissue in the "
+        "   tissue field), not an additional expressed_in relation.\n"
+        "14. Extract biological findings only — never how the experiment was done (reference genes used for "
+        "   normalization, reagents, kits, instruments, cell lines used as tools).\n"
     )
 
 
@@ -263,6 +277,44 @@ def _is_truncation_error(error: str) -> bool:
     ]
     return any(s.lower() in error.lower() for s in truncation_signals)
 
+_MAX_SPLIT_DEPTH = 2           # halves, then quarters
+
+
+def _valid_relations(raw_relations: list) -> list:
+    """Every relation that validates; one bad relation no longer loses the rest.
+    Raises the first error when none are valid, so the reply is retried."""
+    relations, first_error = [], None
+    for r in raw_relations:
+        try:
+            relations.append(BiologicalRelation(**r))
+        except (ValidationError, TypeError) as e:
+            first_error = first_error or e
+    if raw_relations and not relations and first_error:
+        raise first_error
+    return relations
+
+
+def _salvage_relations(raw: str) -> list:
+    """The complete relations of a reply cut off at the output limit."""
+    start = raw.find("[", raw.find('"relations"'))
+    if start < 0:
+        return []
+    decoder, found, i = json.JSONDecoder(), [], start + 1
+    while True:
+        while i < len(raw) and raw[i] in " \t\r\n,":
+            i += 1
+        try:
+            obj, i = decoder.raw_decode(raw, i)
+        except ValueError:
+            break
+        if isinstance(obj, dict):
+            found.append(obj)
+    try:
+        return _valid_relations(found)
+    except (ValidationError, TypeError):
+        return []
+
+
 def _split_chunk(chunk: dict) -> list:
     """Split a chunk's text in half at a sentence boundary, returning two sub-chunks (with other metadata)."""
     text = chunk.get("text", "")
@@ -279,7 +331,52 @@ def _split_chunk(chunk: dict) -> list:
 
 # ── Core extraction ───────────────────────────────────────────────────────────
 
+_NEGATION_PASS = os.getenv("NEGATION_PASS", "true").lower() == "true"
+
+_NEGATION_ASK = (
+    "List ONLY the negative findings in the text above: statements that an entity did NOT change, "
+    "affect, regulate or associate with another (B was unaffected by A; X was not elevated in C; "
+    "A had no effect on B). Return them as relations with negated=true, using the same JSON format. "
+    "Return an empty relations list if there are none. Return JSON only."
+)
+
+
+def _negative_findings(chunk: dict) -> list:
+    """A second, small pass for negative findings, which the main pass tends to skip."""
+    messages = [{"role": "system", "content": _get_system_prompt()},
+                {"role": "user", "content": f"SECTION: {chunk.get('section', 'unknown')}\n\nTEXT:\n"
+                                            f"{chunk.get('text', '')}\n\n{_NEGATION_ASK}"}]
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        response = pool.submit(lambda: _client().chat.completions.create(
+            model=_MODEL, messages=messages, temperature=_TEMPERATURE, max_tokens=_OUT_RESERVE,
+            response_format={"type": "json_object"})).result(timeout=_WALL_TIMEOUT)
+        raw = response.choices[0].message.content or ""
+        try:
+            relations = _valid_relations(_parse_json(raw).get("relations", []))
+        except (json.JSONDecodeError, ValidationError, TypeError, AttributeError):
+            relations = _salvage_relations(raw)
+        return [r for r in relations if r.negated and r.relation and r.extraction_viable]
+    except Exception as e:
+        logger.warning("Negation pass skipped for a chunk: %s", e)
+        return []
+    finally:
+        pool.shutdown(wait=False)
+
+
 def extract(chunk: dict, _depth: int = 0) -> ExtractionResult:
+    """Extract relations from one chunk, then add the negative findings a second pass finds."""
+    result = _extract_main(chunk, _depth)
+    if _depth or result.rejected or not _NEGATION_PASS:
+        return result
+    key = lambda r: (r.subject_name.lower(), r.relation.value if r.relation else "", r.object_name.lower())
+    seen = {(*key(r), bool(r.negated)) for r in result.relations}
+    extra = [r for r in _negative_findings(chunk)
+             if r.relation and (*key(r), True) not in seen]                    # non-viable ones have no relation
+    return ExtractionResult(relations=result.relations + extra) if extra else result
+
+
+def _extract_main(chunk: dict, _depth: int = 0) -> ExtractionResult:
     """
     Extract biological relations from one annotated chunk.
 
@@ -336,18 +433,17 @@ def extract(chunk: dict, _depth: int = 0) -> ExtractionResult:
 
             data          = _parse_json(last_raw)
             raw_relations = data.get("relations", [data])
-            relations     = [BiologicalRelation(**r) for r in raw_relations]
-            return ExtractionResult(relations=relations)
+            return ExtractionResult(relations=_valid_relations(raw_relations))
 
         except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
             last_error = str(exc)
 
-            if _is_truncation_error(last_error) and _depth == 0:
-                sub_chunks    = _split_chunk(chunk)
-                all_relations = []
-                for sc in sub_chunks:
-                    sub_result = extract(sc, _depth=1)
-                    all_relations.extend(sub_result.relations)
+            if _is_truncation_error(last_error):
+                # Keep what the cut-off reply finished, then read the chunk in smaller parts
+                all_relations = _salvage_relations(last_raw)
+                if _depth < _MAX_SPLIT_DEPTH and ". " in chunk.get("text", ""):
+                    for sc in _split_chunk(chunk):
+                        all_relations.extend(extract(sc, _depth=_depth + 1).relations)
                 seen, unique = set(), []
                 for r in all_relations:
                     key = (getattr(r, "subject_name", "").lower(),
