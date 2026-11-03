@@ -10,7 +10,7 @@ first; if False, all biological fields stay at defaults. Validation rules:
 """
 from __future__ import annotations
 from typing import List, Optional
-from pydantic import BaseModel, Field, model_validator
+from pydantic import field_validator, BaseModel, Field, model_validator
 
 from .taxonomy import EntityType, RelationType
 
@@ -129,6 +129,26 @@ class BiologicalRelation(BaseModel):
             "'2.5-fold increase', 'hazard ratio 5.67'. Empty if not stated."
         )
     )
+
+    source: str = Field(
+        default="study",
+        description="'study' for this paper's own results; 'cited' for findings it attributes to earlier work."
+    )
+    evidence: str = Field(
+        default="measured",
+        description="'measured' for observed results; 'predicted' for activity inferred by an analysis "
+                    "(upstream regulator or pathway analysis, z-scores, enrichment)."
+    )
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _source_value(cls, v) -> str:
+        return "cited" if "cited" in str(v or "").lower() else "study"
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _evidence_value(cls, v) -> str:
+        return "predicted" if "predicted" in str(v or "").lower() else "measured"
 
     @model_validator(mode="after")
     def require_core_fields_when_viable(self) -> "BiologicalRelation":

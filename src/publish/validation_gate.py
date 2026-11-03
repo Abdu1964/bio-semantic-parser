@@ -120,7 +120,7 @@ def split_discards(human_review: list) -> tuple:
         if r.get("is_contradiction"):          # conflicting findings are always shown to a human
             keep.append(r)
             continue
-        reasons = []
+        reasons = [r["invalid_reason"]] if r.get("invalid_reason") else []
         if r.get("subject_id") and r.get("subject_id") == r.get("object_id"):
             reasons.append("subject and object are the same entity")
         if r.get("validation_verdict") == "REJECT":

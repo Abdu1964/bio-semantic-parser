@@ -193,6 +193,9 @@ def write(records: list, run_dir: Path = None) -> dict:
                         val = r.get(prop, "") or ""
                         if val:
                             f.write(f"({prop} {triple} {_metta_val(val)})\n")
+                    for prop, key in (("evidence_source", "source"), ("evidence_kind", "evidence")):
+                        if r.get(key):                              # this study or cited; measured or predicted
+                            f.write(f"({prop} {triple} {_metta_val(r[key])})\n")
 
                     reasoning = (r.get("reasoning", "") or "").strip()[:200]
                     if reasoning:

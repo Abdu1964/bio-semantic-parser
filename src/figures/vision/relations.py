@@ -92,7 +92,11 @@ def _same_entity(a: dict, b: dict, side: str) -> bool:
     if a.get(f"{side}_id") == b.get(f"{side}_id"):
         return True
     ga, gb = _genus(a.get("species") or ""), _genus(b.get("species") or "")
-    return bool(ga) and ga == gb and bool(_names(a, side) & _names(b, side))
+    if not (ga and ga == gb):
+        return False
+    from src.postextraction.entity_normalization import _symbol_key
+    sa, sb = _symbol_key(a.get(f"{side}_name") or ""), _symbol_key(b.get(f"{side}_name") or "")
+    return bool(_names(a, side) & _names(b, side)) or (bool(sa) and sa == sb)     # same symbol: 'RARA' / 'Rara'
 
 
 def corroborating_fact(record: dict, text_facts: list):
@@ -180,22 +184,39 @@ def figure_results(document_id: str, template: dict, first_index: int, log=None,
     return results, chunks
 
 
-def add_figure_relations(document_id: str, tagged_chunks: list, results: list, save_path=None, log=None) -> int:
-    """Append figure results and figure chunks in place (kept 1:1 for Layer 7); returns the relation count."""
+def start_figure_relations(document_id: str, tagged_chunks: list, log=None):
+    """Start reading the figures in the background — they need only the paper's text, not its results.
+    Returns finish(results, save_path) that adds them once the text results are in; finish returns the count."""
     log = log or (lambda m: None)
     if not enabled():
-        return 0
+        return lambda results, save_path=None: 0
+    template = tagged_chunks[0] if tagged_chunks else {"document_id": document_id}
+    paper_text = " ".join(str(c.get("text", "")) for c in tagged_chunks if c.get("section") != "figure")
+    pool = ThreadPoolExecutor(max_workers=1)
+    reading = pool.submit(figure_results, document_id, template, len(tagged_chunks), log, paper_text)
+    pool.shutdown(wait=False)
+
+    def finish(results: list, save_path=None) -> int:
+        try:
+            fig_results, fig_chunks = reading.result()
+        except Exception as e:
+            log(f"Figure relations skipped: {e}")
+            return 0
+        return _attach(tagged_chunks, results, fig_results, fig_chunks, save_path, log)
+    return finish
+
+
+def add_figure_relations(document_id: str, tagged_chunks: list, results: list, save_path=None, log=None) -> int:
+    """Append figure results and figure chunks in place (kept 1:1 for Layer 7); returns the relation count."""
+    return start_figure_relations(document_id, tagged_chunks, log)(results, save_path)
+
+
+def _attach(tagged_chunks: list, results: list, fig_results: list, fig_chunks: list, save_path, log) -> int:
+    """Figure results and their chunks after the text ones, kept 1:1."""
     if len(results) > len(tagged_chunks):
         log("Figure relations skipped: results and chunks are out of step")
         return 0
     results.extend(ExtractionResult(relations=[]) for _ in range(len(tagged_chunks) - len(results)))
-    try:
-        template = tagged_chunks[0] if tagged_chunks else {"document_id": document_id}
-        paper_text = " ".join(str(c.get("text", "")) for c in tagged_chunks if c.get("section") != "figure")
-        fig_results, fig_chunks = figure_results(document_id, template, len(tagged_chunks), log, paper_text)
-    except Exception as e:
-        log(f"Figure relations skipped: {e}")
-        return 0
     results.extend(fig_results)
     tagged_chunks.extend(fig_chunks)
     if save_path:

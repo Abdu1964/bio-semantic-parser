@@ -16,6 +16,13 @@ from src.postextraction import (
 
 from src.postextraction.confidence_scorer import score as _score_confidence
 
+# Targets of up/downregulates: molecules whose abundance changes; processes and outcomes (→ promotes/prevents)
+_EXPRESSED_TYPES = {"GENE", "PROTEIN", "TRANSCRIPT", "EXON", "NON_CODING_RNA", "MICRO_RNA", "SI_RNA",
+                    "MACROMOLECULAR_COMPLEX", "SMALL_MOLECULE"}
+_OUTCOME_TYPES = {"DISEASE", "CANCER", "PHENOTYPE", "SYMPTOM", "PATHWAY", "BIOLOGICAL_PROCESS", "REACTION",
+                  "MOLECULAR_FUNCTION", "PHYSIOLOGICAL_PROCESS", "PATHOLOGICAL_PROCESS", "CLINICAL_FINDING",
+                  "DISEASE_OUTCOME", "MORTALITY_OUTCOME", "BEHAVIORAL_OUTCOME", "EPIDEMIOLOGICAL_OUTCOME"}
+
 def _compute_confidence(relation, chunk: dict,
                         all_chunks = None) -> tuple:
     """
@@ -59,6 +66,8 @@ def _relation_to_record(
         "tissue":        relation.tissue,
         "condition":     relation.condition,
         "effect_size":   relation.effect_size,
+        "source":        getattr(relation, "source", "study"),
+        "evidence":      getattr(relation, "evidence", "measured"),
         "document_id":   chunk.get("document_id", ""),
         "source_name":   chunk.get("source_name", ""),
         "source_url":    chunk.get("source_url",  ""),
@@ -224,6 +233,25 @@ def process(
         log(f"  → {n_relation_fixed} relation(s) corrected: has_phenotype/has_symptom "
             f"didn't match subject's entity type")
 
+    # up/downregulates change a molecule's expression (taxonomy). A process or outcome target takes
+    # promotes/prevents (defined for "process or outcome B"); a place or cell type is no expression fact.
+    n_target_fixed = n_target_flagged = 0
+    for r in records:
+        rel = r.get("relation")
+        rel_val = rel.value if hasattr(rel, "value") else rel
+        obj_type = r.get("object_type", "")
+        if rel_val not in ("upregulates", "downregulates") or obj_type in _EXPRESSED_TYPES or obj_type in ("OTHER", ""):
+            continue
+        if obj_type in _OUTCOME_TYPES:
+            r["relation"] = "promotes" if rel_val == "upregulates" else "prevents"
+            n_target_fixed += 1
+        else:
+            r["invalid_reason"] = f"'{rel_val}' needs a gene, transcript or protein target, not a {obj_type.lower()}"
+            n_target_flagged += 1
+    if n_target_fixed or n_target_flagged:
+        log(f"  → expression relations: {n_target_fixed} with a process/outcome target became promotes/prevents, "
+            f"{n_target_flagged} with a non-molecular target discarded")
+
     # ── Entity ontology gate — flag non-biomedical triples ────────────────────
     # A triple is considered non-biomedical if BOTH subject and object fail to
     # resolve to any recognized ontology (both get TEXT: slugs or NEEDS_REVIEW).
@@ -305,7 +333,7 @@ def process(
                 opp_str = "?"
             detail(f"[{r['subject_name']}] -{r['relation']}→ [{r['object_name']}]"
                    f"  — opposite={opp_str}  ✓ no conflict found")
-    records = checked
+    records = contradiction_detection.prefer_text_over_figures(checked, records)
     contra_count = sum(1 for r in records if r.get("is_contradiction"))
     log(f"  → {contra_count} contradictions flagged for human review")
 

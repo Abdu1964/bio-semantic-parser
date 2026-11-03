@@ -110,7 +110,7 @@ def write(records: list, run_dir: Path = None) -> dict:
         "target_id", "target_name", "target_type",
         "relation",
         "confidence", "negated",
-        "species", "tissue", "condition", "effect_size",
+        "species", "tissue", "condition", "effect_size", "evidence_source", "evidence_kind",
         "source_paper", "section",
         "paper_source", "paper_url",
         "validation_verdict", "alignment_action",
@@ -166,6 +166,8 @@ def write(records: list, run_dir: Path = None) -> dict:
                         "tissue":              r.get("tissue",       ""),
                         "condition":           r.get("condition",    ""),
                         "effect_size":         r.get("effect_size",  ""),
+                        "evidence_source":     r.get("source",       "study"),   # this study or cited work
+                        "evidence_kind":       r.get("evidence",     "measured"),
                         "source_paper":        (r.get("document_id", "") or
                                                (json.loads(r.get("source_papers", "[]") or "[]") or [""])[0]),
                         "section":             r.get("section",      ""),
@@ -242,6 +244,8 @@ CALL apoc.periodic.iterate(
          r.tissue             = row.tissue,
          r.condition          = row.condition,
          r.effect_size        = row.effect_size,
+         r.evidence_source    = row.evidence_source,
+         r.evidence_kind      = row.evidence_kind,
          r.source_paper       = row.source_paper,
          r.section            = row.section,
          r.paper_source       = row.paper_source,

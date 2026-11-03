@@ -82,3 +82,33 @@ def flag_existing_as_contradiction(triple_id: int, reason: str) -> None:
     )
     conn.commit()
     conn.close()
+
+
+def _conflict(a: dict, b: dict) -> bool:
+    """Same entity pair with the opposite relation, or the same relation with the opposite negation."""
+    if (a.get("subject_id"), a.get("object_id")) != (b.get("subject_id"), b.get("object_id")):
+        return False
+    try:
+        ra, rb = RelationType(a.get("relation", "")), RelationType(b.get("relation", ""))
+    except ValueError:
+        return False
+    same_neg = bool(a.get("negated")) == bool(b.get("negated"))
+    return (ra == rb and not same_neg) or (OPPOSING_RELATIONS.get(ra) == rb and same_neg)
+
+
+def prefer_text_over_figures(checked: list, before: list) -> list:
+    """The paper's text outweighs a vision model's reading of a figure: a text fact whose only conflicts in
+    this paper are figure facts returns to how it was; the figure facts stay contradictions."""
+    out = list(checked)
+    for i, r in enumerate(checked):
+        if not r.get("is_contradiction") or r.get("section") == "figure":
+            continue
+        partners = [o for o in checked if o is not r and _conflict(r, o)]
+        if partners and all(o.get("section") == "figure" for o in partners):
+            out[i] = before[i]
+            for j, o in enumerate(checked):
+                if o in partners and not o.get("is_contradiction"):
+                    out[j] = {**o, "is_contradiction": True, "flagged_for_review": True,
+                              "review_reason": (o.get("review_reason", "") + " | CONTRADICTION: conflicts with "
+                                                "the paper's text").strip(" |")}
+    return out

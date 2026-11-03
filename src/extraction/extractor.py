@@ -24,8 +24,10 @@ _MODEL       = os.getenv("LLM_MODEL",       "gemma2:27b")
 _TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
 _MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 _QUEUE_PATH  = Path(os.getenv("REJECTED_QUEUE", "data/rejected.jsonl"))
-_OUT_RESERVE      = int(os.getenv("LLM_OUTPUT_TOKENS", "2048"))
+# Room for a dense chunk's answer: a cut-off answer is split and asked again, which costs far more
+_OUT_RESERVE      = int(os.getenv("LLM_EXTRACTION_OUTPUT_TOKENS", "5120"))
 _WALL_TIMEOUT     = int(os.getenv("LLM_WALL_TIMEOUT",  "300"))
+_WALL_TIMEOUT     = max(_WALL_TIMEOUT, _OUT_RESERVE // 10 + 60)   # a full answer at 10 tokens/s still fits
 _HEALTH_TIMEOUT   = float(os.getenv("LLM_HEALTH_TIMEOUT", "8"))   # raise for slow networks
 _COMPACT_TAXONOMY = os.getenv("LLM_COMPACT_TAXONOMY", "0").strip().lower() in ("1", "true", "yes")
 _MAX_ENTITIES     = int(os.getenv("LLM_MAX_ENTITIES", "0"))
@@ -70,14 +72,18 @@ Required JSON output format — return ONLY this structure, nothing else:
       "object_type":   "<EntityType value>",
       "negated":       false,
       "confidence":    0.0,
-      "reasoning":     "<min 50 chars — why this relation type, alternatives considered, verbatim supporting text>",
-      "species":       "<e.g. Homo sapiens — empty string if not stated>",
-      "tissue":        "<e.g. hippocampus — empty string if not stated>",
-      "condition":     "<e.g. caloric restriction — empty string if not stated>",
-      "effect_size":   "<e.g. 40% reduction — empty string if not stated>"
+      "reasoning":     "<one sentence of 12–25 words: why this relation type, quoting the supporting words>",
+      "species":       "<e.g. Homo sapiens>",
+      "tissue":        "<e.g. hippocampus>",
+      "condition":     "<e.g. caloric restriction>",
+      "effect_size":   "<e.g. 40% reduction>",
+      "source":        "<cited — only for earlier work the paper cites>",
+      "evidence":      "<predicted — only for activity inferred by an analysis>"
     }
   ]
 }
+
+Leave out species, tissue, condition and effect_size when the text does not state them, source when it is the paper's own result, and evidence when it was measured — keep answers short.
 
 If no relation can be extracted, return:
 {
@@ -201,6 +207,18 @@ def _system_prompt() -> str:
         "   tissue field), not an additional expressed_in relation.\n"
         "14. Extract biological findings only — never how the experiment was done (reference genes used for "
         "   normalization, reagents, kits, instruments, cell lines used as tools).\n"
+        "15. Findings the paper attributes to earlier work (a citation, 'previously', 'has been shown') are "
+        "   relations too: extract them with source=cited. The paper's own results have source=study.\n"
+        "16. Activity predicted by an analysis (upstream regulator or pathway analysis, z-scores, enrichment) "
+        "   is not a measured expression change: use activates/inhibits with evidence=predicted. Use "
+        "   upregulates/downregulates only for measured mRNA or protein levels (evidence=measured). The "
+        "   condition or treatment the analysis was run on is the subject and each regulator it lists is its "
+        "   own relation: 'regulators activated in the disease: X, Y' → disease activates X, disease activates Y.\n"
+        "17. Keep the scope the text gives a finding — time point, group (e.g. healthy vs diseased), cell or "
+        "   model system — in condition and tissue. A negated finding without its scope becomes false: if "
+        "   the text limits it, the scope is required.\n"
+        "18. Expand lists into one relation per member, with full names: 'MMPs 3, 8 and 13' → MMP3, MMP8, "
+        "   MMP13; 'IL-6 and IL-8 protein' → IL-6, IL-8. Never return a list or a fragment as one entity.\n"
     )
 
 
@@ -364,14 +382,44 @@ def _negative_findings(chunk: dict) -> list:
         pool.shutdown(wait=False)
 
 
+_MEMBER_LIST = re.compile(r"^([A-Z][A-Z-]+?)(s?)\s+(\d+[A-Za-z]?(?:\s*(?:,|and|&|,\s*and)\s*\d+[A-Za-z]?)*)$")
+
+
+def _members(name: str) -> list:
+    """A family with numbered members, one name each: 'MMPs 3, 8 and 13' → ['MMP3', 'MMP8', 'MMP13']."""
+    m = _MEMBER_LIST.match((name or "").strip())
+    numbers = re.findall(r"\d+[A-Za-z]?", m.group(3)) if m else []
+    if not m or not (m.group(2) or len(numbers) > 1):        # 'COVID 19', 'HLA-B 27' stay as written
+        return [name]
+    return [m.group(1) + n for n in numbers]
+
+
+def _expand_lists(relations: list) -> list:
+    """One relation per member when the model returned a numbered list as one entity."""
+    out = []
+    for r in relations:
+        subs, objs = _members(r.subject_name), _members(r.object_name)
+        if len(subs) == 1 and len(objs) == 1:
+            out.append(r)
+            continue
+        out += [r.model_copy(update={"subject_name": s, "object_name": o}) for s in subs for o in objs]
+    return out
+
+
 def extract(chunk: dict, _depth: int = 0) -> ExtractionResult:
     """Extract relations from one chunk, then add the negative findings a second pass finds."""
+    negatives = None
+    if not _depth and _NEGATION_PASS:                  # the second pass runs alongside the main one
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        negatives = pool.submit(_negative_findings, chunk)
+        pool.shutdown(wait=False)
     result = _extract_main(chunk, _depth)
-    if _depth or result.rejected or not _NEGATION_PASS:
+    result = result.model_copy(update={"relations": _expand_lists(result.relations)})
+    if negatives is None or result.rejected:
         return result
     key = lambda r: (r.subject_name.lower(), r.relation.value if r.relation else "", r.object_name.lower())
     seen = {(*key(r), bool(r.negated)) for r in result.relations}
-    extra = [r for r in _negative_findings(chunk)
+    extra = [r for r in negatives.result()
              if r.relation and (*key(r), True) not in seen]                    # non-viable ones have no relation
     return ExtractionResult(relations=result.relations + extra) if extra else result
 

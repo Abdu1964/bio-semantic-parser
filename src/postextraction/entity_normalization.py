@@ -1311,13 +1311,12 @@ def _uniprot_search(text: str, species: str = "Homo sapiens", timeout: int = _TI
         query = f'{text} AND organism_name:"{species}" AND reviewed:true'
         r = _http_get(
             "https://rest.uniprot.org/uniprotkb/search",
-            params={"query": query, "format": "json", "size": 1,
+            params={"query": query, "format": "json", "size": 5,
                     "fields": "accession,protein_name,gene_names"},
             headers={"Accept": "application/json"}, timeout=timeout,
         )
-        results = r.json().get("results", [])
-        if results:
-            entry = results[0]
+        hits = []
+        for entry in r.json().get("results", []):
             acc = entry.get("primaryAccession", "")
             if acc:
                 label = ""
@@ -1347,7 +1346,11 @@ def _uniprot_search(text: str, species: str = "Homo sapiens", timeout: int = _TI
                         if syn.get("value"):
                             syn_set.append(syn["value"])
                 synonyms = "; ".join(dict.fromkeys(s for s in syn_set if s.lower() != label.lower()))
-                return (f"UniProtKB:{acc}", label, "", synonyms)
+                hits.append((f"UniProtKB:{acc}", label, "", synonyms))
+        # The entry whose own names match the term exactly, else UniProt's top hit
+        exact = next((h for h in hits if match_quality(text, h[1], h[3].split("; ")) == EXACT), None)
+        if exact or hits:
+            return exact or hits[0]
     except Exception as e:
         logger.warning("UniProt search failed for %r (species=%s): %s", text, species, e)
     return None
@@ -1982,7 +1985,9 @@ def _normalize_entity_core(
         up = _uniprot_search(text, species=species or "Homo sapiens")
         if up:
             uid, ulabel, uprefix, usynonyms = up
-            if not _is_confidently_wrong(text, ulabel, usynonyms):
+            symbol = " " not in text.strip() and _symbol_like(text.strip())     # a symbol names one protein exactly
+            if (match_quality(text, ulabel, usynonyms.split("; ")) == EXACT if symbol
+                    else not _is_confidently_wrong(text, ulabel, usynonyms)):
                 return {"canonical_id": uid, "canonical_name": ulabel, "id_source": "uniprot",
                         "ontology_prefix": uprefix, "needs_review": False, "synonyms": usynonyms}
 
@@ -2372,6 +2377,12 @@ def _non_canonical_reason(text: str, canonical_id: str, canonical_name: str = ""
     return ""
 
 
+def _type_name_only(text: str, entity_type: str) -> str:
+    """'generic category term' when the entity is only its type's name ('disease' as a DISEASE)."""
+    words = set(tokens(text)) - _FILLER_WORDS
+    return "generic category term" if words and words == set(tokens((entity_type or "").replace("_", " "))) else ""
+
+
 def normalize_batch(records: list, chunk: dict) -> list:
     """Normalize a list of records against a single chunk."""
     return [normalize_record(r, chunk) for r in records]
@@ -2428,8 +2439,10 @@ def normalize_record(record: dict, annotated_chunk: dict) -> dict:
     object_type  = _correct_type_from_ontology(object_type, obj_norm["canonical_id"],
                                                obj_norm.get("ontology_prefix", ""))
 
-    subj_nc = _non_canonical_reason(subject_name, subj_norm["canonical_id"], subj_norm.get("canonical_name", ""))
-    obj_nc  = _non_canonical_reason(object_name, obj_norm["canonical_id"], obj_norm.get("canonical_name", ""))
+    subj_nc = (_non_canonical_reason(subject_name, subj_norm["canonical_id"], subj_norm.get("canonical_name", ""))
+               or _type_name_only(subject_name, subject_type))
+    obj_nc  = (_non_canonical_reason(object_name, obj_norm["canonical_id"], obj_norm.get("canonical_name", ""))
+               or _type_name_only(object_name, object_type))
 
     review_reason = ""
     if subj_norm["needs_review"]:
@@ -2519,6 +2532,65 @@ def merge_synonym_concepts(records: list) -> list:
     return records
 
 
+def _symbol_key(name: str) -> str:
+    """Comparable form of a gene/protein symbol ('IL-6', 'IL6 mRNA' → 'il6'; 'IL-1β' → 'il1b'); '' if not symbol-shaped."""
+    import unicodedata
+    base = (_strip_gene_suffix(name or "") or name or "").strip()
+    last = base.split()[-1] if base else ""
+    if " " in base and len(last) >= 3 and sum(c.isupper() for c in last) >= 2:
+        base = last                                   # 'liver X receptors NR1H2' names NR1H2
+    if not base or " " in base or not _symbol_like(base):
+        return ""
+    latin = "".join(unicodedata.name(c, "X").split()[-1][0] if ord(c) > 127 and c.isalpha() else c for c in base)
+    return re.sub(r"[^a-z0-9]", "", latin.lower())
+
+
+# Gene and protein ID systems, most preferred first (gene IDs must be Ensembl)
+_MOLECULE_ID_ORDER = ("ENSEMBL:", "hgnc:", "HGNC:", "MGI:", "RGD:", "ZFIN:", "FB:", "WB:", "SGD:",
+                      "NCBI_GENE:", "UniProtKB:", "PR:")
+
+
+def merge_same_molecule(records: list) -> list:
+    """One ID per gene/protein per paper: mentions with the same symbol in the same organism
+    ('IL-6', 'IL6', 'IL6 mRNA') take the best ID any of them got — Ensembl in that organism first."""
+    groups: dict = collections.defaultdict(list)
+    unplaced = []
+    for r in records:
+        named = normalize_species(r.get("species") or "")
+        known = "," not in named and (_local_taxon(named) or named.split(" ")[0] in _doc().genera)
+        genus = _genus(named) if known else ""                     # one recognised organism, else unplaced
+        for side in ("subject", "object"):
+            cid = r.get(f"{side}_id", "")
+            fam = _PREFIX_FAMILY.get(_ontology_prefix_of(cid)) or _TYPE_FAMILY.get(r.get(f"{side}_type"))
+            key = _symbol_key(r.get(f"{side}_name", ""))
+            if key and _resolved(cid) and fam in ("gene", "protein"):
+                (groups[(key, genus)] if genus else unplaced).append((key, r, side))
+    for key, r, side in unplaced:                      # no organism stated: join the symbol's only organism, if one
+        known = [g for (k, g) in groups if k == key and g]
+        groups[(key, known[0] if len(known) == 1 else "")].append((key, r, side))
+    groups = {k: [(r, side) for _, r, side in v] for k, v in groups.items()}
+    fields = ("id", "canonical_name", "id_source", "source_url", "synonyms")
+    merged = 0
+    for (key, genus), members in groups.items():
+        ids = collections.Counter(r[f"{side}_id"] for r, side in members)
+        if len(ids) < 2:
+            continue
+        rank = lambda c: (bool(genus) and _organism_conflict(c, genus),
+                          next((i for i, p in enumerate(_MOLECULE_ID_ORDER) if c.startswith(p)), len(_MOLECULE_ID_ORDER)),
+                          -ids[c])
+        best = min(ids, key=rank)
+        src = next((r, side) for r, side in members if r[f"{side}_id"] == best)
+        values = {f: src[0].get(f"{src[1]}_{f}") for f in fields}
+        for r, side in members:
+            for f, v in values.items():
+                r[f"{side}_{f}"] = v
+        merged += 1
+        logger.info("One ID for %r (%s): %s from %s", key, genus or "any organism", best, sorted(ids))
+    if merged:
+        logger.info("Merged %d molecule(s) named differently across the paper", merged)
+    return records
+
+
 def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progress=None, notify=None) -> list:
     """Normalize records concurrently, then retry once the ones that hit network errors.
 
@@ -2592,4 +2664,4 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
     if st["local"] or st["online"]:
         say(f"Lookups: {st['local']:,} answered from the local store, {st['online']:,} online"
             f" ({st['stored']:,} stored for next time)")
-    return merge_synonym_concepts(out)
+    return merge_same_molecule(merge_synonym_concepts(out))
