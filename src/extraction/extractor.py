@@ -210,15 +210,24 @@ def _system_prompt() -> str:
         "15. Findings the paper attributes to earlier work (a citation, 'previously', 'has been shown') are "
         "   relations too: extract them with source=cited. The paper's own results have source=study.\n"
         "16. Activity predicted by an analysis (upstream regulator or pathway analysis, z-scores, enrichment) "
-        "   is not a measured expression change: use activates/inhibits with evidence=predicted. Use "
-        "   upregulates/downregulates only for measured mRNA or protein levels (evidence=measured). The "
-        "   condition or treatment the analysis was run on is the subject and each regulator it lists is its "
-        "   own relation: 'regulators activated in the disease: X, Y' → disease activates X, disease activates Y.\n"
+        "   is not a measured change in amount: choose the relation whose definition covers activity, with "
+        "   evidence=predicted; relations about abundance are for measured mRNA or protein levels. The condition "
+        "   or treatment the analysis was run on is the subject, and each regulator it lists is its own relation.\n"
         "17. Keep the scope the text gives a finding — time point, group (e.g. healthy vs diseased), cell or "
         "   model system — in condition and tissue. A negated finding without its scope becomes false: if "
         "   the text limits it, the scope is required.\n"
         "18. Expand lists into one relation per member, with full names: 'MMPs 3, 8 and 13' → MMP3, MMP8, "
         "   MMP13; 'IL-6 and IL-8 protein' → IL-6, IL-8. Never return a list or a fragment as one entity.\n"
+        "19. A comparison is a directional finding: 'X is higher/more accessible/enriched in A than in B' — "
+        "   A is the subject, X the object, B in condition, and the relation is the one whose definition carries "
+        "   that direction. Never drop the direction by choosing a relation without one, and never relate two "
+        "   cell types or groups because they share a statistic.\n"
+        "20. Extract findings — this paper's results and the specific results it cites. Skip textbook "
+        "   background: what a disease or cell type is, its usual symptoms, where a molecule is normally found.\n"
+        "21. Classify a finding by what was measured, then choose the relation whose definition fits it: an "
+        "   enrichment or over-representation is a statistical association, not a change in expression "
+        "   (evidence=predicted); something found in a tissue or place is a part–whole relation; a variant that "
+        "   disrupts or creates a binding site acts on that factor, with the effect in condition.\n"
     )
 
 
@@ -359,6 +368,20 @@ _NEGATION_ASK = (
 )
 
 
+# English negation words (grammar, not domain): a negated fact needs one in a sentence naming both entities
+_NEGATION_WORDS = re.compile(r"\b(not|no|nor|neither|never|without|absence|absent|lack(?:s|ed|ing)?|fail(?:s|ed)?|"
+                             r"un(?:affected|changed|altered|detectable|detected)|insignificant|nonsignificant)\b"
+                             r"|n't\b", re.I)
+
+
+def _text_negates(relation, chunk: dict) -> bool:
+    """A sentence naming both entities states a negative finding; a positive finding marked negated is
+    dropped. Kept when no sentence names both."""
+    subj, obj = relation.subject_name.lower(), relation.object_name.lower()
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+", chunk.get("text", "")) if subj in x.lower() and obj in x.lower()]
+    return not sentences or any(_NEGATION_WORDS.search(x) for x in sentences)
+
+
 def _negative_findings(chunk: dict) -> list:
     """A second, small pass for negative findings, which the main pass tends to skip."""
     messages = [{"role": "system", "content": _get_system_prompt()},
@@ -374,7 +397,8 @@ def _negative_findings(chunk: dict) -> list:
             relations = _valid_relations(_parse_json(raw).get("relations", []))
         except (json.JSONDecodeError, ValidationError, TypeError, AttributeError):
             relations = _salvage_relations(raw)
-        return [r for r in relations if r.negated and r.relation and r.extraction_viable]
+        return [r for r in relations if r.negated and r.relation and r.extraction_viable
+                and _text_negates(r, chunk)]
     except Exception as e:
         logger.warning("Negation pass skipped for a chunk: %s", e)
         return []
@@ -385,8 +409,15 @@ def _negative_findings(chunk: dict) -> list:
 _MEMBER_LIST = re.compile(r"^([A-Z][A-Z-]+?)(s?)\s+(\d+[A-Za-z]?(?:\s*(?:,|and|&|,\s*and)\s*\d+[A-Za-z]?)*)$")
 
 
+_SLASH_LIST = re.compile(r"^([A-Z][A-Z0-9-]*?[A-Z-])(\d+[A-Z]?)((?:/\d+[A-Z]?)+)$")
+
+
 def _members(name: str) -> list:
-    """A family with numbered members, one name each: 'MMPs 3, 8 and 13' → ['MMP3', 'MMP8', 'MMP13']."""
+    """A family with numbered members, one name each: 'MMPs 3, 8 and 13' → ['MMP3', 'MMP8', 'MMP13'];
+    'NFKB1/2' → ['NFKB1', 'NFKB2']."""
+    slash = _SLASH_LIST.match((name or "").strip())
+    if slash:
+        return [slash.group(1) + n for n in [slash.group(2)] + slash.group(3).strip("/").split("/")]
     m = _MEMBER_LIST.match((name or "").strip())
     numbers = re.findall(r"\d+[A-Za-z]?", m.group(3)) if m else []
     if not m or not (m.group(2) or len(numbers) > 1):        # 'COVID 19', 'HLA-B 27' stay as written
@@ -408,18 +439,17 @@ def _expand_lists(relations: list) -> list:
 
 def extract(chunk: dict, _depth: int = 0) -> ExtractionResult:
     """Extract relations from one chunk, then add the negative findings a second pass finds."""
-    negatives = None
-    if not _depth and _NEGATION_PASS:                  # the second pass runs alongside the main one
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        negatives = pool.submit(_negative_findings, chunk)
-        pool.shutdown(wait=False)
     result = _extract_main(chunk, _depth)
-    result = result.model_copy(update={"relations": _expand_lists(result.relations)})
-    if negatives is None or result.rejected:
+    # A negation the text never states (no negating word where both entities are named) is the model's error:
+    # the finding stands, positive, as the text gives it
+    relations = [r.model_copy(update={"negated": False}) if r.negated and not _text_negates(r, chunk) else r
+                 for r in _expand_lists(result.relations)]
+    result = result.model_copy(update={"relations": relations})
+    if _depth or result.rejected or not _NEGATION_PASS:     # after the main pass: the LLM server holds few long requests
         return result
     key = lambda r: (r.subject_name.lower(), r.relation.value if r.relation else "", r.object_name.lower())
     seen = {(*key(r), bool(r.negated)) for r in result.relations}
-    extra = [r for r in negatives.result()
+    extra = [r for r in _negative_findings(chunk)
              if r.relation and (*key(r), True) not in seen]                    # non-viable ones have no relation
     return ExtractionResult(relations=result.relations + extra) if extra else result
 
