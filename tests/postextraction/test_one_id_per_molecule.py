@@ -44,5 +44,43 @@ def test_uniprot_symbol_needs_exact_name(monkeypatch):
     wrong = ("UniProtKB:O95256", "IL18RAP", "", "IL-1 receptor accessory protein-like; IL-1RAcPL")
     monkeypatch.setattr(E, "_uniprot_search", lambda *a, **k: wrong)
     monkeypatch.setattr(E, "_ensembl_local_gene", lambda *a, **k: None)
+    for later in ("_ols4_search", "_try_core_term", "_verified_candidate", "_wikidata_search", "_ncbi_gene",
+                  "_llm_standard_name"):
+        monkeypatch.setattr(E, later, lambda *a, **k: None)
+    monkeypatch.setattr(E, "_llm_broader_names", lambda *a, **k: [])
     res = E._normalize_entity_core("IL-1β", "PROTEIN", None, "Homo sapiens", "")
     assert res["canonical_id"] != "UniProtKB:O95256"
+
+
+def test_trailing_symbol_names_the_gene():
+    assert E._strip_gene_suffix("cardiac developmental transcription factors GATA4") == "GATA4"
+    assert E._strip_gene_suffix("Toll-like receptor TLR3") == "TLR3"
+    for name in ("protein kinase C", "vitamin D3", "cyclin D1", "type 2 diabetes"):
+        assert E._strip_gene_suffix(name) is None
+
+
+def test_alias_shared_by_genes_is_ambiguous(monkeypatch):
+    class R:
+        def json(self):
+            entry = lambda acc, gene, syns: {"primaryAccession": acc, "genes": [{"geneName": {"value": gene},
+                                             "synonyms": [{"value": x} for x in syns]}]}
+            return {"results": [entry("Q14534", "SQLE", ["ERG1"]), entry("Q12809", "KCNH2", ["ERG", "ERG1"])]}
+    monkeypatch.setattr(E, "_http_get", lambda *a, **k: R())
+    assert E._uniprot_search("ERG1", "Homo sapiens") is None
+    assert E._uniprot_search("SQLE", "Homo sapiens")[0] == "UniProtKB:Q14534"
+
+
+def test_anatomy_ontology_scope_from_registry_and_lineage(monkeypatch):
+    monkeypatch.setattr(E, "_anatomy_scope", {"fbbt": "7227", "uberon": "33208"})      # registry: fly, Metazoa
+    lineages = {"homo sapiens": {"9606", "9605", "40674", "33208", "1"},
+                "drosophila melanogaster": {"7227", "7215", "33208", "1"}}
+    monkeypatch.setattr(E, "_lineage", lambda sp: lineages.get(sp.lower(), set()))
+    assert E._organism_conflict("FBbt:00058784", "Homo sapiens")            # fly anatomy, human paper
+    assert not E._organism_conflict("FBbt:00058784", "Drosophila melanogaster")
+    assert not E._organism_conflict("UBERON:0002018", "Homo sapiens")        # all animals
+    assert not E._organism_conflict("HP:0001369", "Rattus norvegicus")       # phenotypes: not anatomy, shared
+
+
+def test_kind_conflicts():
+    assert E._kind_conflict("PROTEIN", "GO:0000981")
+    assert not E._kind_conflict("MACROMOLECULAR_COMPLEX", "GO:0071159")

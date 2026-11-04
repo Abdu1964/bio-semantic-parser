@@ -19,3 +19,14 @@ def test_two_text_facts_stay_contradictions():
     checked = [_fact("activates", "results", True), _fact("inhibits", "discussion", True)]
     out = prefer_text_over_figures(checked, before)
     assert out[0]["is_contradiction"] and out[1]["is_contradiction"]
+
+
+def test_relation_targets_follow_taxonomy_ranges():
+    from src.postextraction.postextractor import fit_relation_targets
+    recs = [{"relation": "upregulates", "object_type": "DISEASE"},
+            {"relation": "downregulates", "object_type": "TISSUE"},
+            {"relation": "promotes", "object_type": "GENE"},
+            {"relation": "upregulates", "object_type": "GENE"}]
+    assert fit_relation_targets(recs) == (2, 1)
+    assert [r["relation"] for r in recs] == ["promotes", "downregulates", "upregulates", "upregulates"]
+    assert "invalid_reason" in recs[1]
