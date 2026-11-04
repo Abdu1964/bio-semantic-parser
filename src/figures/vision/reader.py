@@ -134,7 +134,12 @@ RULES:
 10. Never relate an entity to itself. A similarity or correlation matrix comparing the same kinds of
    things (cell types vs cell types, samples vs samples) shows no biological relation — skip it.
 11. Each name must be one specific entity, never a group or category ('target genes', 'SNPs',
-   'altered TFs', 'top motifs', 'modules'). A cell type found in a tissue is part_of that tissue."""
+   'altered TFs', 'top motifs', 'modules'). A cell type found in a tissue is part_of that tissue.
+12. Two items are related only where the figure links them: an arrow or line, the same row of one
+   table, or the cell where a row and a column of one matrix meet. Items in separate panels, or in
+   lists or columns placed side by side, are never related by their position.
+13. A colour, cluster, box or legend group shows only that its items share the group — never a relation
+   between an item and the group."""
 
 
 def _compact(title: str, taxonomy: dict) -> str:

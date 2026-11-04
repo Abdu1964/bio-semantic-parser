@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 from src.figures.extract import figures_dir
@@ -126,9 +127,29 @@ def _figures(document_id: str) -> list:
     return [{**f, "path": str(d / f["file"])} for f in figs[:_MAX_FIGURES]]
 
 
-def _chunk(fig: dict, out: dict, rels: list, template: dict, index: int) -> dict:
+_PAPER_EVIDENCE_CHARS = 3000
+
+
+def _paper_sentences(rels: list, sentences: list) -> list:
+    """The paper's own sentences naming both entities of a figure relation, so the text can confirm or
+    contradict what was read from the image."""
+    out = []
+    for r in rels:
+        a, b = r.subject_name.lower(), r.object_name.lower()
+        out += [x for x in sentences if a in x.lower() and b in x.lower()][:2]
+    picked, size = [], 0
+    for x in dict.fromkeys(out):
+        if size + len(x) > _PAPER_EVIDENCE_CHARS:
+            break
+        picked.append(x)
+        size += len(x)
+    return picked
+
+
+def _chunk(fig: dict, out: dict, rels: list, template: dict, index: int, sentences: list = ()) -> dict:
     """A pseudo-chunk for one figure. Its text is what Layer 7 checks figure facts against:
-    caption, summary, the visual evidence for each relation, and the figure's own words (OCR)."""
+    caption, summary, the visual evidence for each relation, the figure's own words (OCR), and the
+    paper's sentences about the same entities."""
     label = fig.get("label") or fig["fig_id"]
     text = f"{label}. {fig.get('caption', '')}".strip()
     if out["summary"]:
@@ -137,6 +158,9 @@ def _chunk(fig: dict, out: dict, rels: list, template: dict, index: int) -> dict
         f"- {r.subject_name} {r.relation.value.replace('_', ' ')} {r.object_name}: {r.reasoning}" for r in rels)
     if out.get("ocr", "").strip():
         text += "\nText in the figure: " + " ".join(out["ocr"].split())[:3000]
+    about = _paper_sentences(rels, sentences)
+    if about:
+        text += "\nThe paper's text about these entities:\n" + "\n".join(f"- {x}" for x in about)
     return {**{k: template.get(k) for k in _CHUNK_KEYS if k in template},
             "text": text, "section": "figure", "chunk_index": index,
             "entities": [], "negated_entities": [], "has_negation": False,
@@ -152,6 +176,7 @@ def figure_results(document_id: str, template: dict, first_index: int, log=None,
         return [], []
     log(f"Reading {len(figs)} figure(s) with the vision model…")
     context = tokens(paper_text) if paper_text else None           # once per paper, shared by all figures
+    sentences = re.split(r"(?<=[.!?])\s+", paper_text) if paper_text else []
 
     def one(fig):
         try:
@@ -180,7 +205,7 @@ def figure_results(document_id: str, template: dict, first_index: int, log=None,
             + (f", {out['not_entities']} self-loops or group names dropped" if out.get("not_entities") else ""))
         if rels:
             results.append(ExtractionResult(relations=rels))
-            chunks.append(_chunk(fig, out, rels, template, first_index + len(chunks)))
+            chunks.append(_chunk(fig, out, rels, template, first_index + len(chunks), sentences))
     return results, chunks
 
 
