@@ -419,6 +419,16 @@ class SectionLabel(str, Enum):
 # Sources: https://biolink.github.io/biolink-model/ · https://github.com/hetio/hetionet/blob/main/describe/definitions.json
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Target kinds used as relation ranges (what a relation's object may be), as in Biolink domain/range
+_MOLECULES = [EntityType.GENE, EntityType.PROTEIN, EntityType.TRANSCRIPT, EntityType.EXON, EntityType.NON_CODING_RNA,
+              EntityType.MICRO_RNA, EntityType.SI_RNA, EntityType.MACROMOLECULAR_COMPLEX, EntityType.SMALL_MOLECULE]
+_PROCESSES_AND_OUTCOMES = [EntityType.DISEASE, EntityType.CANCER, EntityType.PHENOTYPE, EntityType.SYMPTOM,
+                           EntityType.PATHWAY, EntityType.BIOLOGICAL_PROCESS, EntityType.REACTION,
+                           EntityType.MOLECULAR_FUNCTION, EntityType.PHYSIOLOGICAL_PROCESS,
+                           EntityType.PATHOLOGICAL_PROCESS, EntityType.CLINICAL_FINDING, EntityType.DISEASE_OUTCOME,
+                           EntityType.MORTALITY_OUTCOME, EntityType.BEHAVIORAL_OUTCOME,
+                           EntityType.EPIDEMIOLOGICAL_OUTCOME]
+
 TAXONOMY: Dict[RelationType, dict] = {
 
     # ── Category 1: Expression ────────────────────────────────────────────────
@@ -455,11 +465,13 @@ TAXONOMY: Dict[RelationType, dict] = {
         "definition": "A increases the expression level of B — specifically mRNA abundance or protein abundance as measured by sequencing, qPCR, or proteomics. B must be a gene, transcript or protein; A may be a molecule, treatment, condition or disease state compared with its control.",
         "example": "Fasting upregulates SIRT1 mRNA expression 2.5-fold in mouse liver.",
         "not_this": "Use ACTIVATES if the effect is on protein activity rather than abundance. Use TRANSCRIBES_TO if the transcription event itself is described.",
+        "range": _MOLECULES,
     },
     RelationType.DOWNREGULATES: {
         "definition": "A decreases the expression level of B — specifically mRNA or protein abundance as measured by molecular assays (sequencing, qPCR, proteomics). B must be a gene, transcript or protein; A may be a molecule, treatment, condition or disease state compared with its control.",
         "example": "Ageing downregulates FOXO3 protein levels in human skeletal muscle.",
         "not_this": "Use INHIBITS if the effect is on protein activity rather than abundance. Use PREVENTS if A blocks a process. Use REGULATES if the subject is a dietary factor, clinical intervention, or physiological condition affecting a non-molecular outcome (e.g. sodium intake and blood pressure — use REGULATES, not DOWNREGULATES).",
+        "range": _MOLECULES,
     },
     RelationType.REGULATES: {
         "definition": "A modulates B without a specified direction, or controls B in a context-dependent bidirectional manner. Applies at any level: molecular (gene/protein), physiological (e.g. dietary sodium regulates blood pressure), or clinical (e.g. treatment regulates glucose levels).",
@@ -635,11 +647,13 @@ TAXONOMY: Dict[RelationType, dict] = {
         "definition": "A facilitates, accelerates, or increases the likelihood of process or outcome B without being a direct sufficient cause.",
         "example": "Caloric restriction promotes autophagy in liver, muscle, and brain tissue of aged rodents.",
         "not_this": "Use CAUSES if A is the direct and sufficient experimental cause. Use ACTIVATES if A directly increases activity of a specific protein.",
+        "range": _PROCESSES_AND_OUTCOMES,
     },
     RelationType.PREVENTS: {
         "definition": "A blocks, suppresses, or reduces the occurrence or onset of process, disease, or outcome B.",
         "example": "Regular aerobic exercise prevents age-related muscle atrophy in elderly human subjects.",
         "not_this": "Use INHIBITS if A directly blocks a specific molecular activity. Use TREATS if A is a therapeutic for an already established disease.",
+        "range": _PROCESSES_AND_OUTCOMES,
     },
 
     # ── Category 8: Clinical / Therapeutic ───────────────────────────────────

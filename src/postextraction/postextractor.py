@@ -16,12 +16,33 @@ from src.postextraction import (
 
 from src.postextraction.confidence_scorer import score as _score_confidence
 
-# Targets of up/downregulates: molecules whose abundance changes; processes and outcomes (→ promotes/prevents)
-_EXPRESSED_TYPES = {"GENE", "PROTEIN", "TRANSCRIPT", "EXON", "NON_CODING_RNA", "MICRO_RNA", "SI_RNA",
-                    "MACROMOLECULAR_COMPLEX", "SMALL_MOLECULE"}
-_OUTCOME_TYPES = {"DISEASE", "CANCER", "PHENOTYPE", "SYMPTOM", "PATHWAY", "BIOLOGICAL_PROCESS", "REACTION",
-                  "MOLECULAR_FUNCTION", "PHYSIOLOGICAL_PROCESS", "PATHOLOGICAL_PROCESS", "CLINICAL_FINDING",
-                  "DISEASE_OUTCOME", "MORTALITY_OUTCOME", "BEHAVIORAL_OUTCOME", "EPIDEMIOLOGICAL_OUTCOME"}
+from src.schema.taxonomy import CROSS_SCHEMA_MAP, TAXONOMY
+
+# What each relation's object may be (taxonomy ranges), and each relation's direction (BioNLP event type)
+_RANGE = {rel.value: {t.value for t in entry["range"]} for rel, entry in TAXONOMY.items() if entry.get("range")}
+_EVENT = {rel.value: (m or {}).get("bionlp") for rel, m in CROSS_SCHEMA_MAP.items()}
+
+
+def fit_relation_targets(records: list) -> tuple:
+    """A target outside its relation's range (taxonomy) takes the relation with the same direction whose range
+    fits; with none, the fact is not valid and is discarded with the reason. Returns (moved, discarded)."""
+    moved = discarded = 0
+    for r in records:
+        rel = r.get("relation")
+        rel_val = rel.value if hasattr(rel, "value") else rel
+        obj_type = r.get("object_type", "")
+        allowed = _RANGE.get(rel_val)
+        if not allowed or obj_type in allowed or obj_type in ("OTHER", ""):
+            continue
+        fit = next((x for x, rng in _RANGE.items()
+                    if obj_type in rng and _EVENT.get(x) and _EVENT.get(x) == _EVENT.get(rel_val)), None)
+        if fit:
+            r["relation"] = fit
+            moved += 1
+        else:
+            r["invalid_reason"] = f"'{rel_val}' does not take a {obj_type.lower()} as its target (taxonomy range)"
+            discarded += 1
+    return moved, discarded
 
 def _compute_confidence(relation, chunk: dict,
                         all_chunks = None) -> tuple:
@@ -233,24 +254,10 @@ def process(
         log(f"  → {n_relation_fixed} relation(s) corrected: has_phenotype/has_symptom "
             f"didn't match subject's entity type")
 
-    # up/downregulates change a molecule's expression (taxonomy). A process or outcome target takes
-    # promotes/prevents (defined for "process or outcome B"); a place or cell type is no expression fact.
-    n_target_fixed = n_target_flagged = 0
-    for r in records:
-        rel = r.get("relation")
-        rel_val = rel.value if hasattr(rel, "value") else rel
-        obj_type = r.get("object_type", "")
-        if rel_val not in ("upregulates", "downregulates") or obj_type in _EXPRESSED_TYPES or obj_type in ("OTHER", ""):
-            continue
-        if obj_type in _OUTCOME_TYPES:
-            r["relation"] = "promotes" if rel_val == "upregulates" else "prevents"
-            n_target_fixed += 1
-        else:
-            r["invalid_reason"] = f"'{rel_val}' needs a gene, transcript or protein target, not a {obj_type.lower()}"
-            n_target_flagged += 1
+    n_target_fixed, n_target_flagged = fit_relation_targets(records)
     if n_target_fixed or n_target_flagged:
-        log(f"  → expression relations: {n_target_fixed} with a process/outcome target became promotes/prevents, "
-            f"{n_target_flagged} with a non-molecular target discarded")
+        log(f"  → relation targets checked against the taxonomy: {n_target_fixed} moved to the relation of the same "
+            f"direction that fits, {n_target_flagged} with no fitting relation discarded")
 
     # ── Entity ontology gate — flag non-biomedical triples ────────────────────
     # A triple is considered non-biomedical if BOTH subject and object fail to
