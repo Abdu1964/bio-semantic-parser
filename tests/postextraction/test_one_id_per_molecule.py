@@ -84,3 +84,11 @@ def test_anatomy_ontology_scope_from_registry_and_lineage(monkeypatch):
 def test_kind_conflicts():
     assert E._kind_conflict("PROTEIN", "GO:0000981")
     assert not E._kind_conflict("MACROMOLECULAR_COMPLEX", "GO:0071159")
+
+
+def test_fact_organism_from_its_sentences():
+    text = ("Human RA-FLS were stimulated with IL-1β, which induced IL6. "
+            "In rats with arthritis, PIA elevated IL1B. Mice and rats were compared for TNF and IL1B.")
+    assert E._sentence_organism(text, "IL-1β", "IL6") == "Homo sapiens"
+    assert E._sentence_organism(text, "PIA", "IL1B") == "Rattus norvegicus"
+    assert E._sentence_organism(text, "TNF", "IL1B") == ""                  # two organisms named: unknown

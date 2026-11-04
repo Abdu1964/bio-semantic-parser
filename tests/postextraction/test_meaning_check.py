@@ -50,3 +50,10 @@ def test_batch_answer_parsing(monkeypatch):
             "current": {"label": "c"}, "alts": [{"label": "a"}, {"label": "b"}]}
     assert J.judge_batch([item] * 5) == [("SAME", None), ("DIFFERENT", 1), ("BROADER", None), ("DIFFERENT", None),
                                          ("SAME", None)]
+
+
+def test_unreachable_ontology_service_keeps_the_id(monkeypatch):
+    _patch(monkeypatch, ("DIFFERENT", None))
+    monkeypatch.setattr(M, "describe", lambda cid: None)                  # OLS could not be asked
+    recs = [_rec("RTD-1", "SMALL_MOLECULE", "mesh:C000713949")]
+    assert M.run(recs, log=lambda m: None)["checked"] == 0 and recs[0]["object_id"] == "mesh:C000713949"
