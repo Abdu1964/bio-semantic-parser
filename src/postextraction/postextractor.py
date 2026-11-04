@@ -228,6 +228,19 @@ def process(
         if step_cb: step_cb(1, "Entity Normalization", f"checkpoint loaded ({len(records)} records)")
         log(f"Step 1 — Entity Normalization: skipped (checkpoint, {len(records)} records)")
 
+    # ── Step 1b: Meaning check — each ID must mean what the authors mean ──────
+    if resume_from_step <= 2 and records:
+        from src.postextraction import meaning_check
+        if meaning_check.ENABLED:
+            import time as _t1b
+            _t0 = _t1b.time()
+            if step_cb: step_cb(1, "Meaning check", "checking that each ID means what the paper means")
+            _st = meaning_check.run(records, log)
+            _msg = (f"Meaning check: {_st['checked']} concept(s) checked — {_st['kept']} kept, "
+                    f"{_st['replaced']} replaced, {_st['unresolved']} left without an ID ({_t1b.time() - _t0:.0f}s)")
+            if step_cb: step_cb(1, "Meaning check", _msg)
+            log(_msg)
+
     # ── Relation / subject-type constraint check ──────────────────────────────
     # has_phenotype requires a molecular subject; has_symptom requires a disease/condition.
     # Correct mismatches deterministically — taxonomy states this outright.
