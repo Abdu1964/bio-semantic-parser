@@ -19,8 +19,9 @@ def _term(doc: dict) -> dict:
             "synonyms": [syns] if isinstance(syns, str) else syns[:6], "prefix": _first(doc.get("ontology_prefix"))}
 
 
-def describe(cid: str) -> dict:
-    """The term behind an ontology ID: label, definition, synonyms ({} when OLS does not know the ID)."""
+def describe(cid: str):
+    """The term behind an ontology ID: label, definition, synonyms ({} when OLS does not know the ID;
+    None when OLS could not be asked)."""
     try:
         docs = en._http_get(f"{en._OLS_BASE}/search", params={"q": cid, "queryFields": "obo_id", "exact": "true",
                                                              "rows": 1, "fieldList": _FIELDS},
@@ -28,7 +29,7 @@ def describe(cid: str) -> dict:
         return _term(docs[0]) if docs else {}
     except Exception as e:
         en.logger.warning("Meaning check: no definition for %s: %s", cid, e)
-        return {}
+        return None
 
 
 def candidates(name: str, ontologies: list, rows: int = 6) -> list:

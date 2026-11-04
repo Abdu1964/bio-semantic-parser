@@ -2465,6 +2465,20 @@ def _type_name_only(text: str, entity_type: str) -> str:
     return "generic category term" if words and words == set(tokens((entity_type or "").replace("_", " "))) else ""
 
 
+def _sentence_organism(chunk_text: str, subject: str, obj: str) -> str:
+    """The one organism the sentences naming both entities mention ('human RA-FLS were stimulated with
+    IL-1β' → Homo sapiens); '' when they name none or several."""
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+", chunk_text or "")
+                 if subject and obj and subject.lower() in x.lower() and obj.lower() in x.lower()]
+    found = set()
+    for x in sentences:
+        low = x.lower()
+        for name in set(_COMMON_TO_BINOMIAL) | {n for n in _TAXON_LOCAL if " " in n and "." not in n}:
+            if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", low):
+                found.add(_COMMON_TO_BINOMIAL.get(name, name))
+    return normalize_species(found.pop()) if len(found) == 1 else ""
+
+
 def normalize_batch(records: list, chunk: dict) -> list:
     """Normalize a list of records against a single chunk."""
     return [normalize_record(r, chunk) for r in records]
@@ -2478,6 +2492,8 @@ def normalize_record(record: dict, annotated_chunk: dict) -> dict:
     object_type  = record.get("object_type",  "OTHER")
     species      = record.get("species", "")
     chunk_text   = record.get("_chunk_text", "")
+    if not _local_taxon(normalize_species(species) or "-"):          # no organism stated for this fact
+        species = _sentence_organism(chunk_text, subject_name, object_name) or species
 
     layer4_map: dict = {
         e["text"].lower(): {

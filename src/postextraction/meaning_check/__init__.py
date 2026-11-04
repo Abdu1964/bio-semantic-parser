@@ -32,7 +32,9 @@ def _needs_check(record: dict, side: str) -> bool:
 def _prepare(record: dict, side: str) -> dict:
     """What the judge needs for one concept: the sentence, the fact, the current concept and alternatives."""
     name, etype, cid = record[f"{side}_name"], record.get(f"{side}_type", "OTHER"), record[f"{side}_id"]
-    known = describe(cid) or {}
+    known = describe(cid)
+    if known is None:
+        return None                                    # the ontology service is unreachable: no evidence, no verdict
     current = {"id": cid, "label": known.get("label") or record.get(f"{side}_canonical_name") or name,
                "definition": known.get("definition", ""),
                "synonyms": known.get("synonyms") or [x for x in str(record.get(f"{side}_synonyms") or "").split("; ") if x]}
@@ -68,7 +70,9 @@ def run(records: list, log=print) -> dict:
         return stats
     keys = list(mentions)
     with ThreadPoolExecutor(max_workers=_WORKERS) as ex:
-        items = list(ex.map(lambda k: _prepare(*mentions[k][0]), keys))          # lookups, in parallel
+        prepared = list(ex.map(lambda k: _prepare(*mentions[k][0]), keys))       # lookups, in parallel
+        keys = [k for k, it in zip(keys, prepared) if it is not None]           # unreachable terms keep their IDs
+        items = [it for it in prepared if it is not None]
         batches = [items[i:i + _BATCH] for i in range(0, len(items), _BATCH)]
         judged = [v for b in ex.map(judge_batch, batches) for v in b]           # several concepts per LLM call
     verdicts = {k: _outcome(it, *v) for k, it, v in zip(keys, items, judged)}
