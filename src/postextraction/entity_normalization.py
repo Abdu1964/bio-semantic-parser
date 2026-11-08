@@ -77,7 +77,7 @@ def _http_request_online(send, url, *args, **kwargs):
 
 _failed_requests: dict = {}           # host → failed requests in this run
 _NETWORK_RETRY_ROUNDS = int(os.getenv("NETWORK_RETRY_ROUNDS", "3"))
-_NETWORK_RETRY_WAIT = int(os.getenv("NETWORK_RETRY_WAIT", "120"))     # seconds, grows each round: 2, 4, 6 min
+_NETWORK_RETRY_WAIT = int(os.getenv("NETWORK_RETRY_WAIT", "30"))      # seconds, grows each round: 30, 60, 90 s
 
 
 def reset_network_state() -> None:
@@ -2802,7 +2802,7 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
     run([i for i, r in enumerate(records) if not abbrev(r)])
     run([i for i, r in enumerate(records) if abbrev(r)])
 
-    # Lookups that failed on the network: wait and retry (2, 4, 6 min); the last round may use NCBI Gene
+    # Lookups that failed on the network: wait and retry (30, 60, 90 s); the last round may use NCBI Gene
     say = notify or (lambda msg: None)
     for rnd in range(1, _NETWORK_RETRY_ROUNDS + 1):
         retry = [i for i, r in enumerate(out) if _awaits_lookup(r, "subject") or _awaits_lookup(r, "object")]
@@ -2815,7 +2815,7 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
                           if _awaits_lookup(out[i], side)})
         hosts = ", ".join(f"{h}: {n} failed request(s)" for h, n in sorted(_failed_requests.items(), key=lambda x: -x[1]))
         last = " — the last retry also tries NCBI Gene" if rnd == _NETWORK_RETRY_ROUNDS else ""
-        say(f"⚠ {len(retry)} record(s) hit network failures — waiting {wait // 60} min, then retry {rnd}/{_NETWORK_RETRY_ROUNDS}{last}")
+        say(f"⚠ {len(retry)} record(s) hit network failures — waiting {wait} s, then retry {rnd}/{_NETWORK_RETRY_ROUNDS}{last}")
         say(f"    unreachable: {hosts or 'unknown'}")
         say(f"    waiting: {', '.join(waiting[:20])}{' …' if len(waiting) > 20 else ''}")
         logger.info("Retry %d/%d in %ds: %d record(s) whose lookups hit network errors",

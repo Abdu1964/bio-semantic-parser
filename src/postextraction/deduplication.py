@@ -3,6 +3,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from src.postextraction import staging
 
 
 # Legacy / staging path (used by Layer 7 during paper processing)
@@ -24,7 +25,7 @@ def db_path_for_format(fmt: str) -> Path:
 
 def _get_conn() -> sqlite3.Connection:
     import os as _os
-    path = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
+    path = Path(staging.path(str(_DB_PATH)))
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -111,7 +112,7 @@ def deduplicate(record: dict) -> dict:
     # Fix: for PDF papers, always use the SHA256 hash as the canonical source ID.
     # The hash is recoverable from the staging DB filename (set in TRIPLE_STORE_PATH).
     import os as _os, re as _re
-    _staging = _os.getenv("TRIPLE_STORE_PATH", "")
+    _staging = staging.path()
     if _staging:
         _m = _re.search(r'([0-9a-f]{64})', Path(_staging).name)
         if _m:
@@ -210,7 +211,7 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
     Returns {"new": int, "updated": int, "total": int}.
     """
     import os as _os
-    main_path = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
+    main_path = Path(staging.path(str(_DB_PATH)))
     staging = Path(staging_path)
     if not staging.exists() or staging.resolve() == main_path.resolve():
         return {"new": 0, "updated": 0, "total": 0}
@@ -296,7 +297,7 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
         updated    += (len(rows) - fmt_committed)
 
     import os as _os
-    legacy = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
+    legacy = Path(staging.path(str(_DB_PATH)))
     if legacy != _DB_NEO4J and legacy != _DB_METTA and str(legacy) != str(staging):
         legacy.parent.mkdir(parents=True, exist_ok=True)
         lc = sqlite3.connect(str(legacy))

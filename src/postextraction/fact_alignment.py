@@ -117,6 +117,49 @@ def _same_claim(a: dict, b: dict) -> dict:
     return out
 
 
+_BATCH = int(os.getenv("FACT_ALIGNMENT_BATCH", "6"))
+
+
+def _same_claims(pairs: list) -> list:
+    """_same_claim for several (A, B) pairs in one LLM call; cached pairs are not asked again."""
+    key = lambda a, b: (_canonical(a), _canonical(b), _sentence(a)[:120], _sentence(b)[:120])
+    out = [_verdict_cache.get(key(a, b)) for a, b in pairs]
+    ask = [i for i, v in enumerate(out) if v is None]
+    if ask:
+        blocks = "\n\n".join(f"PAIR {n}:\n{_describe('Fact A', pairs[i][0])}\n{_describe('Fact B', pairs[i][1])}"
+                               for n, i in enumerate(ask, 1))
+        prompt = (
+            "Each pair below has two facts extracted about the same two entities.\n\n" + blocks + "\n\n"
+            "For each pair: do the two sentences make the SAME claim about these entities (a paraphrase or "
+            "restatement, even if worded differently)? Answer:\n"
+            "  SAME          — one claim; merging them into one fact loses nothing\n"
+            "  DIFFERENT     — different claims, or one is stronger/weaker/broader than the other\n"
+            "  CONTRADICTION — they disagree\n"
+            'If SAME, also say which fact\'s relation ("A" or "B") best states what BOTH sentences say.\n'
+            'Return ONLY JSON: {"pairs": [{"pair": <n>, "verdict": "SAME|DIFFERENT|CONTRADICTION", '
+            '"keep": "A|B", "reason": "<one sentence>"}]}'
+        )
+        try:
+            data = parse_json(call_llm([{"role": "user", "content": prompt}], model=_MODEL, temperature=0.0))
+            for item in (data.get("pairs") if isinstance(data, dict) else data) or []:
+                n, v = int(item.get("pair", 0)), str(item.get("verdict", "")).strip().upper()
+                if 1 <= n <= len(ask) and v in ("SAME", "DIFFERENT", "CONTRADICTION"):
+                    i = ask[n - 1]
+                    out[i] = {"verdict": v, "keep": "B" if str(item.get("keep", "A")).strip().upper() == "B" else "A",
+                              "reason": str(item.get("reason", ""))[:300]}
+                    _verdict_cache[key(*pairs[i])] = out[i]
+        except Exception as e:
+            logger.warning("Fact check batch failed: %s", e)
+    return [v or {"verdict": "DIFFERENT", "keep": "A", "reason": "check failed"} for v in out]
+
+
+def _checked(pairs: list) -> list:
+    """Verdicts in pair order, _BATCH pairs per LLM call."""
+    batches = [pairs[i:i + _BATCH] for i in range(0, len(pairs), _BATCH)]
+    with ThreadPoolExecutor(max_workers=_WORKERS) as ex:
+        return [v for b in ex.map(_same_claims, batches) for v in b]
+
+
 def _adopt(target: dict, model: dict) -> None:
     """Rewrite target to state model's relation in model's direction."""
     if target.get("subject_id") != model.get("subject_id"):
@@ -150,8 +193,7 @@ def align_facts(records: list) -> list:
         facts = [records[i] for i in idxs]
         todo += [(idxs[i], idxs[j]) for i, j in _candidate_pairs(facts)]
     todo = todo[:_MAX_PAIRS]
-    with ThreadPoolExecutor(max_workers=_WORKERS) as ex:
-        verdicts = list(ex.map(lambda p: _same_claim(records[p[0]], records[p[1]]), todo))
+    verdicts = _checked([(records[i], records[j]) for i, j in todo])
 
     merged_into: dict = {}
     for (i, j), v in zip(todo, verdicts):
@@ -220,8 +262,7 @@ def align_facts_with_kg(records: list) -> list:
             continue
         todo += [(r, f) for f in existing if not _opposing(_rel(r), f["relation"])]
     todo = todo[:_MAX_PAIRS]
-    with ThreadPoolExecutor(max_workers=_WORKERS) as ex:
-        verdicts = list(ex.map(lambda p: _same_claim(p[0], p[1]), todo))
+    verdicts = _checked(todo)
 
     adopted = set()
     for (r, f), v in zip(todo, verdicts):

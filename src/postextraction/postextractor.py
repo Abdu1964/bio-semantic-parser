@@ -17,6 +17,7 @@ from src.postextraction import (
 from src.postextraction.confidence_scorer import score as _score_confidence
 
 from src.schema.taxonomy import CROSS_SCHEMA_MAP, TAXONOMY, EntityType, RelationType
+from src.postextraction import staging
 
 # What each relation's object may be (taxonomy ranges), and each relation's direction (BioNLP event type)
 _RANGE = {rel.value: {t.value for t in entry["range"]} for rel, entry in TAXONOMY.items() if entry.get("range")}
@@ -266,6 +267,7 @@ def process(
             _st = meaning_check.run(records, log)
             _msg = (f"Meaning check: {_st['checked']} concept(s) checked — {_st['kept']} kept, "
                     f"{_st['replaced']} replaced, {_st['unresolved']} left without an ID"
+                    + (f", {_st['unverified']} not checked (ontology service unreachable)" if _st.get("unverified") else "")
                     + f" ({_t1b.time() - _t0:.0f}s)")
             if step_cb: step_cb(1, "Meaning check", _msg)
             log(_msg)
@@ -667,7 +669,7 @@ def process(
 
     # Verdicts are assigned after dedup; backfill flagged_for_review so Layer 8 skips REJECT/REVIEW triples.
     import os as _os_sync, sqlite3 as _sq_sync
-    _staging_path = _os_sync.getenv("TRIPLE_STORE_PATH", "")
+    _staging_path = staging.path()
     if _staging_path:
         try:
             with _sq_sync.connect(_staging_path) as _sc:

@@ -160,45 +160,8 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
     conn = _sq.connect(staging_db, timeout=10)
     conn.row_factory = _sq.Row
 
-    # Ensure schema matches staging DB
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS triples (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            subject_id       TEXT NOT NULL,
-            subject_name     TEXT NOT NULL,
-            subject_type     TEXT NOT NULL DEFAULT '',
-            relation         TEXT NOT NULL,
-            object_id        TEXT NOT NULL,
-            object_name      TEXT NOT NULL,
-            object_type      TEXT NOT NULL DEFAULT '',
-            negated          INTEGER NOT NULL DEFAULT 0,
-            confidence       REAL NOT NULL DEFAULT 0.0,
-            source_papers    TEXT NOT NULL DEFAULT '[]',
-            reasoning        TEXT NOT NULL DEFAULT '',
-            section          TEXT NOT NULL DEFAULT '',
-            species          TEXT NOT NULL DEFAULT '',
-            tissue           TEXT NOT NULL DEFAULT '',
-            condition        TEXT NOT NULL DEFAULT '',
-            effect_size      TEXT NOT NULL DEFAULT '',
-            flagged_for_review INTEGER NOT NULL DEFAULT 0,
-            validation_verdict TEXT NOT NULL DEFAULT '',
-            created_at         TEXT NOT NULL DEFAULT '',
-            updated_at         TEXT NOT NULL DEFAULT '',
-            UNIQUE(subject_id, relation, object_id, negated)
-        )
-    """)
-    # Migrate DBs created before resolver-enrichment columns existed.
-    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(triples)").fetchall()}
-    for col in ("subject_canonical_name", "object_canonical_name",
-                "subject_source_url", "object_source_url",
-                "subject_synonyms", "object_synonyms",
-                "subject_id_source", "object_id_source",
-                "subject_evidence", "object_evidence"):
-        if col not in existing_cols:
-            conn.execute(f"ALTER TABLE triples ADD COLUMN {col} TEXT")
-    for col in ("subject_needs_review", "object_needs_review"):
-        if col not in existing_cols:
-            conn.execute(f"ALTER TABLE triples ADD COLUMN {col} INTEGER DEFAULT 0")
+    from src.postextraction.deduplication import _ensure_schema
+    _ensure_schema(conn)                    # same schema as the pipeline's staging DB
     conn.commit()
 
     count = 0

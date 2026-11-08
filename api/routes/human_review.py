@@ -204,7 +204,7 @@ async def review_action(
                 if not _run_path.is_absolute(): _run_path = _ROOT / _run_path
 
                 if _run_path.exists() and sdb_path.exists():
-                    try: export_csvs_from_db(str(sdb_path), str(_run_path), formats="both")
+                    try: export_csvs_from_db(str(sdb_path), str(_run_path), formats="both", allow_shrink=False)
                     except Exception: pass
 
                 if _run_path.exists():

@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 
 from src.schema.taxonomy import OPPOSING_RELATIONS, RelationType
+from src.postextraction import staging
 
 
 _DB_PATH = Path("data/triple_store.db")
@@ -10,7 +11,7 @@ _DB_PATH = Path("data/triple_store.db")
 
 def _get_conn() -> sqlite3.Connection:
     import os as _os
-    path = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
+    path = Path(staging.path(str(_DB_PATH)))
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     return conn
@@ -29,7 +30,7 @@ def check_contradiction(record: dict) -> dict:
         return record
 
     import os as _os
-    db_path = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
+    db_path = Path(staging.path(str(_DB_PATH)))
     if not db_path.exists():
         return record
 
@@ -71,7 +72,7 @@ def check_contradiction(record: dict) -> dict:
 def flag_existing_as_contradiction(triple_id: int, reason: str) -> None:
     """Mark an already-stored triple as a contradiction (called when new opposing arrives)."""
     import os as _os
-    db_path = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
+    db_path = Path(staging.path(str(_DB_PATH)))
     if not db_path.exists():
         return
     conn = _get_conn()
