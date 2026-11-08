@@ -51,7 +51,8 @@ def test_slash_lists():
 def test_comparison_and_background_rules_in_prompt():
     from src.extraction.extractor import _system_prompt
     prompt = _system_prompt()
-    assert "A comparison is a directional finding" in prompt and "Skip textbook" in prompt
+    assert "A comparison is a directional finding" in prompt and "every specific result it cites" in prompt
+    assert "never stop part-way" in prompt
 
 
 def test_main_pass_negation_without_negating_text_is_lifted(monkeypatch):
@@ -63,3 +64,50 @@ def test_main_pass_negation_without_negating_text_is_lifted(monkeypatch):
         _rel("EMX2", "astrocytes", negated=True), _rel("IL-1β", "GAPDH", negated=True)]))
     out = X.extract(chunk).relations
     assert [r.negated for r in out] == [False, True]
+
+
+def test_list_completed_from_the_sentence():
+    from src.extraction.extractor import _complete_lists
+    text = ("Regulators IL6, IL1, TNF, IL17A and signaling factors STAT3, AP1, and RELA were activated in PIA. "
+            "IL6 rose in PIA, whereas TNF was unchanged. RTD-1 blocks IL6 in monocytes and suppresses TNF and IL1.")
+    chunk = {"text": text, "entities": [{"text": n} for n in ("IL6", "IL1", "TNF", "IL17A", "STAT3", "AP1", "RELA", "PIA",
+                                                         "RTD-1", "monocytes")]}
+    out = _complete_lists([_rel("PIA", "IL6"), _rel("PIA", "TNF")], chunk)
+    assert sorted(r.object_name for r in out) == ["AP1", "IL1", "IL17A", "IL6", "RELA", "STAT3", "TNF"]
+    assert all(r.subject_name == "PIA" for r in out)
+
+
+def test_list_needs_its_start_or_half_covered():
+    from src.extraction.extractor import _complete_lists
+    chunk = {"text": "In PIA, targets A1, B2, C3, D4, E5, F6 and G7 were reversed.",
+             "entities": [{"text": n} for n in ("PIA", "A1", "B2", "C3", "D4", "E5", "F6", "G7")]}
+    assert len(_complete_lists([_rel("PIA", "D4"), _rel("PIA", "F6")], chunk)) == 2
+
+
+def test_two_names_are_not_a_list():
+    from src.extraction.extractor import _complete_lists
+    chunk = {"text": "IL6 rose in PIA and TNF in RA.", "entities": [{"text": n} for n in ("IL6", "TNF", "PIA", "RA")]}
+    assert len(_complete_lists([_rel("PIA", "IL6")], chunk)) == 1
+
+
+def test_sentences_without_a_finding_are_found():
+    from src.extraction.extractor import _uncovered
+    chunk = {"text": "IL6 rose in PIA. RTD-1 lowered TNF and IL1B in PIA. Samples were stored at -80 C.",
+             "entities": [{"text": n} for n in ("IL6", "PIA", "RTD-1", "TNF", "IL1B")]}
+    assert _uncovered(chunk, [_rel("PIA", "IL6")]) == ["RTD-1 lowered TNF and IL1B in PIA."]
+
+
+def test_coverage_pass_skips_methods_and_keeps_grounded_findings(monkeypatch):
+    import src.extraction.extractor as ex
+    chunk = {"text": "RTD-1 lowered TNF in PIA.", "section": "results",
+             "entities": [{"text": n} for n in ("PIA", "RTD-1", "TNF")]}
+    monkeypatch.setattr(ex, "_second_pass", lambda user, name: [_rel("RTD-1", "TNF"), _rel("RTD-1", "MMP3")])
+    assert [r.object_name for r in ex._missed_findings(chunk, [])] == ["TNF"]
+    assert ex._missed_findings({**chunk, "section": "Materials and Methods"}, []) == []
+
+
+def test_untagged_names_must_be_in_the_text():
+    from src.extraction.extractor import _grounded
+    chunk = {"text": "TSH-associated loci were enriched in thyroid follicular cells.", "entities": [{"text": "TSH"}]}
+    out = _grounded([_rel("TSH", "thyroid follicular cells"), _rel("TSH", "thyrocytes")], chunk)
+    assert [r.object_name for r in out] == ["thyroid follicular cells"]

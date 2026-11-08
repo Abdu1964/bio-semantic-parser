@@ -92,3 +92,10 @@ def test_fact_organism_from_its_sentences():
     assert E._sentence_organism(text, "IL-1β", "IL6") == "Homo sapiens"
     assert E._sentence_organism(text, "PIA", "IL1B") == "Rattus norvegicus"
     assert E._sentence_organism(text, "TNF", "IL1B") == ""                  # two organisms named: unknown
+
+
+def test_organism_must_be_named_in_the_text():
+    text = "Cardiac fibroblasts were accessible at GATA4 and TBX20 (Perrino and Rockman, 2006)."
+    assert not E._organism_named("Mus musculus", text)
+    assert E._organism_named("Mus musculus", "Enhancers were tested in transgenic mice.")
+    assert E._organism_named("Homo sapiens", "Human RA-FLS were stimulated.")
