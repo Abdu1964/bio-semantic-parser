@@ -422,6 +422,12 @@ class SectionLabel(str, Enum):
 # Target kinds used as relation ranges (what a relation's object may be), as in Biolink domain/range
 _MOLECULES = [EntityType.GENE, EntityType.PROTEIN, EntityType.TRANSCRIPT, EntityType.EXON, EntityType.NON_CODING_RNA,
               EntityType.MICRO_RNA, EntityType.SI_RNA, EntityType.MACROMOLECULAR_COMPLEX, EntityType.SMALL_MOLECULE]
+_GENOMIC_REGIONS = [EntityType.REGULATORY_REGION, EntityType.ENHANCER, EntityType.SUPER_ENHANCER, EntityType.PROMOTER,
+                    EntityType.TRANSCRIPTION_FACTOR_BINDING_SITE, EntityType.MOTIF, EntityType.EPIGENOMIC_FEATURE,
+                    EntityType.GENOMIC_VARIANT, EntityType.SEQUENCE_VARIANT, EntityType.STRUCTURAL_VARIANT,
+                    EntityType.CHROMOSOME, EntityType.TAD]
+_PROCESSES = [EntityType.PATHWAY, EntityType.BIOLOGICAL_PROCESS, EntityType.MOLECULAR_FUNCTION, EntityType.REACTION,
+              EntityType.PHYSIOLOGICAL_PROCESS, EntityType.PATHOLOGICAL_PROCESS, EntityType.CELLULAR_COMPONENT]
 _PROCESSES_AND_OUTCOMES = [EntityType.DISEASE, EntityType.CANCER, EntityType.PHENOTYPE, EntityType.SYMPTOM,
                            EntityType.PATHWAY, EntityType.BIOLOGICAL_PROCESS, EntityType.REACTION,
                            EntityType.MOLECULAR_FUNCTION, EntityType.PHYSIOLOGICAL_PROCESS,
@@ -565,6 +571,7 @@ TAXONOMY: Dict[RelationType, dict] = {
     # ── Category 4: Molecular Interactions ───────────────────────────────────
 
     RelationType.BINDS_TO: {
+        "range": _MOLECULES + _GENOMIC_REGIONS,
         "definition": "A forms a direct, demonstrated physical molecular bond with B — receptor-ligand, protein-protein domain contact, or protein-DNA binding confirmed by biochemical assay.",
         "example": "Rapamycin binds to FKBP12, forming a ternary complex that allosterically inhibits mTOR.",
         "not_this": "Use INTERACTS_WITH for functional interactions where direct binding is not demonstrated. Use IS_TARGET_OF for validated pharmacological target relationships.",
@@ -621,6 +628,7 @@ TAXONOMY: Dict[RelationType, dict] = {
         "not_this": "Use UBIQUITINATES if the tagging mechanism is the finding. Use CLEAVES if A produces specific defined fragments from B.",
     },
     RelationType.PARTICIPATES_IN: {
+        "range": _PROCESSES,
         "definition": "Gene, protein, or compound A is a functional member of pathway or biological process B, contributing to its execution.",
         "example": "FOXO3 participates in the insulin/IGF-1 signalling pathway as a transcription factor target.",
         "not_this": "Use REGULATES if A controls the pathway rather than being a member. Use PART_OF if A is a structural physical component rather than a functional participant.",
@@ -809,6 +817,7 @@ TAXONOMY: Dict[RelationType, dict] = {
     },
 
     RelationType.OPEN_CHROMATIN_AT: {
+        "range": _GENOMIC_REGIONS + [EntityType.GENE, EntityType.PROTEIN],          # TF motifs go by their TF
         "definition": "A cell type, condition, or genomic element is characterised by open/accessible chromatin at a specific genomic region (ATAC-seq or DNase-seq accessibility).",
         "example": "T-helper cells show open_chromatin_at the IL2 promoter region upon activation.",
         "not_this": "Use EPIGENOMIC_FEATURE as an entity type for the chromatin feature itself. Use REGULATES_EXPRESSION_OF if the finding is about gene expression control, not chromatin accessibility. This type is for accessibility evidence specifically.",
@@ -999,6 +1008,7 @@ TAXONOMY: Dict[RelationType, dict] = {
         "not_this": "Use RESEMBLES if the finding is phenotypic similarity without formal use as a research model. Use CAUSES/HAS_PHENOTYPE if describing what the model itself causes or exhibits, not its status as a model.",
     },
     RelationType.IMPLICATED_IN: {
+        "range": _PROCESSES_AND_OUTCOMES,
         "definition": "Gene, variant, or molecule A is suspected or shown to play a mechanistic role in disease or condition B, based on evidence such as genetic association, expression change, or pathway involvement — weaker than an established causal claim.",
         "example": "Mutations in GBA are implicated in the pathogenesis of Parkinson's disease.",
         "not_this": "Use CAUSES if causality is experimentally or epidemiologically established. Use ASSOCIATES_WITH for a purely statistical co-occurrence with no suggested mechanism. Use PREDISPOSES if A is framed as a risk factor rather than a mechanistic contributor.",

@@ -161,10 +161,9 @@ def _system_prompt() -> str:
         "   the domain, subject type, or context in which the relation can apply. "
         "   Only set extraction_viable=false if the formal definition genuinely does not apply "
         "   to the relation described in the text, after reading all definitions carefully.\n"
-        "3. subject_name and object_name MUST come from the PRE-TAGGED ENTITIES list. "
-        "   Only entities that appear in the PRE-TAGGED ENTITIES list are valid subjects or objects. "
-        "   If a relation involves entities NOT in the pre-tagged list, set extraction_viable=false. "
-        "   Use the exact verbatim text as it appears in the list. "
+        "3. Take subject_name and object_name from the PRE-TAGGED ENTITIES list, verbatim, when the entity is "
+        "   there. When a finding involves a specific biological entity the list misses, use its name exactly "
+        "   as written in the text — never a paraphrase, a description or a pronoun. "
         "   Do NOT add species prefixes ('mammalian', 'human') unless the text says so.\n"
         "4. Produce exactly one JSON object per distinct subject–relation–object triple. "
         "   Do not merge different triples into one.\n"
@@ -198,7 +197,8 @@ def _system_prompt() -> str:
         "   phenotype); if there is none, set extraction_viable=false for that relation.\n"
         "11. Negative findings are relations too. When the text reports that A did NOT change, affect, "
         "   regulate or associate with B (B was unaffected, unaltered or not elevated), extract that "
-        "   relation with negated=true — even when Layer 4 flagged no negation.\n"
+        "   relation with negated=true — even when Layer 4 flagged no negation. A claim the text reports as "
+        "   falsified, refuted, disproved, rejected or not supported is negated too.\n"
         "12. Use a directional relation (upregulates/downregulates, activates/inhibits) only when the text "
         "   states the direction for that entity. If it says levels were reversed, restored or normalized, "
         "   the direction is opposite to the change the text reports for that entity; if no such change is "
@@ -212,19 +212,24 @@ def _system_prompt() -> str:
         "16. Activity predicted by an analysis (upstream regulator or pathway analysis, z-scores, enrichment) "
         "   is not a measured change in amount: choose the relation whose definition covers activity, with "
         "   evidence=predicted; relations about abundance are for measured mRNA or protein levels. The condition "
-        "   or treatment the analysis was run on is the subject, and each regulator it lists is its own relation.\n"
+        "   or treatment the analysis was run on is the subject, and each regulator it lists is its own relation: "
+        "   'regulators X, Y and Z were activated in the disease' → three relations, disease→X, disease→Y, "
+        "   disease→Z.\n"
         "17. Keep the scope the text gives a finding — time point, group (e.g. healthy vs diseased), cell or "
         "   model system — in condition and tissue. A negated finding without its scope becomes false: if "
         "   the text limits it, the scope is required. species is the organism the finding was observed in (cells from human donors → "
-        "   Homo sapiens), not the paper's main organism.\n"
+        "   Homo sapiens), not the paper's main organism; leave it empty unless the text names it — never "
+        "   infer it from citations.\n"
         "18. Expand lists into one relation per member, with full names: 'MMPs 3, 8 and 13' → MMP3, MMP8, "
-        "   MMP13; 'IL-6 and IL-8 protein' → IL-6, IL-8. Never return a list or a fragment as one entity.\n"
+        "   MMP13; 'IL-6 and IL-8 protein' → IL-6, IL-8. Never return a list or a fragment as one entity, "
+        "   and never stop part-way: a list of fifteen gives fifteen relations.\n"
         "19. A comparison is a directional finding: 'X is higher/more accessible/enriched in A than in B' — "
         "   A is the subject, X the object, B in condition, and the relation is the one whose definition carries "
         "   that direction. Never drop the direction by choosing a relation without one, and never relate two "
         "   cell types or groups because they share a statistic.\n"
-        "20. Extract findings — this paper's results and the specific results it cites. Skip textbook "
-        "   background: what a disease or cell type is, its usual symptoms, where a molecule is normally found.\n"
+        "20. Extract every finding — this paper's results and every specific result it cites from other "
+        "   studies (rule 15), including those in the discussion. Skip only general definitions: what a disease "
+        "   or cell type is, its usual symptoms, where a molecule is normally found.\n"
         "21. Classify a finding by what was measured, then choose the relation whose definition fits it: an "
         "   enrichment or over-representation is a statistical association, not a change in expression "
         "   (evidence=predicted); something found in a tissue or place is a part–whole relation; a variant that "
@@ -371,7 +376,8 @@ _NEGATION_ASK = (
 
 # English negation words (grammar, not domain): a negated fact needs one in a sentence naming both entities
 _NEGATION_WORDS = re.compile(r"\b(not|no|nor|neither|never|without|absence|absent|lack(?:s|ed|ing)?|fail(?:s|ed)?|"
-                             r"un(?:affected|changed|altered|detectable|detected)|insignificant|nonsignificant)\b"
+                             r"un(?:affected|changed|altered|detectable|detected|supported)|insignificant|nonsignificant|"
+                             r"falsif(?:y|ied|ies|ication)|refut(?:e|ed|es|ation)|disprov(?:e|ed|es|en)|rejected|ruled out)\b"
                              r"|n't\b", re.I)
 
 
@@ -383,11 +389,9 @@ def _text_negates(relation, chunk: dict) -> bool:
     return not sentences or any(_NEGATION_WORDS.search(x) for x in sentences)
 
 
-def _negative_findings(chunk: dict) -> list:
-    """A second, small pass for negative findings, which the main pass tends to skip."""
-    messages = [{"role": "system", "content": _get_system_prompt()},
-                {"role": "user", "content": f"SECTION: {chunk.get('section', 'unknown')}\n\nTEXT:\n"
-                                            f"{chunk.get('text', '')}\n\n{_NEGATION_ASK}"}]
+def _second_pass(user: str, name: str) -> list:
+    """One small follow-up request with the extraction rules; [] when it fails."""
+    messages = [{"role": "system", "content": _get_system_prompt()}, {"role": "user", "content": user}]
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
         response = pool.submit(lambda: _client().chat.completions.create(
@@ -395,16 +399,64 @@ def _negative_findings(chunk: dict) -> list:
             response_format={"type": "json_object"})).result(timeout=_WALL_TIMEOUT)
         raw = response.choices[0].message.content or ""
         try:
-            relations = _valid_relations(_parse_json(raw).get("relations", []))
+            return _valid_relations(_parse_json(raw).get("relations", []))
         except (json.JSONDecodeError, ValidationError, TypeError, AttributeError):
-            relations = _salvage_relations(raw)
-        return [r for r in relations if r.negated and r.relation and r.extraction_viable
-                and _text_negates(r, chunk)]
+            return _salvage_relations(raw)
     except Exception as e:
-        logger.warning("Negation pass skipped for a chunk: %s", e)
+        logger.warning("%s pass skipped for a chunk: %s", name, e)
         return []
     finally:
         pool.shutdown(wait=False)
+
+
+def _negative_findings(chunk: dict) -> list:
+    """A second, small pass for negative findings, which the main pass tends to skip."""
+    relations = _second_pass(f"SECTION: {chunk.get('section', 'unknown')}\n\nTEXT:\n{chunk.get('text', '')}"
+                             f"\n\n{_NEGATION_ASK}", "Negation")
+    return [r for r in relations if r.negated and r.relation and r.extraction_viable and _text_negates(r, chunk)]
+
+
+_COVERAGE_PASS = os.getenv("COVERAGE_PASS", "true").lower() == "true"
+_COVERAGE_MAX = int(os.getenv("COVERAGE_MAX_SENTENCES", "12"))
+_NO_FINDINGS_SECTION = re.compile(r"method|material|reference|acknowledg|funding|author|disclosure", re.I)
+_COVERAGE_ASK = (
+    "Each sentence above names two or more of the tagged entities, and no finding has been taken from it yet. "
+    "Extract the findings these sentences state, with the same rules and JSON format. A sentence that only "
+    "describes a method or defines a term has none. Return an empty relations list if there are none. "
+    "Return JSON only."
+)
+
+
+def _uncovered(chunk: dict, relations: list) -> list:
+    """Sentences with 2+ tagged entities and no relation between them."""
+    names = {e["text"].lower() for e in chunk.get("entities", []) if len(e.get("text", "")) >= 2}
+    out = []
+    for sentence in re.split(r"(?<=[.!?])\s+", chunk.get("text", "")):
+        low = sentence.lower()
+        named = {n for n in names if re.search(rf"(?<![\w-]){re.escape(n)}(?![\w-])", low)}
+        named = {n for n in named if not any(n != m and n in m for m in named)}     # 'IL6' inside 'IL6R'
+        if len(named) < 2 or any(r.subject_name.lower() in low and r.object_name.lower() in low for r in relations):
+            continue
+        out.append(sentence)
+    return out[:_COVERAGE_MAX]
+
+
+def _missed_findings(chunk: dict, relations: list) -> list:
+    """Second pass over sentences with no extracted relation."""
+    if _NO_FINDINGS_SECTION.search(chunk.get("section") or ""):
+        return []
+    sentences = _uncovered(chunk, relations)
+    if not sentences:
+        return []
+    text = " ".join(sentences)
+    low = text.lower()
+    tagged = [e for e in chunk.get("entities", []) if e.get("text", "").lower() in low]
+    entity_block = "\n".join(f"  [{e['text']}]  type={e.get('label', '?')}" for e in tagged)
+    found = _second_pass(f"SECTION: {chunk.get('section', 'unknown')}\n\nTEXT:\n{text}\n\n"
+                         f"PRE-TAGGED ENTITIES FROM LAYER 4:\n{entity_block}\n\n{_COVERAGE_ASK}", "Coverage")
+    # both names must be in those sentences
+    return [r for r in found if r.relation and r.extraction_viable
+            and any(r.subject_name.lower() in s.lower() and r.object_name.lower() in s.lower() for s in sentences)]
 
 
 _MEMBER_LIST = re.compile(r"^([A-Z][A-Z-]+?)(s?)\s+(\d+[A-Za-z]?(?:\s*(?:,|and|&|,\s*and)\s*\d+[A-Za-z]?)*)$")
@@ -438,21 +490,108 @@ def _expand_lists(relations: list) -> list:
     return out
 
 
+# Separator between list items: comma, semicolon or slash, with optional 'and'/'or'
+_LIST_GAP = re.compile(r"\s*(?:[,;/]\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)", re.I)
+# 'and' + up to 3 words joining a second list of 3+ items ('IL17F and signaling factors STAT3, PI3K, AP1')
+_LIST_BRIDGE = re.compile(r"\s*(?:[,;]\s*)?(?:and|or)\s+(?:[a-z][a-z/-]*\s+){1,3}", re.I)
+_LIST_MIN = 3
+
+
+def _list_runs(text: str, names: list) -> list:
+    """[(sentence, [names])] for each list of 3+ tagged entities."""
+    runs = []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        low, spans = sentence.lower(), []
+        for n in names:
+            for m in re.finditer(rf"(?<![\w-]){re.escape(n.lower())}(?![\w-])", low):
+                spans.append((m.start(), m.end(), n))
+        spans.sort(key=lambda s: (s[0], -s[1]))
+        kept = [s for i, s in enumerate(spans) if not any(o[0] <= s[0] and s[1] <= o[1] and o != s for o in spans)]
+        segments, bridged = [kept[:1]] if kept else [], []
+        for prev, cur in zip(kept, kept[1:]):
+            gap = sentence[prev[1]:cur[0]]
+            if _LIST_GAP.fullmatch(gap):
+                segments[-1].append(cur)
+            else:
+                bridged.append(bool(_LIST_BRIDGE.fullmatch(gap)))
+                segments.append([cur])
+        run = segments[:1] and segments[0]
+        for joined, seg in zip(bridged, segments[1:]):
+            if joined and len(seg) >= _LIST_MIN:
+                run = run + seg
+                continue
+            if len(run) >= _LIST_MIN:
+                runs.append((sentence, [s[2] for s in run]))
+            run = seg
+        if len(run) >= _LIST_MIN:
+            runs.append((sentence, [s[2] for s in run]))
+    return runs
+
+
+def _complete_lists(relations: list, chunk: dict) -> list:
+    """Add the missing list items to a finding the model gave for 2+ items (incl. the first, or half the list)."""
+    names = list(dict.fromkeys(e["text"] for e in chunk.get("entities", []) if len(e.get("text", "")) >= 2))
+    runs = _list_runs(chunk.get("text", ""), names)
+    if not runs:
+        return relations
+    key = lambda r: (r.subject_name.lower(), r.relation, r.object_name.lower(), bool(r.negated))
+    seen, added = {key(r) for r in relations}, []
+    for sentence, items in runs:
+        low, s_low = [i.lower() for i in items], sentence.lower()
+        groups = {}                                         # (subject, relation, negated) → [relations]
+        for r in relations:
+            if r.object_name.lower() in low and r.subject_name.lower() not in low and r.subject_name.lower() in s_low:
+                groups.setdefault((r.subject_name.lower(), r.relation, bool(r.negated)), []).append(r)
+        for (subject, _, _), rels in groups.items():
+            covered = {r.object_name.lower() for r in rels}
+            rivals = [len({x.object_name.lower() for x in g}) for (s, *_), g in groups.items()
+                      if s == subject and g is not rels]
+            if len(covered) < 2 or any(n >= len(covered) for n in rivals):
+                continue
+            if low[0] not in covered and 2 * len(covered) < len(items):  # anchors likely from other sentences
+                continue
+            for item in items:
+                new = rels[0].model_copy(update={"object_name": item})
+                if key(new) not in seen:
+                    seen.add(key(new))
+                    added.append(new)
+    return relations + added
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"[\W_]+", "", (text or "").lower())
+
+
+def _grounded(relations: list, chunk: dict) -> list:
+    """Drop relations with a name that is neither tagged nor in the chunk text."""
+    tagged = {_compact(e.get("text")) for e in chunk.get("entities", [])}
+    text = _compact(chunk.get("text"))
+    ok = lambda n: bool(_compact(n)) and (_compact(n) in tagged or _compact(n) in text)
+    return [r for r in relations if not r.extraction_viable or (ok(r.subject_name) and ok(r.object_name))]
+
+
+def _tidy(relations: list, chunk: dict) -> list:
+    """Expand and complete lists; clear negations the text does not state."""
+    return [r.model_copy(update={"negated": False}) if r.negated and not _text_negates(r, chunk) else r
+            for r in _complete_lists(_expand_lists(_grounded(relations, chunk)), chunk)]
+
+
 def extract(chunk: dict, _depth: int = 0) -> ExtractionResult:
-    """Extract relations from one chunk, then add the negative findings a second pass finds."""
+    """Extract relations from one chunk, plus the coverage and negation passes."""
     result = _extract_main(chunk, _depth)
-    # A negation the text never states (no negating word where both entities are named) is the model's error:
-    # the finding stands, positive, as the text gives it
-    relations = [r.model_copy(update={"negated": False}) if r.negated and not _text_negates(r, chunk) else r
-                 for r in _expand_lists(result.relations)]
-    result = result.model_copy(update={"relations": relations})
-    if _depth or result.rejected or not _NEGATION_PASS:     # after the main pass: the LLM server holds few long requests
+    result = result.model_copy(update={"relations": _tidy(result.relations, chunk)})
+    if _depth or result.rejected:
         return result
-    key = lambda r: (r.subject_name.lower(), r.relation.value if r.relation else "", r.object_name.lower())
-    seen = {(*key(r), bool(r.negated)) for r in result.relations}
-    extra = [r for r in _negative_findings(chunk)
-             if r.relation and (*key(r), True) not in seen]                    # non-viable ones have no relation
-    return ExtractionResult(relations=result.relations + extra) if extra else result
+    key = lambda r: (r.subject_name.lower(), r.relation.value if r.relation else "", r.object_name.lower(),
+                     bool(r.negated))
+    relations, seen = list(result.relations), {key(r) for r in result.relations}
+    # sequential: the LLM server holds few long requests
+    if _COVERAGE_PASS:
+        relations += [r for r in _tidy(_missed_findings(chunk, relations), chunk) if key(r) not in seen]
+        seen = {key(r) for r in relations}
+    if _NEGATION_PASS:
+        relations += [r for r in _negative_findings(chunk) if key(r) not in seen]
+    return result if len(relations) == len(result.relations) else ExtractionResult(relations=relations)
 
 
 def _extract_main(chunk: dict, _depth: int = 0) -> ExtractionResult:

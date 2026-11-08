@@ -137,7 +137,9 @@ RULES:
    'altered TFs', 'top motifs', 'modules'). A cell type found in a tissue is part_of that tissue.
 12. Two items are related only where the figure links them: an arrow or line, the same row of one
    table, or the cell where a row and a column of one matrix meet. Items in separate panels, or in
-   lists or columns placed side by side, are never related by their position.
+   lists or columns placed side by side, are never related by their position. In a table row, each
+   value describes the row's subject (its first column); two values from other columns of that row
+   (e.g. a process and a motif) are not related to each other.
 13. A colour, cluster, box or legend group shows only that its items share the group — never a relation
    between an item and the group."""
 

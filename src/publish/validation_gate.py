@@ -36,6 +36,10 @@ def route(records: list) -> tuple:
     for r in records:
         verdict     = r.get("validation_verdict", "SKIPPED")
         contra      = r.get("is_contradiction",   False)
+        if verdict == "VALID" and not contra:                # local ID for an unresolved name
+            r = {**r, **{f"{s}_id": r[f"{s}_local_id"] for s in ("subject", "object")
+                         if r.get(f"{s}_local_id") and (_is_text_label(r.get(f"{s}_id"))
+                                                        or _is_hard_unresolved(r.get(f"{s}_id")))}}
         subject_id  = r.get("subject_id", "")
         object_id   = r.get("object_id",  "")
         subject_type = r.get("subject_type", "")

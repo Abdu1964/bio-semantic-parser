@@ -777,6 +777,23 @@ def _try_core_term(text: str, entity_type: str, species: str = "") -> Optional[t
 
 
 _TRAILING_QUALIFIER = re.compile(r"^(.*\S)\s*\([^()]+\)$")
+_LEADING_AMOUNT = re.compile(r"^\d+(?:\.\d+)?\s*-?\s*(?:days?|d|h|hrs?|hours?|min|minutes?|weeks?|wks?|months?|years?|"
+                             r"mg|[µu]g|ng|mM|[µu]M|nM)\b\s*(?:of\s+)?(.+)$", re.I)
+_LEADING_WORDS = re.compile(r"^[a-z][a-z/ -]*\s+([A-Z0-9][A-Za-z0-9-]*)$")          # 'upstream regulators TNF'
+_CLUSTER = re.compile(r"^(.*\D)\s+\d+[a-z]?\s*(?:\(([^()]+)\))?$")                 # 'T Lymphocyte 1 (CD8+)'
+
+
+def _stripped_names(text: str) -> list:
+    """Name without a leading amount or time, a leading description, or a cluster number."""
+    t, out = text.strip(), []
+    for rx in (_LEADING_AMOUNT, _LEADING_WORDS):
+        m = rx.match(t)
+        if m:
+            out.append(m.group(1).strip())
+    m = _CLUSTER.match(t)
+    if m:
+        out += [f"{m.group(2)} {m.group(1).strip()}"] if m.group(2) else [m.group(1).strip()]
+    return [v for v in dict.fromkeys(out) if v and term_key(v) != term_key(t)]
 
 
 def _name_variants(text: str, ontologies: list) -> list:
@@ -1150,11 +1167,16 @@ def _ensembl_search_uncached(text: str, species: str = "human",
                 )
                 data = r.json()
                 if isinstance(data, list) and data:
-                    eid = data[0].get("id", "")
-                    # ENS[species code]G prefix covers all organisms, not just human (ENSG).
-                    if re.match(r"^ENS[A-Z]*G\d+$", eid):
-                        label = _ensembl_display_name(eid, timeout) or candidate
-                        return (f"ENSEMBL:{eid}", label, "")
+                    # Ensembl also returns genes that only carry the name as another database's xref:
+                    # take the gene whose symbol is the name, else one that lists it as its own synonym
+                    genes = [d.get("id", "") for d in data if re.match(r"^ENS[A-Z]*G\d+$", d.get("id", ""))]
+                    for eid in genes:
+                        label = _ensembl_display_name(eid, timeout) or ""
+                        if term_key(label) == term_key(candidate):
+                            return (f"ENSEMBL:{eid}", label, "")
+                    for eid in genes[:3]:
+                        if term_key(candidate) in {term_key(x) for x in _ensembl_synonyms(eid, timeout)}:
+                            return (f"ENSEMBL:{eid}", _ensembl_display_name(eid, timeout) or candidate, "")
                 last_err = None
                 break  # valid response, legitimately no match for this candidate
             except Exception as e:
@@ -1186,6 +1208,17 @@ def _hgnc_gene(symbol: str, timeout=_TIMEOUT) -> Optional[tuple]:
         if len(docs) == 1 and docs[0].get("ensembl_gene_id"):      # an alias shared by genes is ambiguous
             return (f"ENSEMBL:{docs[0]['ensembl_gene_id']}", docs[0].get("symbol") or symbol, "")
     return None
+
+
+def _ensembl_synonyms(ensembl_id: str, timeout: int = _TIMEOUT) -> list:
+    """The gene's own synonyms as Ensembl lists them (its primary name xrefs)."""
+    try:
+        r = _http_get(f"https://rest.ensembl.org/xrefs/id/{ensembl_id}", params={"content-type": "application/json"},
+                      headers={"Content-Type": "application/json"}, timeout=timeout)
+        return [syn for x in (r.json() or []) if x.get("display_id") and x.get("info_type") == "DIRECT"
+                for syn in [x["display_id"], *(x.get("synonyms") or [])]]
+    except Exception:
+        return []
 
 
 def _ensembl_display_name(ensembl_id: str, timeout: int = _TIMEOUT, retries: int = 2) -> Optional[str]:
@@ -1316,7 +1349,12 @@ def _pubchem_search(text: str, timeout: int = _TIMEOUT) -> Optional[tuple]:
 
 
 def _uniprot_search(text: str, species: str = "Homo sapiens", timeout: int = _TIMEOUT) -> Optional[tuple]:
-    """UniProt REST API — canonical protein accessions. Returns (id, label, prefix, synonyms)."""
+    """UniProt REST API — canonical protein accessions. Returns (id, label, prefix, synonyms).
+    A symbol is first looked up as an exact gene name ('TNF' → TNF, not TNFSF13 from free text)."""
+    if " " not in text.strip() and _symbol_like(text.strip()) and not text.startswith("gene_exact:"):
+        hit = _uniprot_search(f'gene_exact:"{text.strip()}"', species, timeout)
+        if hit and match_quality(text, hit[1], []) == EXACT:
+            return hit
     try:
         query = f'{text} AND organism_name:"{species}" AND reviewed:true'
         r = _http_get(
@@ -1923,6 +1961,8 @@ def normalize_entity(
 ) -> dict:
     """Normalize one entity to a canonical ID (dict with canonical_id, canonical_name, id_source, ...)."""
     result = _normalize_entity_cached(text, entity_type, existing_id, species or _doc().species, context)
+    if result.get("canonical_name"):                     # NCBI's disambiguation tag: 'Drosophila <flies,genus>'
+        result = {**result, "canonical_name": re.sub(r"\s*<[^<>]*>\s*$", "", result["canonical_name"])}
     fam = _TYPE_FAMILY.get(entity_type)
     if result.get("network_degraded") and fam == "gene" and result.get("id_source") not in _GENE_SOURCES:
         # Gene sources failed on the network: retried later; after the last retry, NCBI Gene in the stated species
@@ -2033,6 +2073,14 @@ def _normalize_entity_core(
 
     # ── Priority 2: Fast local lookup for common organisms ───────────────────
     if entity_type == "ORGANISM":
+        if re.fullmatch(r"[A-Z][a-z]+(?: [a-z]+){0,2}", text.strip()):       # an exact scientific name: its own taxon
+            exact = [c for c in _ncbi_taxon_candidates(text, retmax=10) if c[1].lower() == text.strip().lower()]
+            if exact:                                    # homonyms: the paper's organism lineage, else the named one
+                lineage = _lineage(species or _doc().species) if len(exact) > 1 else set()
+                tid, sci = next(((c[0], c[1]) for c in exact if c[0] in lineage),
+                                next(((c[0], c[1]) for c in exact if c[2]), (exact[0][0], exact[0][1])))
+                return {"canonical_id": f"NCBITaxon:{tid}", "canonical_name": sci, "id_source": "ncbi_taxon",
+                        "ontology_prefix": "", "needs_review": False}
         local_taxid = _local_taxon(text)
         if local_taxid:
             return {"canonical_id": f"NCBITaxon:{local_taxid}",
@@ -2062,8 +2110,10 @@ def _normalize_entity_core(
         if up:
             uid, ulabel, uprefix, usynonyms = up
             symbol = " " not in text.strip() and _symbol_like(text.strip())     # a symbol names one protein exactly
-            if (match_quality(text, ulabel, usynonyms.split("; ")) == EXACT if symbol
-                    else not _is_confidently_wrong(text, ulabel, usynonyms)):
+            # a symbol that only matches a synonym loses to a gene whose official symbol it is ('PTX3' ≠ Pitx3)
+            official = symbol and term_key(ulabel) != term_key(text) and _ensembl_local_gene([text], _ensembl_species_slug(species))
+            if not official and (match_quality(text, ulabel, usynonyms.split("; ")) == EXACT if symbol
+                                 else not _is_confidently_wrong(text, ulabel, usynonyms)):
                 return {"canonical_id": uid, "canonical_name": ulabel, "id_source": "uniprot",
                         "ontology_prefix": uprefix, "needs_review": False, "synonyms": usynonyms}
 
@@ -2185,6 +2235,14 @@ def _normalize_entity_core(
     verified = _verified_candidate(text, entity_type, context, ontologies, species)
     if verified:
         return verified
+
+    # ── Priority 10b2: the name without a leading amount, description or cluster number ──
+    if allow_llm_name:
+        for variant in _stripped_names(text):
+            res = _normalize_entity_core(variant, entity_type, None, species, context, allow_llm_name=False)
+            if res["id_source"] not in ("fuzzy", "review", "wikidata"):
+                res["proposed_name"] = variant
+                return res
 
     # ── Priority 10c: the name as the ontology words it — no qualifier, head as labelled ──
     if allow_llm_name and _TYPE_FAMILY.get(entity_type) not in _MOLECULAR:   # genes have symbol lookups
@@ -2465,6 +2523,16 @@ def _type_name_only(text: str, entity_type: str) -> str:
     return "generic category term" if words and words == set(tokens((entity_type or "").replace("_", " "))) else ""
 
 
+def _organism_named(binomial: str, text: str) -> bool:
+    """True if the text names the organism (scientific name, common name or 'M. musculus')."""
+    low, target = (text or "").lower(), _COMMON_TO_BINOMIAL.get(binomial.lower(), binomial.lower())
+    names = {target} | {c for c, b in _COMMON_TO_BINOMIAL.items() if b == target}
+    genus, _, epithet = target.partition(" ")
+    if epithet:
+        names.add(f"{genus[0]}. {epithet}")
+    return any(re.search(rf"(?<![\w-]){re.escape(n)}(?![\w-])", low) for n in names)
+
+
 def _sentence_organism(chunk_text: str, subject: str, obj: str) -> str:
     """The one organism the sentences naming both entities mention ('human RA-FLS were stimulated with
     IL-1β' → Homo sapiens); '' when they name none or several."""
@@ -2492,6 +2560,8 @@ def normalize_record(record: dict, annotated_chunk: dict) -> dict:
     object_type  = record.get("object_type",  "OTHER")
     species      = record.get("species", "")
     chunk_text   = record.get("_chunk_text", "")
+    if _local_taxon(normalize_species(species) or "-") and not _organism_named(normalize_species(species), chunk_text):
+        species = ""                                                  # organism not named in the text
     if not _local_taxon(normalize_species(species) or "-"):          # no organism stated for this fact
         species = _sentence_organism(chunk_text, subject_name, object_name) or species
 
@@ -2732,7 +2802,6 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
     run([i for i, r in enumerate(records) if not abbrev(r)])
     run([i for i, r in enumerate(records) if abbrev(r)])
 
-    # Lookups that failed on the network: wait and retry (2, 4, 6 min); the last round may use NCBI Gene
     say = notify or (lambda msg: None)
     for rnd in range(1, _NETWORK_RETRY_ROUNDS + 1):
         retry = [i for i, r in enumerate(out) if _awaits_lookup(r, "subject") or _awaits_lookup(r, "object")]
@@ -2745,7 +2814,6 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
                           if _awaits_lookup(out[i], side)})
         hosts = ", ".join(f"{h}: {n} failed request(s)" for h, n in sorted(_failed_requests.items(), key=lambda x: -x[1]))
         last = " — the last retry also tries NCBI Gene" if rnd == _NETWORK_RETRY_ROUNDS else ""
-        say(f"⚠ {len(retry)} record(s) hit network failures — waiting {wait // 60} min, then retry {rnd}/{_NETWORK_RETRY_ROUNDS}{last}")
         say(f"    unreachable: {hosts or 'unknown'}")
         say(f"    waiting: {', '.join(waiting[:20])}{' …' if len(waiting) > 20 else ''}")
         logger.info("Retry %d/%d in %ds: %d record(s) whose lookups hit network errors",
