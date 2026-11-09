@@ -1153,8 +1153,10 @@ def _hgnc_gene(symbol: str, timeout=_TIMEOUT) -> Optional[tuple]:
         except Exception as e:
             logger.warning("HGNC lookup failed for %r: %s", symbol, e)
             return None
-        if len(docs) == 1 and docs[0].get("ensembl_gene_id"):      # an alias shared by genes is ambiguous
-            return (f"ENSEMBL:{docs[0]['ensembl_gene_id']}", docs[0].get("symbol") or symbol, "")
+        if docs:                                                    # the first field that knows the symbol decides
+            if len(docs) == 1 and docs[0].get("ensembl_gene_id"):  # several genes: ambiguous, no ID
+                return (f"ENSEMBL:{docs[0]['ensembl_gene_id']}", docs[0].get("symbol") or symbol, "")
+            return None
     return None
 
 
