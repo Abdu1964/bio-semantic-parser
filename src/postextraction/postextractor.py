@@ -32,7 +32,7 @@ def _compute_confidence(relation, chunk: dict,
         llm_confidence = relation.confidence,
         section        = chunk.get("section", "unknown"),
         text           = chunk.get("text", ""),
-        relation       = str(relation.relation),
+        relation       = getattr(relation.relation, "value", str(relation.relation)),
         reasoning      = relation.reasoning or "",
     )
     return result["final_score"], result["channels"]

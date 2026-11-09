@@ -1152,8 +1152,8 @@ function showEdgePanel(edgeId) {{
             const channels = [
               ['C1', 'Section weight',        ch.C1_section_weight,        0.20,
                'Results/Tables=100% · Abstract=60% · Discussion=40% · Methods=20%'],
-              ['C2', 'Factuality (NLI)',       ch.C2_factuality_nli || ch.C2_factuality, 0.30,
-               '"demonstrated"=95% · "suggests"=75% · "may"=50% · "failed to"=20%'],
+              ['C2', 'Factuality',             ch.C2_factuality || ch.C2_factuality_nli, 0.30,
+               '"demonstrated"=95% · "suggests"=75% · "may"=50% · "unlikely"=20%'],
               ['C3', 'Quantitative evidence',  ch.C3_quantitative_evidence, 0.25,
                'p≤0.001=100% · p≤0.05=75% · fold-change/OR=70% · none=40%'],
               ['C4', 'Direct co-sentence',     ch.C4_direct_claim,          0.15,

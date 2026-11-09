@@ -1,8 +1,9 @@
 """
 Layer 4 — Negation Detector
 
-NLI cross-encoder that classifies each entity's containing clause against the
-hypothesis that the clause reports a confirmed positive finding.
+NLI cross-encoder that classifies each entity's containing clause against a
+positive hypothesis (confirmed finding; negated if contradicted) and negative
+hypotheses (finding absent; negated if entailed).
 
 Sentences are split at contrastive conjunctions ("but not", "however",
 "although"…) before classification so that entities in the positive branch
@@ -49,6 +50,13 @@ _DEFAULT_HYPOTHESIS = (
     "This study demonstrates a confirmed biological effect, finding, or association."
 )
 
+# Second check: many definite negatives ("did not affect", "no difference") read as neutral,
+# not as a contradiction, against the positive hypothesis. These catch them by entailment.
+_NEGATIVE_HYPOTHESES = (
+    "This study demonstrates that an effect, finding, or association was absent.",
+    "It did not have an effect.",
+)
+
 
 class NegationDetector:
     _MODEL     = "cross-encoder/nli-MiniLM2-L6-H768"
@@ -59,9 +67,13 @@ class NegationDetector:
     # Calibrated against biomedical test sentences:
     # 0.45 catches "no improvement" (0.89), "NOT recommended" (0.47),
     # while correctly passing "contributes to" (0.03), "enables" (0.04).
+    _NEG_THRESHOLD = 0.50   # entailment of a negative hypothesis; on 225 labelled sentences from
+                            # 5 papers: negatives caught 16/40 → 26/40, no new false positives on positive findings
 
-    def __init__(self, hypothesis: str = _DEFAULT_HYPOTHESIS):
+    def __init__(self, hypothesis: str = _DEFAULT_HYPOTHESIS,
+                 negative_hypotheses: tuple = _NEGATIVE_HYPOTHESES):
         self._hypothesis = hypothesis
+        self._negative_hypotheses = tuple(negative_hypotheses)
         import os as _os
         _os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         self._tokenizer  = AutoTokenizer.from_pretrained(
@@ -77,16 +89,21 @@ class NegationDetector:
         # Label order: {0: contradiction, 1: entailment, 2: neutral}
     
     def _is_negated(self, clause: str) -> tuple:
+        """Negated if the clause contradicts the positive hypothesis or entails a negative one."""
+        hypotheses = (self._hypothesis, *self._negative_hypotheses)
         inputs = self._tokenizer(
-            clause, self._hypothesis,
+            [clause] * len(hypotheses), list(hypotheses),
             return_tensors="pt",
             truncation=True,
+            padding=True,
             max_length=512,
         )
         with _infer_lock, torch.no_grad():   # shared model — one forward pass at a time
-            probs = torch.softmax(self._model(**inputs).logits, dim=-1)[0]
-        contradiction_score = float(probs[0])
-        return contradiction_score > self._THRESHOLD, round(contradiction_score, 3)
+            probs = torch.softmax(self._model(**inputs).logits, dim=-1)
+        contradiction_score = float(probs[0][0])
+        negative_score = max((float(p[1]) for p in probs[1:]), default=0.0)
+        is_neg = contradiction_score > self._THRESHOLD or negative_score > self._NEG_THRESHOLD
+        return is_neg, round(max(contradiction_score, negative_score), 3)
 
     def _find_sentence(self, doc, entity_text: str, start_char: int) -> str:
         if start_char >= 0:
