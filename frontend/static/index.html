@@ -210,11 +210,11 @@ function onUnifiedFrameLoad(frame) {
             ondragover="event.preventDefault();this.style.color='var(--blue)'"
             ondragleave="this.style.color=''"
             ondrop="onDrop(event)">
-            <span id="pdf-name">Click to choose a file (PDF, DOCX, EPUB, XML, ZIP…) or drag & drop</span>
+            <span id="pdf-name">Click to choose a file (PDF, DOCX, EPUB, XML, image, ZIP…) or drag & drop</span>
           </div>
           <button id="pdf-clear" onclick="clearPdf()" style="display:none;background:none;border:none;color:var(--text3);font-size:16px;cursor:pointer;padding:2px 6px;border-radius:5px" title="Remove PDF">✕</button>
         </div>
-        <input type="file" id="pdf-input" accept=".pdf,.docx,.epub,.xml,.nxml,.json,.html,.htm,.md,.txt,.zip,.gz,.tgz,.tar,.bz2,.xz" style="display:none" onchange="onFileSelect(this)">
+        <input type="file" id="pdf-input" accept=".pdf,.docx,.epub,.xml,.nxml,.json,.html,.htm,.md,.txt,.png,.jpg,.jpeg,.tif,.tiff,.gif,.bmp,.webp,.zip,.gz,.tgz,.tar,.bz2,.xz" style="display:none" onchange="onFileSelect(this)">
       </div>
 
       <div class="input-divider"></div>
@@ -659,7 +659,7 @@ function onUnifiedFrameLoad(frame) {
 <script src="/static/js/main/03-run-selector.js?v=2"></script>
 <script src="/static/js/main/04-view-mode.js?v=2"></script>
 <script src="/static/js/main/05-stream-terminal.js?v=2"></script>
-<script src="/static/js/main/06-input-detect.js?v=3"></script>
+<script src="/static/js/main/06-input-detect.js?v=4"></script>
 <script src="/static/js/main/07-sources-panel.js?v=2"></script>
 <script src="/static/js/main/08-pipeline-run.js?v=2"></script>
 <script src="/static/js/main/09-event-handler.js?v=2"></script>
