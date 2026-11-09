@@ -129,7 +129,7 @@ class Fetcher:
             log(f"           ✓ Local file — {len(text):,} chars")
         else:
             content_type = response.headers.get("Content-Type", "")
-            format_type = self.format_detector.detect(content_type)
+            format_type = self.format_detector.detect(content_type, data=response.content, filename=url)
             if format_type in ("json", "xml", "html", "text"):
                 text = self._extract_text(format_type, response, source)
             else:                                           # PDF, archives, DOCX, unlabelled bytes

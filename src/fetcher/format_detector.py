@@ -1,6 +1,6 @@
 """Detect a document's format: file signature first, then file name, then Content-Type."""
 import io
-import re
+import json
 import zipfile
 
 ARCHIVES = {"zip", "tar", "gzip", "bz2", "xz"}
@@ -22,10 +22,25 @@ class FormatDetector:
 
     def detect(self, content_type: str = "", data: bytes = None, filename: str = "") -> str:
         """Format name, or 'unknown'."""
-        return (self._from_bytes(data) if data else None) \
+        kind = self._from_bytes(data) if data else None
+        if kind == "json":                                   # '{' or '[' alone does not make JSON (Markdown links)
+            kind = self._json_kind(data)
+        return kind \
             or self._from_name(filename) \
             or self._from_content_type(content_type or "") \
             or "unknown"
+
+    @staticmethod
+    def _json_kind(data: bytes):
+        """'bioc' for a BioC collection (documents with passages), 'json' for other valid JSON, else None."""
+        try:
+            obj = json.loads(data.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, ValueError):
+            return None
+        collections = obj if isinstance(obj, list) else [obj]
+        bioc = any(isinstance(c, dict) and isinstance(c.get("documents"), list) and any(
+            isinstance(d, dict) and isinstance(d.get("passages"), list) for d in c["documents"]) for c in collections)
+        return "bioc" if bioc else "json"
 
     # ── signatures ──
     def _from_bytes(self, data: bytes):
@@ -67,15 +82,15 @@ class FormatDetector:
             return None
         low = text.lower()
         if low.startswith("<?xml") or low.startswith("<!doctype") or low.startswith("<"):
+            if "<html" in low or "<!doctype html" in low:      # HTML5 pages may contain <article>
+                return "html"
             if "jats" in low or "<article" in low:
                 return "jats"
             if "<collection" in low and ("bioc" in low or "<document" in low or "<source" in low):
                 return "bioc"
-            if "<html" in low or "<!doctype html" in low:
-                return "html"
             return "xml"
         if low.startswith("{") or low.startswith("["):
-            return "bioc" if re.search(r'"(documents|passages)"\s*:', low) else "json"
+            return "json"                                     # checked against the full content in detect()
         return None
 
     # ── fallbacks ──
