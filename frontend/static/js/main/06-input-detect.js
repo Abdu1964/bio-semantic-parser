@@ -54,7 +54,7 @@ function clearPdf() {
   isPdf   = false;
   selectedSource = '';
   document.getElementById('pdf-input').value = '';
-  document.getElementById('pdf-name').textContent = 'Click to choose PDF or drag & drop';
+  document.getElementById('pdf-name').textContent = 'Click to choose a file (PDF, DOCX, EPUB, XML, image, ZIP…) or drag & drop';
   document.getElementById('pdf-clear').style.display = 'none';
   document.getElementById('pdf-row').style.display = 'none';   // hide the PDF row
   const badge = document.getElementById('detect-badge');
@@ -66,10 +66,12 @@ function clearPdf() {
   if (link) { link.textContent = 'Upload PDF'; link.style.color = ''; }
 }
 
+const _UPLOAD_EXT = '.pdf,.docx,.epub,.xml,.nxml,.json,.html,.htm,.md,.txt,.png,.jpg,.jpeg,.tif,.tiff,.gif,.bmp,.webp,.zip,.gz,.tgz,.tar,.bz2,.xz'.split(',');
+
 function onDrop(e) {
   e.preventDefault();
   const f = e.dataTransfer.files[0];
-  if (f && f.name.endsWith('.pdf')) {
+  if (f && _UPLOAD_EXT.some(ext => f.name.toLowerCase().endsWith(ext))) {
     pdfFile = f;
     document.getElementById('pdf-name').textContent = f.name;
     document.getElementById('pdf-clear').style.display = 'inline';

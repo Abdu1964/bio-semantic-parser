@@ -776,6 +776,26 @@ def _try_core_term(text: str, entity_type: str, species: str = "") -> Optional[t
     return None
 
 
+_TRAILING_QUALIFIER = re.compile(r"^(.*\S)\s*\([^()]+\)$")
+
+
+def _name_variants(text: str, ontologies: list) -> list:
+    """Rewrites to retry: without a trailing qualifier ('Fibroblast (Liver)' → 'Fibroblast'), and with
+    the head word as the ontology labels it ('atrial cardiomyocyte' → 'atrial cardiac muscle cell')."""
+    out = []
+    m = _TRAILING_QUALIFIER.match(text.strip())
+    if m:
+        out.append(m.group(1))
+    for name in [text.strip()] + out:
+        words = name.split()
+        if len(words) < 2 or not words[-1].isalpha():
+            continue
+        head = _ols4_search(words[-1], ontologies)
+        if head and head[3] and term_key(head[1]) != term_key(words[-1]):    # exact hit, other wording
+            out.append(" ".join(words[:-1] + [head[1]]))
+    return [v for v in dict.fromkeys(out) if term_key(v) != term_key(text)]
+
+
 def _is_canonical_id(s: str) -> bool:
     """True if s looks like a real canonical ID (has a DB prefix or is an rsID)."""
     if not s:
@@ -2081,6 +2101,14 @@ def _normalize_entity_core(
     verified = _verified_candidate(text, entity_type, context, ontologies, species)
     if verified:
         return verified
+
+    # ── Priority 10c: the name as the ontology words it — no qualifier, head as labelled ──
+    if allow_llm_name and _TYPE_FAMILY.get(entity_type) not in _MOLECULAR:   # genes have symbol lookups
+        for variant in _name_variants(text, ontologies):
+            res = _normalize_entity_core(variant, entity_type, None, species, context, allow_llm_name=False)
+            if res["id_source"] not in ("fuzzy", "review", "wikidata"):
+                res["proposed_name"] = variant
+                return res
 
     # ── Priority 10d: Greek letters spelled out, as ontologies label them ('θ-defensins' → 'theta-defensins') ──
     spelled = spell_greek(text)

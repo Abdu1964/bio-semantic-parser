@@ -5,6 +5,7 @@ import requests
 from dotenv import load_dotenv
 from src.fetcher.format_detector import FormatDetector
 from src.fetcher.handlers import JSONHandler, XMLHandler, HTMLHandler, PDFHandler, TextHandler
+from src.fetcher.document_reader import read_document
 from src.fetcher.cleaner import TextCleaner
 from src.fetcher.coref_client import CorefClient
 from src.fetcher.section_splitter import SectionSplitter
@@ -35,13 +36,19 @@ class Fetcher:
             elif verbose:
                 print(msg)
 
-        # handle local file path (PDF or TXT fallback from recovery)
+        # local file: any supported document or archive
         if not url.startswith("http"):
             if not paper_url:
-                paper_url = url   # local path is the "source" for PDFs
+                paper_url = url   # local path is the "source"
             log("  Step 1 — Reading local file...")
-            raw_text = PDFHandler().extract(url)
-            log(f"           ✓ Extracted {len(raw_text):,} chars from file")
+            with open(url, "rb") as fh:
+                data = fh.read()
+            doc = read_document(data, filename=url, text_field=source.get("text_field"))
+            raw_text = doc.text
+            inner = f" ({doc.source_file})" if doc.source_file and doc.source_file != url else ""
+            log(f"           ✓ {doc.format.upper()}{inner}: {len(raw_text):,} chars"
+                + (f"  |  {len(doc.figures)} figure file(s)" if doc.figures else ""))
+            _save_figures(data, url, "", document_id, log)
             return self._run_steps(raw_text, None, source, document_id, url, log,
                                    paper_url=paper_url or url)
 
@@ -122,9 +129,15 @@ class Fetcher:
             log(f"           ✓ Local file — {len(text):,} chars")
         else:
             content_type = response.headers.get("Content-Type", "")
-            format_type = self.format_detector.detect(content_type)
-            text = self._extract_text(format_type, response, source)
+            format_type = self.format_detector.detect(content_type, data=response.content, filename=url)
+            if format_type in ("json", "xml", "html", "text"):
+                text = self._extract_text(format_type, response, source)
+            else:                                           # PDF, archives, DOCX, unlabelled bytes
+                doc = read_document(response.content, filename=url, content_type=content_type,
+                                    text_field=source.get("text_field"))
+                text, format_type = doc.text, doc.format
             log(f"           ✓ Format: {format_type.upper()}  |  Extracted: {len(text):,} chars")
+            _save_figures(response.content, url, content_type, document_id, log)
 
         # Step 3 — noise removal
         log("  Step 3 — Cleaning noise...")
@@ -234,6 +247,21 @@ def _build_readable_url(source: dict, doc_id: str, fetch_url: str) -> str:
     if fetch_url and "efetch.fcgi" not in fetch_url and "eutils" not in fetch_url:
         return fetch_url
     return ""
+
+
+def _save_figures(data: bytes, filename: str, content_type: str, document_id: str, log) -> None:
+    """Extract and save the paper's figures; never fails the fetch."""
+    if os.getenv("FIGURES_ENABLED", "true").lower() != "true":
+        return
+    try:
+        from src.figures import extract_figures, figures_dir, save_figures
+        figures = extract_figures(data, filename, content_type)
+        path = save_figures(figures or [], figures_dir(document_id))       # no figures also replaces an old index
+        if figures:
+            with_caption = sum(bool(f.caption) for f in figures)
+            log(f"           ✓ Figures: {len(figures)} ({with_caption} with caption) → {path.parent}")
+    except Exception as e:
+        log(f"           ✗ Figure extraction skipped: {e}")
 
 
 def _is_pdf_url(url: str) -> bool:
