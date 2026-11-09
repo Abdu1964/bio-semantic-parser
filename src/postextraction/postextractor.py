@@ -68,6 +68,7 @@ def _relation_to_record(
         # would be overwritten by the LAST chunk — causing all earlier relations
         # to be validated against the wrong text and rejected as hallucinations.
         "_chunk_text":   chunk.get("text", ""),
+        "figure":        chunk.get("figure"),                   # set when read from a figure
         "subject_id":          None,
         "subject_id_source":   None,
         "subject_needs_review":False,

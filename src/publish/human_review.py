@@ -2,6 +2,7 @@
 import csv
 import json
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,6 +13,20 @@ _CSV_PATH   = _QUEUE_PATH.with_suffix(".csv")
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _pinned(figure, run_dir: Path):
+    """The figure with its image copied into the run folder, so a rerun cannot replace it."""
+    if not figure or not run_dir or not figure.get("file"):
+        return figure
+    src = Path(figure["file"])
+    if not src.is_file():
+        return figure
+    dst = Path(run_dir) / "figures" / src.name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if not dst.exists():
+        shutil.copy2(src, dst)
+    return {**figure, "file": str(dst)}
 
 
 def append(records: list, run_dir: Path = None, target_format: str = "both") -> int:
@@ -34,6 +49,7 @@ def append(records: list, run_dir: Path = None, target_format: str = "both") -> 
                 "document_id":        r.get("document_id", ""),
                 "source_name":        r.get("source_name", ""),
                 "section":            r.get("section", ""),
+                "figure":             _pinned(r.get("figure"), run_dir),   # {id, label, page, file, kind}
                 # The extraction
                 "subject_name":       r.get("subject_name", ""),
                 "subject_type":       r.get("subject_type", ""),

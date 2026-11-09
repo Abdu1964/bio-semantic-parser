@@ -256,8 +256,8 @@ def _save_figures(data: bytes, filename: str, content_type: str, document_id: st
     try:
         from src.figures import extract_figures, figures_dir, save_figures
         figures = extract_figures(data, filename, content_type)
+        path = save_figures(figures or [], figures_dir(document_id))       # no figures also replaces an old index
         if figures:
-            path = save_figures(figures, figures_dir(document_id))
             with_caption = sum(bool(f.caption) for f in figures)
             log(f"           ✓ Figures: {len(figures)} ({with_caption} with caption) → {path.parent}")
     except Exception as e:
