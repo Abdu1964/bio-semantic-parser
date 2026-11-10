@@ -53,7 +53,7 @@ def score(
 
 
 # ── Sentence extractor ───────────────────────────────────────────────────────
-
+# this regex matches common negation cues near the entity in a sentence
 _NEGATION_NEAR = re.compile(
     r'\b(did not|does not|do not|no|not|never|neither|nor|without|'
     r'fail|failed|lack|lacks|absent|exclude|excluded|unlikely|cannot)\b',
@@ -64,15 +64,19 @@ _NEGATION_NEAR = re.compile(
 # A period after a single letter (C. elegans, E. coli, initials) does not end a sentence.
 _SENTENCE_END = re.compile(r"(?<=[.!?])(?<!\b[A-Za-z]\.)\s+")
 
-
+# Split text into sentences while handling common abbreviations correctly
 def _split_sentences(text: str) -> list:
     return _SENTENCE_END.split(text)
 
-
+# Construct the hypothesis sentence for NLI based on the fact and its negation status
 def _hypothesis(subject: str, relation: str, obj: str, negated: bool = False) -> str:
     """The fact as a plain sentence for NLI; a negated fact is stated as negative."""
+    # Convert the relation to a readable string and construct the claim sentence
     rel   = str(getattr(relation, "value", relation)).replace("_", " ")
+
+    # Construct the claim sentence with subject, relation, and object
     claim = f"{subject} {rel} {obj}"
+    # Return the claim as a negated sentence if required
     return f"It is not true that {claim}." if negated else claim
 
 
@@ -90,6 +94,7 @@ def _best_sentence(text: str, subj_key: str, obj_key: str,
 
     sentences   = _split_sentences(text.strip())
     with_both   = []
+    other_polarity = []
     with_one    = []
 
     for sent in sentences:
@@ -97,10 +102,14 @@ def _best_sentence(text: str, subj_key: str, obj_key: str,
         has_subj = subj_key in sl
         has_obj  = obj_key  in sl
         if has_subj and has_obj:
+            # Matching negation words go first; the rest stay (e.g. "unaffected"), NLI ranks them.
             if bool(_NEGATION_NEAR.search(sl)) == negated:
                 with_both.append(sent)
+            else:
+                other_polarity.append(sent)
         elif has_subj or has_obj:
             with_one.append(sent)
+    with_both += other_polarity
 
     if not with_both and not with_one:
         # Last resort — first sentence with either entity key
