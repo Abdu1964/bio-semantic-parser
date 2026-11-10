@@ -47,6 +47,16 @@ def test_premise_matches_fact_polarity(nli_supports):
     assert cs._best_sentence(chunk, "sirt1", "foxo3", relation_hypothesis=hyp, negated=True) == neg
 
 
+def test_negative_without_listed_word_is_kept(monkeypatch):
+    """"unaffected" is not a listed negation word; the sentence must still reach NLI ranking."""
+    neg = "GAPDH was unaffected by IL-1β stimulation."
+    chunk = f"We tested whether GAPDH is affected by IL-1β. {neg}"
+    monkeypatch.setattr(cs, "_nli_score",
+                        lambda p, h: (0.02, 0.90, 0.08) if "unaffected" in p else (0.30, 0.01, 0.69))
+    hyp = cs._hypothesis("IL-1β", "upregulates", "GAPDH", negated=True)
+    assert cs._best_sentence(chunk, "il-1β", "gapdh", relation_hypothesis=hyp, negated=True) == neg
+
+
 def test_species_abbreviation_does_not_end_sentence():
     text = "daf-2 loss extended lifespan in C. elegans. Insulin signalling was reduced."
     assert cs._split_sentences(text) == ["daf-2 loss extended lifespan in C. elegans.",
