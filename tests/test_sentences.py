@@ -20,6 +20,16 @@ def test_splits_real_sentence_ends():
                                      "(E) Enriched motifs are shown."]
 
 
+def test_citation_numbers_stay_with_their_sentence():
+    text = "AD affects millions worldwide.1–5 Despite this, risk genes are unknown.8,11 We profiled cells."
+    assert split_sentences(text) == ["AD affects millions worldwide.1–5", "Despite this, risk genes are unknown.8,11",
+                                     "We profiled cells."]
+
+
+def test_decimal_is_not_a_citation():
+    assert split_sentences("Expression rose at p < 0.05 Then it fell.") == ["Expression rose at p < 0.05 Then it fell."]
+
+
 def test_chunker_keeps_text_and_species_names(monkeypatch):
     from src.fetcher.chunker import Chunker
     chunker = Chunker()

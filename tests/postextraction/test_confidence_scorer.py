@@ -69,6 +69,15 @@ def test_hedged_sentence_limits_c5(nli_supports):
     assert hedged["channels"]["C5_nli_entailment"] <= 0.50 < definite["channels"]["C5_nli_entailment"]
 
 
+@pytest.mark.parametrize("sentence,limit", [("IL6 may increase CRP (p < 0.01).", 0.50),
+                                            ("It is unlikely that IL6 increases CRP (p < 0.01).", 0.20)])
+def test_hedged_fact_final_score_capped(nli_supports, sentence, limit):
+    hedged = cs.explain("IL6", "CRP", False, 0.9, "results", sentence, relation="increases")
+    definite = cs.explain("IL6", "CRP", False, 0.9, "results", "IL6 increased CRP (p < 0.01).", relation="increases")
+    assert hedged["final_score"] <= limit < definite["final_score"]
+    assert cs.score("IL6", "CRP", False, 0.9, "results", sentence, relation="increases") <= limit
+
+
 @pytest.mark.parametrize("positive,negative", PAIRS)
 def test_negative_finding_scores_like_positive(nli_supports, positive, negative):
     subj, obj = ("SIRT1", "FOXO3") if "SIRT1" in positive else \
