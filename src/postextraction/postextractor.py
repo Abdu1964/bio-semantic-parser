@@ -55,8 +55,14 @@ def fit_relation_targets(records: list) -> tuple:
             discarded += 1
     return moved, discarded
 
-_ORGANISMS = {t.value for t in EntityType if any(k in t.value for k in ("ORGANISM", "POPULATION", "COHORT"))}
-_CONDITIONS = {"DISEASE", "CANCER", "SYMPTOM", "CLINICAL_FINDING", "PATHOLOGICAL_PROCESS"}
+def _biolink_kind(*classes: str) -> set:
+    """Entity types whose Biolink class descends from any of these Biolink classes."""
+    from src.schema.biolink_generated import ANCESTORS, ENTITY_CLASS
+    return {t for t, c in ENTITY_CLASS.items() if set(ANCESTORS.get(c, [c])) & set(classes)}
+
+
+_ORGANISMS = _biolink_kind("organism taxon", "population of individual organisms", "individual organism")
+_CONDITIONS = _biolink_kind("disease", "pathological process", "clinical finding")
 _EFFECT_RELATIONS = {r.value for r in RelationType if _EVENT.get(r.value) in ("Positive_regulation", "Negative_regulation",
                                                                                "Regulation")} | {"causes", "participates_in"}
 

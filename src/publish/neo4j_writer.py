@@ -11,6 +11,7 @@ from .node_naming import (
     pick_node_name, pick_node_full_name, pick_node_source_url,
     merge_node_synonyms, pick_node_entity_type, merge_node_evidence,
 )
+from src.schema.biolink_qualifiers import qualifiers
 
 _OUT_DIR   = Path(os.getenv("NEO4J_OUTPUT_DIR", "data/output/neo4j"))
 _DELIMITER = "|"
@@ -115,6 +116,7 @@ def write(records: list, run_dir: Path = None) -> dict:
         "paper_source", "paper_url",
         "validation_verdict", "alignment_action",
         "reasoning", "confidence_channels", "review_reason",
+        "knowledge_level", "agent_type", "object_aspect_qualifier", "object_direction_qualifier",
     ]
 
     node_files: list = []
@@ -178,6 +180,7 @@ def write(records: list, run_dir: Path = None) -> dict:
                         "reasoning":           (r.get("reasoning", "") or "")[:300],
                         "confidence_channels": json.dumps(r.get("confidence_channels") or {}),
                         "review_reason":       (r.get("review_reason", "") or "")[:200],
+                        **qualifiers(r),                               # Biolink edge qualifiers
                     })
             _write_edge_cypher(rel.upper(), slug, o_slug,
                                csv_path, cypher_path, out_dir)
@@ -251,6 +254,10 @@ CALL apoc.periodic.iterate(
          r.paper_source       = row.paper_source,
          r.paper_url          = row.paper_url,
          r.validation_verdict = row.validation_verdict,
+         r.knowledge_level    = row.knowledge_level,
+         r.agent_type         = row.agent_type,
+         r.object_aspect_qualifier    = row.object_aspect_qualifier,
+         r.object_direction_qualifier = row.object_direction_qualifier,
          r.reasoning          = row.reasoning",
     {{batchSize: 1000}}
 )

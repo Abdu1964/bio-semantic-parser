@@ -14,6 +14,7 @@ import httpx
 
 from src.schema.taxonomy import TAXONOMY, ENTITY_TAXONOMY, RelationType, EntityType
 from src.schema.pydantic_model import BiologicalRelation, ExtractionResult
+from src.schema.biolink_generated import INVERSE_TO_CANONICAL
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +32,16 @@ _WALL_TIMEOUT     = max(_WALL_TIMEOUT, _OUT_RESERVE // 10 + 60)   # a full answe
 _HEALTH_TIMEOUT   = float(os.getenv("LLM_HEALTH_TIMEOUT", "8"))   # raise for slow networks
 _COMPACT_TAXONOMY = os.getenv("LLM_COMPACT_TAXONOMY", "0").strip().lower() in ("1", "true", "yes")
 _MAX_ENTITIES     = int(os.getenv("LLM_MAX_ENTITIES", "0"))
-_CACHED_SYSTEM_PROMPT: str = ""
+_CACHED_SYSTEM_PROMPT: dict = {}
 
-def _get_system_prompt() -> str:
-    global _CACHED_SYSTEM_PROMPT
-    if not _CACHED_SYSTEM_PROMPT:
-        _CACHED_SYSTEM_PROMPT = _system_prompt()
-    return _CACHED_SYSTEM_PROMPT
+
+def _get_system_prompt(chunk: dict = None) -> str:
+    """System prompt; Biolink-generated relations whose domain/range fit no entity in the chunk are left out."""
+    from src.schema.biolink_scope import hidden_relations
+    hidden = hidden_relations({e.get("label") for e in (chunk or {}).get("entities", [])}) if chunk else frozenset()
+    if hidden not in _CACHED_SYSTEM_PROMPT:
+        _CACHED_SYSTEM_PROMPT[hidden] = _system_prompt(hidden)
+    return _CACHED_SYSTEM_PROMPT[hidden]
 
 def _client() -> OpenAI:
     # Fresh client per call — keepalive disabled to prevent silent stale-connection hangs.
@@ -101,9 +105,11 @@ If no relation can be extracted, return:
 
 # ── Taxonomy block ────────────────────────────────────────────────────────────
 
-def _taxonomy_block() -> str:
+def _taxonomy_block(hidden: frozenset = frozenset()) -> str:
     lines = ["RELATION TYPES — use ONLY values from this list:\n"]
     for rel, entry in TAXONOMY.items():
+        if rel.value in hidden:
+            continue
         if _COMPACT_TAXONOMY:
             not_this = entry.get("not_this", "")
             not_clause = f" [NOT: {not_this}]" if not_this else ""
@@ -112,8 +118,8 @@ def _taxonomy_block() -> str:
             lines.append(
                 f"  {rel.value}\n"
                 f"    → {entry['definition']}\n"
-                f"    EXAMPLE: {entry['example']}\n"
-                f"    NOT THIS: {entry['not_this']}\n"
+                + (f"    EXAMPLE: {entry['example']}\n" if entry.get("example") else "")
+                + (f"    NOT THIS: {entry['not_this']}\n" if entry.get("not_this") else "")
             )
     return "\n".join(lines)
 
@@ -129,8 +135,8 @@ def _entity_taxonomy_block() -> str:
             lines.append(
                 f"  {etype.value}\n"
                 f"    → {entry['definition']}\n"
-                f"    EXAMPLE: {entry['example']}\n"
-                f"    NOT THIS: {entry['not_this']}\n"
+                + (f"    EXAMPLE: {entry['example']}\n" if entry.get("example") else "")
+                + (f"    NOT THIS: {entry['not_this']}\n" if entry.get("not_this") else "")
             )
     return "\n".join(lines)
 
@@ -138,11 +144,11 @@ def _entity_taxonomy_block() -> str:
 # ── Full system prompt ────────────────────────────────────────────────────────
 # Shape the LLM's strategy before it starts —
 # how to think about the task, not just what to put in each field.
-def _system_prompt() -> str:
+def _system_prompt(hidden: frozenset = frozenset()) -> str:
     return (
         "You are a biomedical relation extraction expert.\n"
         "Extract biological relations from text and return ONLY valid JSON.\n\n"
-        + _taxonomy_block()
+        + _taxonomy_block(hidden)
         + "\n"
         + _entity_taxonomy_block()
         + f"\nVALID relation values: {_RELATION_VALUES}\n"
@@ -313,13 +319,26 @@ def _is_truncation_error(error: str) -> bool:
 _MAX_SPLIT_DEPTH = 2           # halves, then quarters
 
 
+def _canonical_direction(r: dict) -> dict:
+    """A Biolink inverse predicate ('regulated by') becomes its canonical relation with subject and object swapped."""
+    rel = re.sub(r"[^a-z0-9]+", "_", str(r.get("relation") or "").lower()).strip("_") if isinstance(r, dict) else ""
+    canon = INVERSE_TO_CANONICAL.get(rel)
+    if not canon:
+        return r
+    out = {**r, "relation": canon}
+    for k in [k for k in r if k.startswith("subject_")]:
+        o = "object_" + k[len("subject_"):]
+        out[k], out[o] = r.get(o), r.get(k)
+    return out
+
+
 def _valid_relations(raw_relations: list) -> list:
     """Every relation that validates; one bad relation no longer loses the rest.
     Raises the first error when none are valid, so the reply is retried."""
     relations, first_error = [], None
     for r in raw_relations:
         try:
-            relations.append(BiologicalRelation(**r))
+            relations.append(BiologicalRelation(**_canonical_direction(r)))
         except (ValidationError, TypeError) as e:
             first_error = first_error or e
     if raw_relations and not relations and first_error:
@@ -389,9 +408,9 @@ def _text_negates(relation, chunk: dict) -> bool:
     return not sentences or any(_NEGATION_WORDS.search(x) for x in sentences)
 
 
-def _second_pass(user: str, name: str) -> list:
+def _second_pass(user: str, name: str, chunk: dict = None) -> list:
     """One small follow-up request with the extraction rules; [] when it fails."""
-    messages = [{"role": "system", "content": _get_system_prompt()}, {"role": "user", "content": user}]
+    messages = [{"role": "system", "content": _get_system_prompt(chunk)}, {"role": "user", "content": user}]
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
         response = pool.submit(lambda: _client().chat.completions.create(
@@ -412,7 +431,7 @@ def _second_pass(user: str, name: str) -> list:
 def _negative_findings(chunk: dict) -> list:
     """A second, small pass for negative findings, which the main pass tends to skip."""
     relations = _second_pass(f"SECTION: {chunk.get('section', 'unknown')}\n\nTEXT:\n{chunk.get('text', '')}"
-                             f"\n\n{_NEGATION_ASK}", "Negation")
+                             f"\n\n{_NEGATION_ASK}", "Negation", chunk)
     return [r for r in relations if r.negated and r.relation and r.extraction_viable and _text_negates(r, chunk)]
 
 
@@ -453,7 +472,7 @@ def _missed_findings(chunk: dict, relations: list) -> list:
     tagged = [e for e in chunk.get("entities", []) if e.get("text", "").lower() in low]
     entity_block = "\n".join(f"  [{e['text']}]  type={e.get('label', '?')}" for e in tagged)
     found = _second_pass(f"SECTION: {chunk.get('section', 'unknown')}\n\nTEXT:\n{text}\n\n"
-                         f"PRE-TAGGED ENTITIES FROM LAYER 4:\n{entity_block}\n\n{_COVERAGE_ASK}", "Coverage")
+                         f"PRE-TAGGED ENTITIES FROM LAYER 4:\n{entity_block}\n\n{_COVERAGE_ASK}", "Coverage", chunk)
     # both names must be in those sentences
     return [r for r in found if r.relation and r.extraction_viable
             and any(r.subject_name.lower() in s.lower() and r.object_name.lower() in s.lower() for s in sentences)]
@@ -601,7 +620,7 @@ def _extract_main(chunk: dict, _depth: int = 0) -> ExtractionResult:
     If the LLM response is truncated (token limit hit mid-JSON), the chunk
     is automatically split in half and each half is extracted separately.
     """
-    system  = _get_system_prompt()
+    system  = _get_system_prompt(chunk)
     user    = _user_message(chunk)
     messages = [
         {"role": "system", "content": system},

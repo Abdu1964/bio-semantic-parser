@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from src.figures.vision.grounding import figure_text, grounded, tokens
 from src.llm_client import call_llm, parse_json
 from src.schema.pydantic_model import BiologicalRelation
+from src.extraction.extractor import _canonical_direction
 from src.schema.taxonomy import ENTITY_TAXONOMY, TAXONOMY, RelationType
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,7 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
                 if isinstance(r.get(side), str):
                     r[side] = _clean_name(r[side])
             try:
-                rel = _fix_type(BiologicalRelation(**r))
+                rel = _fix_type(BiologicalRelation(**_canonical_direction(r)))
             except (ValidationError, TypeError) as e:
                 invalid += 1
                 logger.info("Figure relation dropped (invalid): %s", str(e)[:200])
