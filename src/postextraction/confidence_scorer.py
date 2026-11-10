@@ -1,6 +1,7 @@
 """Extraction confidence from five evidence channels (rank-weighted, adapted from Open Targets)."""
 import re
 
+from src.sentences import split_sentences as _split_sentences
 
 # Channel weights (project's choice): wording certainty > statistics > section/claim > NLI/LLM.
 CHANNEL_WEIGHTS = {
@@ -60,13 +61,6 @@ _NEGATION_NEAR = re.compile(
     re.I
 )
 
-
-# A period after a single letter (C. elegans, E. coli, initials) does not end a sentence.
-_SENTENCE_END = re.compile(r"(?<=[.!?])(?<!\b[A-Za-z]\.)\s+")
-
-# Split text into sentences while handling common abbreviations correctly
-def _split_sentences(text: str) -> list:
-    return _SENTENCE_END.split(text)
 
 # Construct the hypothesis sentence for NLI based on the fact and its negation status
 def _hypothesis(subject: str, relation: str, obj: str, negated: bool = False) -> str:

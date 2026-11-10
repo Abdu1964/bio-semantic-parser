@@ -350,9 +350,9 @@ def _lookup_pmc_id(pmid: str, api_key_env: str = "") -> str:
 
 def _find_coref_rewrites(before: str, after: str) -> list:
     """Return list of (before_sentence, after_sentence) pairs that differ."""
-    import re
-    before_sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', before) if s.strip()]
-    after_sents  = [s.strip() for s in re.split(r'(?<=[.!?])\s+', after)  if s.strip()]
+    from src.sentences import split_sentences
+    before_sents = [s.strip() for s in split_sentences(before) if s.strip()]
+    after_sents  = [s.strip() for s in split_sentences(after)  if s.strip()]
     rewrites = []
     for b, a in zip(before_sents, after_sents):
         if b != a:
