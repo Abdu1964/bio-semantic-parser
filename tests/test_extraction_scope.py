@@ -101,7 +101,7 @@ def test_coverage_pass_skips_methods_and_keeps_grounded_findings(monkeypatch):
     import src.extraction.extractor as ex
     chunk = {"text": "RTD-1 lowered TNF in PIA.", "section": "results",
              "entities": [{"text": n} for n in ("PIA", "RTD-1", "TNF")]}
-    monkeypatch.setattr(ex, "_second_pass", lambda user, name: [_rel("RTD-1", "TNF"), _rel("RTD-1", "MMP3")])
+    monkeypatch.setattr(ex, "_second_pass", lambda user, name, chunk=None: [_rel("RTD-1", "TNF"), _rel("RTD-1", "MMP3")])
     assert [r.object_name for r in ex._missed_findings(chunk, [])] == ["TNF"]
     assert ex._missed_findings({**chunk, "section": "Materials and Methods"}, []) == []
 

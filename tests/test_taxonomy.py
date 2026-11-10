@@ -83,12 +83,23 @@ class TestTaxonomyDict:
             assert entry["definition"].strip(), f"Empty definition for {rel}"
 
     def test_every_example_is_non_empty(self):
+        from src.schema.biolink_generated import GENERATED
+        generated = {g["value"] for g in GENERATED}         # Biolink-generated: Biolink gives no examples
         for rel, entry in TAXONOMY.items():
-            assert entry["example"].strip(), f"Empty example for {rel}"
+            if rel.value not in generated:
+                assert entry["example"].strip(), f"Empty example for {rel}"
 
     def test_every_not_this_is_non_empty(self):
+        from src.schema.biolink_generated import GENERATED
+        generated = {g["value"] for g in GENERATED}
         for rel, entry in TAXONOMY.items():
-            assert entry["not_this"].strip(), f"Empty not_this for {rel}"
+            if rel.value not in generated:
+                assert entry["not_this"].strip(), f"Empty not_this for {rel}"
+
+    def test_generated_relations_have_biolink_definitions(self):
+        from src.schema.biolink_generated import GENERATED
+        for g in GENERATED:
+            assert TAXONOMY[RelationType(g["value"])]["definition"].strip(), g["biolink"]
 
 
 class TestCrossSchemaMap:
