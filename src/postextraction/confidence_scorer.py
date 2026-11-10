@@ -48,7 +48,8 @@ def score(
                                  max_score=_hedge_limit(c2))
 
     # Negated facts are scored like positive ones: a definite negative finding is strong evidence.
-    combined = _combine_channels([c1, c2, c3, c4, c5])
+    # A hedged fact cannot score above its certainty level; the rank weighting would otherwise hide it.
+    combined = min(_combine_channels([c1, c2, c3, c4, c5]), _hedge_limit(c2))
 
     return round(min(max(combined, 0.0), 1.0), 4)
 
@@ -275,7 +276,7 @@ def _channel_direct_claim(text_lc: str, subj_key: str, obj_key: str) -> float:
 
 
 def _hedge_limit(factuality: float) -> float:
-    """Upper bound for C5: a hedged sentence (possible/doubtful) cannot fully support a definite claim."""
+    """Upper bound for C5 and the final score: a hedged sentence (possible/doubtful) cannot fully support a definite claim."""
     return factuality if factuality <= 0.50 else 1.0
 
 
@@ -332,7 +333,7 @@ def explain(
     c5 = _channel_nli_entailment(best_sent, hyp2, llm_fallback=llm_raw,
                                  max_score=_hedge_limit(c2))
 
-    combined = _combine_channels([c1, c2, c3, c4, c5])
+    combined = min(_combine_channels([c1, c2, c3, c4, c5]), _hedge_limit(c2))
 
     return {
         "final_score":          round(min(max(combined, 0.0), 1.0), 4),
