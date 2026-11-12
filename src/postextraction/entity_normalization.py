@@ -894,7 +894,10 @@ def _ols4_search(text: str, ontologies: list, timeout: int = _TIMEOUT) -> Option
     """Search EBI OLS4, optionally scoped to specific ontologies; returns (id, label, ontology_prefix, was_exact)."""
     cache_key = (text.lower().strip(), tuple(sorted(ontologies)))
     if cache_key in _ols4_cache:
-        return _ols4_cache[cache_key]
+        hit = _ols4_cache[cache_key]
+        # A hit cached under older matching rules is searched again if today's rules reject it
+        if not hit or match_quality(text, hit[1], hit[4] if len(hit) > 4 else "") != NONE:
+            return hit
     e0 = _net_errors()
     result = _ols4_search_uncached(text, ontologies, timeout)
     if _net_errors() == e0:
