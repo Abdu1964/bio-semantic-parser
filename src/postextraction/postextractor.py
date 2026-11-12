@@ -285,7 +285,7 @@ def process(
             _paper = " ".join(c.get("text", "") for c in all_chunks if c.get("section") != "figure")
             _fc = text_check.check(records, _paper)
             _msg = (f"Figure facts vs text: {_fc['checked']} checked — {_fc['supported']} supported, "
-                    f"{_fc['contradicted']} contradicted (held back), {_fc['unaddressed']} not addressed by the text")
+                    f"{_fc['contradicted']} contradicted (rejected), {_fc['unaddressed']} not addressed by the text")
             if step_cb: step_cb(1, "Figure facts vs text", _msg)
             log(_msg)
 
@@ -347,7 +347,8 @@ def process(
         return ":" in entity_id
 
     from src.postextraction import local_concepts
-    _n_local = local_concepts.mark(records, " ".join(c.get("text", "") for c in all_chunks))
+    _n_local = local_concepts.mark(records, " ".join(c.get("text", "") for c in all_chunks),
+                                   " ".join(c.get("text", "") for c in all_chunks if c.get("section") != "figure"))
     if _n_local:
         log(f"  → {_n_local} names without an ontology ID given a local ID")
 

@@ -121,6 +121,10 @@ def split_discards(human_review: list) -> tuple:
     """Split gate failures into (human_review, discarded); discards are logged."""
     keep, discarded = [], []
     for r in human_review:
+        if r.get("section") == "figure" and r.get("text_contradiction"):
+            discarded.append({**r, "insert_path": "discarded", "discard_reason":
+                              "the paper's text contradicts this figure reading: " + r["text_contradiction"][:200]})
+            continue
         if r.get("is_contradiction"):          # conflicting findings are always shown to a human
             keep.append(r)
             continue

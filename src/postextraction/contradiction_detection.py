@@ -17,6 +17,20 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _subgroups(a: str, b: str) -> bool:
+    """Two subtypes sharing a parent ID: same head word, each with its own marker ('Ast TPST1' / 'Ast DPP10')."""
+    from src.postextraction.name_matching import tokens
+    ta, tb = set(tokens(a or "")), set(tokens(b or ""))
+    marker = lambda ws: any(any(ch.isdigit() for ch in w) for w in ws)
+    return bool(ta & tb) and marker(ta - tb) and marker(tb - ta)
+
+
+def _same_entities(a: dict, b) -> bool:
+    """b is a record or a stored triple row."""
+    name = lambda x, k: x[k] if k in x.keys() else ""
+    return not any(_subgroups(name(a, f"{s}_name"), name(b, f"{s}_name")) for s in ("subject", "object"))
+
+
 def check_contradiction(record: dict) -> dict:
     """Flag the record if an opposing relation, or the same relation negated, exists for the entity pair."""
     try:
@@ -44,11 +58,11 @@ def check_contradiction(record: dict) -> dict:
     hit = None
     for rel, neg, what in checks:
         row = conn.execute(
-            "SELECT id, source_papers FROM triples "
+            "SELECT id, source_papers, subject_name, object_name FROM triples "
             "WHERE subject_id=? AND relation=? AND object_id=? AND negated=?",
             (subject_id, rel, object_id, neg),
         ).fetchone()
-        if row:
+        if row and _same_entities(record, row):
             hit = (row, what)
             break
     conn.close()
@@ -87,7 +101,7 @@ def flag_existing_as_contradiction(triple_id: int, reason: str) -> None:
 
 def _conflict(a: dict, b: dict) -> bool:
     """Same entity pair with the opposite relation, or the same relation with the opposite negation."""
-    if (a.get("subject_id"), a.get("object_id")) != (b.get("subject_id"), b.get("object_id")):
+    if (a.get("subject_id"), a.get("object_id")) != (b.get("subject_id"), b.get("object_id")) or not _same_entities(a, b):
         return False
     try:
         ra, rb = RelationType(a.get("relation", "")), RelationType(b.get("relation", ""))
