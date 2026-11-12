@@ -191,6 +191,16 @@ def test_failed_term_lookup_is_not_cached():
     assert "FBcv:0000001" not in en._ols_term_cache
 
 
+def test_cached_hit_rejected_by_current_rules_is_searched_again():
+    stale = ("PR:000008993", "X-linked interleukin-1 receptor accessory protein-like 2", "PR", True, "IL-1R9", "")
+    en._ols4_cache[("il-1", ("pr",))] = stale
+    with patch(f"{EN}._ols4_search_uncached", return_value=None) as search:
+        assert en._ols4_search("IL-1", ["pr"]) is None
+    search.assert_called_once()
+    assert match_quality("IL-1", "IL-1R9") == "none"
+    assert match_quality("Abdominal-A", "Abdominal adhesions") == "none"
+
+
 def test_swapped_head_noun_is_only_close():
     assert match_quality("control rodents", "Rodent Control", []) == CLOSE
     assert match_quality("population of Drosophila", "Drosophila populations", []) == EXACT
