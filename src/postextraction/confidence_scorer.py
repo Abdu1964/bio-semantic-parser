@@ -55,12 +55,6 @@ def score(
 
 
 # ── Sentence extractor ───────────────────────────────────────────────────────
-# this regex matches common negation cues near the entity in a sentence
-_NEGATION_NEAR = re.compile(
-    r'\b(did not|does not|do not|no|not|never|neither|nor|without|'
-    r'fail|failed|lack|lacks|absent|exclude|excluded|unlikely|cannot)\b',
-    re.I
-)
 
 
 # Construct the hypothesis sentence for NLI based on the fact and its negation status
@@ -73,6 +67,11 @@ def _hypothesis(subject: str, relation: str, obj: str, negated: bool = False) ->
     claim = f"{subject} {rel} {obj}"
     # Return the claim as a negated sentence if required
     return f"It is not true that {claim}." if negated else claim
+
+
+def _sentence_negated(sentence: str) -> bool:
+    from src.preextraction.negation_detector import sentence_negated
+    return sentence_negated(sentence)
 
 
 def _best_sentence(text: str, subj_key: str, obj_key: str,
@@ -97,8 +96,8 @@ def _best_sentence(text: str, subj_key: str, obj_key: str,
         has_subj = subj_key in sl
         has_obj  = obj_key  in sl
         if has_subj and has_obj:
-            # Matching negation words go first; the rest stay (e.g. "unaffected"), NLI ranks them.
-            if bool(_NEGATION_NEAR.search(sl)) == negated:
+            # Sentences of the fact's polarity go first; the rest stay, NLI ranks them.
+            if _sentence_negated(sent) == negated:
                 with_both.append(sent)
             else:
                 other_polarity.append(sent)

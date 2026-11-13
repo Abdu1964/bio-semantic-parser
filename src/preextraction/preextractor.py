@@ -43,6 +43,8 @@ class Preextractor:
                 break
 
         self.negation_detector  = NegationDetector()
+        from src.preextraction import negation_detector
+        negation_detector.share(self.negation_detector, self._models[0] if self._models else None)
         self.doi_extractor      = DOIExtractor()
         self.accession_detector = AccessionDetector()
 

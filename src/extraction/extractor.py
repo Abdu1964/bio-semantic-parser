@@ -394,19 +394,13 @@ _NEGATION_ASK = (
 )
 
 
-# English negation words (grammar, not domain): a negated fact needs one in a sentence naming both entities
-_NEGATION_WORDS = re.compile(r"\b(not|no|nor|neither|never|without|absence|absent|lack(?:s|ed|ing)?|fail(?:s|ed)?|"
-                             r"un(?:affected|changed|altered|detectable|detected|supported)|insignificant|nonsignificant|"
-                             r"falsif(?:y|ied|ies|ication)|refut(?:e|ed|es|ation)|disprov(?:e|ed|es|en)|rejected|ruled out)\b"
-                             r"|n't\b", re.I)
-
-
 def _text_negates(relation, chunk: dict) -> bool:
-    """A sentence naming both entities states a negative finding; a positive finding marked negated is
-    dropped. Kept when no sentence names both."""
+    """A sentence naming both entities states a negative finding (syntactic negation or the NLI check);
+    a positive finding marked negated is dropped. Kept when no sentence names both."""
+    from src.preextraction.negation_detector import sentence_negated
     subj, obj = relation.subject_name.lower(), relation.object_name.lower()
-    sentences = [x for x in re.split(r"(?<=[.!?])\s+", chunk.get("text", "")) if subj in x.lower() and obj in x.lower()]
-    return not sentences or any(_NEGATION_WORDS.search(x) for x in sentences)
+    sentences = [x for x in split_sentences(chunk.get("text", "")) if subj in x.lower() and obj in x.lower()]
+    return not sentences or any(sentence_negated(x) for x in sentences)
 
 
 def _second_pass(user: str, name: str, chunk: dict = None) -> list:
