@@ -71,9 +71,37 @@ def test_taxon_lookup_recovers_typo_via_spelling():
         assert en._ncbi_taxon_search("Drosophila melangaster")[0] == "NCBITaxon:7227"
 
 
-def test_local_taxon_handles_abbreviation_and_typo():
-    assert en._local_taxon("D. melanogaster") == "7227"
-    assert en._local_taxon("Drosophila melangaster") == "7227"
+def _taxa(table):
+    """Fake NCBI Taxonomy: query → [(taxid, scientific name, common name, rank)]."""
+    def cands(term, **_):
+        return table.get(term.split("[")[0].strip('"').lower(), [])
+    return cands
+
+
+TAXA = {"rats": [("10118", "Rattus sp.", "", "species"), ("10116", "Rattus norvegicus", "Norway rat", "species"),
+                 ("10114", "Rattus", "rats", "genus")],
+        "fruit fly": [("103775", "Drosophila gunungcola", "", "species"), ("7227", "Drosophila melanogaster", "fruit fly", "species"),
+                      ("7215", "Drosophila", "", "genus")],
+        "rattus norvegicus": [("10116", "Rattus norvegicus", "Norway rat", "species")],
+        "drosophila melanogaster": [("7227", "Drosophila melanogaster", "fruit fly", "species")],
+        "10116": [("10116", "Rattus norvegicus", "", "species")], "10114": [("10114", "Rattus", "", "genus")],
+        "7215": [("7215", "Drosophila", "", "genus")], "7227": [("7227", "Drosophila melanogaster", "", "species")]}
+
+
+def test_organism_from_ncbi_names_not_lists():
+    en.reset_document_cache()
+    for c in (en._organism_cache, en._rank_cache, en._taxon_search_cache, en._lineage_cache):
+        c.clear()
+    with patch(f"{EN}._ncbi_taxon_candidates", side_effect=_taxa(TAXA)), \
+         patch(f"{EN}._ncbi_taxon_spell", return_value=""), \
+         patch("src.ensembl_local.species_list", return_value=["rattus_norvegicus", "drosophila_melanogaster"]):
+        assert en._organism("rats") == ("10116", "Rattus norvegicus")   # placeholder skipped; Rattus → its reference species
+        assert en._organism("fruit fly") == ("7227", "Drosophila melanogaster")   # shared name → the group, then narrowed
+        assert en._organism("worm") == ()                                # not in NCBI: no guess
+        en._remember_genus("Drosophila melanogaster")
+        assert en._organism("D. melanogaster") == ("7227", "Drosophila melanogaster")   # genus the paper names
+        en.reset_document_cache()
+        assert en._organism("D. melanogaster") == ()
 
 
 def test_abbreviation_expanded_from_genus_in_same_paper():
@@ -88,7 +116,7 @@ def test_abbreviation_never_expands_to_a_species_that_does_not_exist():
     en.reset_document_cache()
     en._remember_genus("Coelopa frigida")                 # another 'C.' genus in the same paper
     with patch(f"{EN}._ncbi_taxon_search", return_value=None):
-        assert en._expand_abbreviated_binomial("C. elegans") == "Caenorhabditis elegans"
+        assert en._expand_abbreviated_binomial("C. elegans") is None    # no genus the paper names fits
         assert en._expand_abbreviated_binomial("C. briggsae") is None
 
 
@@ -101,11 +129,15 @@ def test_ambiguous_abbreviation_is_flagged():
         assert en.normalize_entity("D. simulans", "ORGANISM")["needs_review"] is True
 
 
-def test_abbreviation_resolved_when_only_one_genus_gives_a_real_species():
+def test_abbreviation_resolved_from_the_papers_species():
     en.reset_document_cache()
+    en._doc().species = "Drosophila melanogaster"
     with patch(f"{EN}._ncbi_taxon_search", side_effect=lambda t: ("NCBITaxon:7240", t, False)
                if t == "Drosophila simulans" else None):
         assert en._expand_abbreviated_binomial("D. simulans") == "Drosophila simulans"
+    en.reset_document_cache()
+    with patch(f"{EN}._ncbi_taxon_search", return_value=None):
+        assert en._expand_abbreviated_binomial("D. simulans") is None     # no paper context: no guess
 
 
 def test_same_term_gets_same_id_across_types_in_one_paper():
@@ -199,6 +231,58 @@ def test_cached_hit_rejected_by_current_rules_is_searched_again():
     search.assert_called_once()
     assert match_quality("IL-1", "IL-1R9") == "none"
     assert match_quality("Abdominal-A", "Abdominal adhesions") == "none"
+
+
+def test_gene_family_from_the_gene_index():
+    index = {"homo_sapiens": ["IRF1", "IRF2", "IRF3", "NFKB1", "NFKB2", "NFKBIA", "IL6", "IL6R", "MTHFR", "MTHFS"]}
+    symbol = lambda name, sp: [("ENSG1", name.upper())] if name.upper() in index.get(sp, []) else []
+    starting = lambda stem, sp: [s for s in index.get(sp, []) if s.lower().startswith(stem)]
+    en._gene_family.cache_clear()
+    with patch("src.ensembl_local.has_species", return_value=True), patch("src.ensembl_local.symbol", side_effect=symbol), \
+         patch("src.ensembl_local.symbols_starting", side_effect=starting):
+        assert en._gene_family("IRF", "Homo sapiens") == {"IRF1", "IRF2", "IRF3"}
+        assert en._gene_family("NF-κB", "Homo sapiens") == {"NFKB1", "NFKB2"}       # NFKBIA: not a member suffix
+        assert not en._gene_family("IL6", "Homo sapiens")                          # a symbol itself
+        assert not en._gene_family("mth", "Homo sapiens")                          # MTHFR: not a member suffix
+    en._gene_family.cache_clear()
+
+
+def test_no_family_check_outside_the_papers_own_gene_set():
+    en._gene_family.cache_clear()
+    with patch("src.ensembl_local.has_species", side_effect=lambda sp: sp == "homo_sapiens"), \
+         patch("src.ensembl_local.symbol", return_value=[]), \
+         patch("src.ensembl_local.symbols_starting", return_value=["MYB1", "MYB2"]):
+        assert en._gene_family("MYB", "Homo sapiens")
+        assert not en._gene_family("MYB", "Arabidopsis thaliana")          # plant: human names would mislead
+    en._gene_family.cache_clear()
+
+
+def test_organism_labels_from_the_schema():
+    assert en._organism_label("ORGANISM") and en._organism_label("TAXON") and en._organism_label("SPECIES")
+    assert not en._organism_label("GENE") and not en._organism_label("CELL")
+
+
+def test_gene_id_organism_from_the_gene_record():
+    en._id_genus_cache.clear()
+    class Resp:
+        def __init__(self, hits): self.hits = hits
+        def json(self): return {"hits": self.hits}
+    with patch("src.ensembl_local.gene", side_effect=lambda gid: ("Il6", "rattus_norvegicus") if gid == "ENSRNOG1" else None), \
+         patch(f"{EN}._http_get", return_value=Resp([{"taxid": 10090}])) as get, \
+         patch(f"{EN}._ncbi_taxon_candidates", return_value=[("10090", "Mus musculus", "house mouse", "species")]):
+        assert en._id_genus("ENSEMBL:ENSRNOG1") == "rattus"
+        assert en._id_genus("MGI:MGI:96547") == "mus"
+        assert get.call_args.kwargs["params"]["q"] == "mgi:MGI\\:96547"
+    en._id_genus_cache.clear()
+
+
+def test_family_term_needs_its_label_or_two_members():
+    members = frozenset({"NFKB1", "NFKB2"})
+    assert en._is_family_term({"canonical_name": "NF-kappa B"}, "NF-κB", members)
+    assert not en._is_family_term({"canonical_name": "human NFKB1 protein"}, "NFkB", members)
+    stat = frozenset({"STAT1", "STAT3"})
+    assert not en._is_family_term({"canonical_name": "sterol O-acyltransferase 1", "synonyms": "ACAT; SOAT; STAT"}, "STAT", stat)
+    assert en._is_family_term({"canonical_name": "STAT family", "synonyms": "STAT1; STAT3"}, "STATs", stat)
 
 
 def test_swapped_head_noun_is_only_close():
