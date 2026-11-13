@@ -80,9 +80,8 @@ def _names(record: dict, side: str) -> set:
 
 def _genus(species: str) -> str:
     """Genus of a species name, common names included ('human' → 'homo')."""
-    from src.postextraction.entity_normalization import _COMMON_TO_BINOMIAL
-    name = (species or "").strip().lower().replace("_", " ")
-    return _COMMON_TO_BINOMIAL.get(name, name).split(" ")[0]
+    from src.postextraction.entity_normalization import _genus as genus
+    return genus(species)
 
 
 def _same_entity(a: dict, b: dict, side: str) -> bool:

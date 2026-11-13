@@ -252,10 +252,11 @@ def _blocked(a: dict, b: dict) -> str:
 
 
 def _organism_of(label: str) -> str:
+    """The organism a label's trailing tag names ('interleukin-6 (mouse)' → Mus musculus), else ''."""
     import re
     m = re.search(r"\(([^()]+)\)\s*$", label or "")
-    genus = en._LABEL_ORGANISMS.get(m.group(1).strip().lower()) if m else ""
-    return genus or ""
+    org = en._organism(m.group(1)) if m else ()
+    return org[1] if org else ""
 
 
 def _describe(c: dict) -> str:

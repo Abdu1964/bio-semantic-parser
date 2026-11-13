@@ -1,6 +1,7 @@
 """Layer 7 step 1 — maps entity text to canonical biomedical identifiers via OLS4, NCBI, UniProt, RxNorm, and Wikidata."""
 import collections
 import contextvars
+import functools
 import logging
 import os
 import re
@@ -49,8 +50,13 @@ def _http_request(send, url, *args, **kwargs):
     return resp
 
 
+_USER_AGENT = os.getenv("BSP_USER_AGENT", "bio-semantic-parser/1.0 (research@rejuve.bio)")
+
+
 def _http_request_online(send, url, *args, **kwargs):
     host = urlparse(url).netloc
+    # Services refuse anonymous clients (Wikidata answers 403): every request names the tool
+    kwargs["headers"] = {"User-Agent": _USER_AGENT, **(kwargs.get("headers") or {})}
     if host in _SLOW_HOSTS and "timeout" in kwargs:
         t = kwargs["timeout"]
         kwargs["timeout"] = (t[0], max(t[1], _SLOW_HOSTS[host])) if isinstance(t, tuple) else max(t, _SLOW_HOSTS[host])
@@ -311,30 +317,138 @@ def _reverse_lookup_names(cid: str) -> tuple:
     return (_reverse_lookup_label(cid) or ""), []
 
 
-# Organism words in ontology labels like "superoxide dismutase [Cu-Zn] (human)" → genus.
-_LABEL_ORGANISMS = {
-    "human": "homo", "mouse": "mus", "rat": "rattus", "yeast": "saccharomyces", "budding yeast": "saccharomyces",
-    "fission yeast": "schizosaccharomyces", "fruit fly": "drosophila", "fly": "drosophila", "worm": "caenorhabditis",
-    "nematode": "caenorhabditis", "zebrafish": "danio", "chicken": "gallus", "bovine": "bos", "pig": "sus",
-    "dog": "canis", "frog": "xenopus", "arabidopsis": "arabidopsis", "e. coli": "escherichia",
-}
+# ── Organisms: names resolved through NCBI Taxonomy (scientific, abbreviated or common), no local lists ──
+_organism_cache: dict = {}
+_organism_names_cache: dict = {}
+_rank_cache: dict = {}
+_SPECIES_LEVEL = ("species", "subspecies", "strain", "varietas", "forma", "isolate")   # NCBI rank names
+
+
+def _plural(word: str) -> list:
+    """English plural endings: 'fly' → flies, 'mouse' → mouses (irregular plurals come from NCBI's own names),
+    'mosquito' → mosquitos, mosquitoes."""
+    if word.endswith("y") and word[-2:-1] not in ("a", "e", "i", "o", "u"):
+        return [word[:-1] + "ies"]
+    if word.endswith(("s", "x", "z", "ch", "sh")):
+        return [word + "es"]
+    return [word + "s", word + "es"] if word.endswith("o") else [word + "s"]
+
+
+def _singular(word: str) -> list:
+    if word.endswith("ies"):
+        return [word[:-3] + "y"]
+    if word.endswith(("ses", "xes", "zes", "ches", "shes", "oes")):
+        return [word[:-2]]
+    return [word[:-1]] if word.endswith("s") and not word.endswith("ss") else []
+
+
+def _number_forms(word: str) -> list:
+    """The word and its other grammatical number: 'fly' ↔ 'flies', 'rats' ↔ 'rat', 'mosquitoes' → mosquitos."""
+    stems = [word] + _singular(word)
+    return list(dict.fromkeys(stems + [p for s in stems if not s.endswith("s") for p in _plural(s)]))
+
+
+def _taxon_rank(taxid: str) -> str:
+    if taxid not in _rank_cache:
+        cands = _ncbi_taxon_candidates(f"{taxid}[uid]", retmax=1)
+        _rank_cache[taxid] = cands[0][3] if cands else ""
+    return _rank_cache[taxid]
+
+
+def _within(found: tuple) -> tuple:
+    """A group resolves to the paper's main organism when that lies inside it, else to the one species inside it
+    with a reference genome in the local Ensembl index ('rats' → Rattus → Rattus norvegicus). The group itself
+    otherwise ('Old World monkeys' stays the group even when the paper also names rhesus macaques)."""
+    from src import ensembl_local
+    if not found or _taxon_rank(found[0]) in _SPECIES_LEVEL:
+        return found
+    paper = (_doc().species or "").split(",")[0].strip()
+    own = _organism_raw(paper) if paper else ()
+    if own and own != found and found[0] in _lineage(own[1]):
+        return own
+    prefix = found[1].lower().split()[0] + "_"
+    refs = [s for s in ensembl_local.species_list() if s.startswith(prefix)]
+    return _organism_raw(refs[0]) if len(refs) == 1 else found
+
+
+def _organism(name: str) -> tuple:
+    """(taxid, scientific name) of an organism name as NCBI Taxonomy lists it — scientific, 'D. melanogaster'
+    (a genus the paper names) or common ('mice' → Mus, 'flies' → Diptera), narrowed by _within. () if unknown."""
+    return _within(_organism_raw(name))
+
+
+def _organism_raw(name: str) -> tuple:
+    """The NCBI Taxonomy lookup behind _organism, not narrowed."""
+    written = (name or "").strip().replace("_", " ")
+    key = written.lower()
+    if len(re.sub(r"[^a-z]", "", key)) < 2:
+        return ()
+    if _ABBREV_BINOMIAL_RE.match(written):            # depends on the paper's genera: not cached
+        full = _expand_abbreviated_binomial(written)
+        return _organism_raw(full) if full else ()
+    if key not in _organism_cache:
+        e0 = _net_errors()
+        hit, found = _ncbi_taxon_search(written), ()
+        if hit and not hit[2] and match_quality(written, hit[1]) == EXACT and not hit[1].endswith(" sp."):
+            found = (hit[0].split(":")[-1], hit[1])   # a scientific name ('Rattus sp.' is a placeholder)
+        else:
+            for form in _number_forms(key):           # a common name, or a misspelled scientific name
+                cands = [c for c in _ncbi_taxon_candidates(f'"{form}"[All Names]') if not c[1].endswith(" sp.")]
+                if cands:                             # several organisms share the name: the group holding them
+                    groups = [c for c in cands if c[3] not in _SPECIES_LEVEL] if len(cands) > 1 else []
+                    c = groups[0] if groups else cands[0]
+                    found = (c[0], c[1])
+                    break
+        if _net_errors() != e0:
+            return found
+        _organism_cache[key] = found
+    return _organism_cache[key]
+
+
+def _organism_names(species: str) -> Optional[set]:
+    """Names the text may use for an organism: scientific, 'G. epithet', and NCBI's common names of the
+    species and its genus with their head words and number forms ('Norway rat' → rat, rats; Mus → mice).
+    None when NCBI could not be read: the caller cannot tell."""
+    org = _organism(species)
+    if not org:
+        return set()
+    if org[0] not in _organism_names_cache:
+        names = {org[1].lower()}
+        genus, _, epithet = org[1].lower().partition(" ")
+        if epithet:
+            names.add(f"{genus[0]}. {epithet}")
+        fetch = lambda tid: _http_get(f"{_NCBI_BASE}/efetch.fcgi", params={"db": "taxonomy", "id": tid, "retmode": "xml"},
+                                      timeout=_TIMEOUT).text
+        try:
+            xml = fetch(org[0])
+            ids = re.findall(r"<TaxId>(\d+)</TaxId>\s*<ScientificName>[^<]*</ScientificName>\s*<Rank>genus</Rank>", xml)
+            if ids:
+                xml += fetch(ids[0])
+            if xml.count("<TaxaSet>") != 1 + bool(ids):          # an error page, not a record
+                raise ValueError("no taxonomy record")
+            for common in re.findall(r"<(?:GenbankCommonName|CommonName)>([^<]+)<", xml):
+                for form in (common.lower(), common.lower().split()[-1]):
+                    names.update([form] + ([] if form.endswith("s") else _plural(form)))
+        except Exception as e:
+            logger.warning("NCBI Taxonomy names failed for %r: %s", species, e)
+            return None
+        _organism_names_cache[org[0]] = names
+    return _organism_names_cache[org[0]]
 
 
 def _genus(species: str) -> str:
-    """Genus of a species name, common names included ('human' → 'homo')."""
-    name = (species or "").strip().lower().replace("_", " ")
-    return _COMMON_TO_BINOMIAL.get(name, name).split(" ")[0]
+    """Genus of an organism name, common names included ('human' → 'homo')."""
+    org = _organism(species)
+    return (org[1] if org else (species or "").strip().replace("_", " ")).lower().split(" ")[0]
 
 
 def _wrong_organism(label: str, species: str) -> bool:
-    """Label names another organism, e.g. '(yeast)' in a fly paper."""
+    """Label names another organism, e.g. '(yeast)' in a fly paper: neither organism contains the other."""
     m = re.search(r"\(([^()]+)\)\s*$", label or "")
-    genus = _genus(species)
-    if not m or not genus:
+    if not m or not species:
         return False
-    tag = m.group(1).strip().lower()
-    named = _LABEL_ORGANISMS.get(tag) or (tag.split(" ")[0] if " " in tag and tag[0].isalpha() else "")
-    return bool(named) and named != genus and named in set(_LABEL_ORGANISMS.values()) | {tag.split(" ")[0]}
+    named, own = _organism(m.group(1)), _organism(species)
+    return bool(named and own) and named[0] not in _lineage(species) and own[0] not in _lineage(m.group(1))
 
 
 _NEGATING_PREFIX = re.compile(r"^(?:non|un|anti|in|im|ir|dis|de|a)-?", re.I)
@@ -608,52 +722,6 @@ _TYPE_TO_ONTOLOGIES: dict = {
     "OTHER":                       [],
 }
 
-# Common organism names → NCBITaxon IDs (local fast lookup, no API needed)
-_TAXON_LOCAL: dict = {
-    "human": "9606",     "humans": "9606",    "homo sapiens": "9606",
-    "mouse": "10090",    "mice": "10090",     "mus musculus": "10090",
-    "rat": "10116",      "rats": "10116",     "rattus norvegicus": "10116",
-    "fly": "7227",       "drosophila": "7227","drosophila melanogaster": "7227",
-    "worm": "6239",      "c. elegans": "6239","caenorhabditis elegans": "6239",
-    "yeast": "4932",     "saccharomyces cerevisiae": "4932",
-    "zebrafish": "7955", "danio rerio": "7955",
-    "dog": "9615",       "canis lupus familiaris": "9615",
-}
-
-# Common lay disease names → MeSH ID (local fast lookup, avoids OLS4 round-trip/timeout).
-# IDs verified against live OLS4 (exact match, mesh ontology).
-_DISEASE_LOCAL: dict = {
-    "diabetes": ("D003920", "Diabetes Mellitus"),
-    "obesity": ("D009765", "Obesity"),
-    "malaria": ("D008288", "Malaria"),
-    "cancer": ("D009369", "Neoplasms"),
-    "alzheimer disease": ("D000544", "Alzheimer Disease"),
-    "alzheimer's disease": ("D000544", "Alzheimer Disease"),
-    "parkinson disease": ("D010300", "Parkinson Disease"),
-    "parkinson's disease": ("D010300", "Parkinson Disease"),
-    "asthma": ("D001249", "Asthma"),
-    "hypertension": ("D006973", "Hypertension"),
-    "depression": ("D003863", "Depression"),
-    "epilepsy": ("D004827", "Epilepsy"),
-    "influenza": ("D007251", "Influenza, Human"),
-    "flu": ("D007251", "Influenza, Human"),
-    "tuberculosis": ("D014376", "Tuberculosis"),
-    "hiv": ("D015658", "HIV Infections"),
-    "stroke": ("D020521", "Stroke"),
-}
-
-# Common/lay name → canonical scientific (binomial) name, lowercase-keyed.
-_COMMON_TO_BINOMIAL: dict = {
-    "human": "homo sapiens", "humans": "homo sapiens",
-    "mouse": "mus musculus", "mice": "mus musculus",
-    "rat": "rattus norvegicus", "rats": "rattus norvegicus",
-    "fly": "drosophila melanogaster", "drosophila": "drosophila melanogaster",
-    "worm": "caenorhabditis elegans", "c. elegans": "caenorhabditis elegans",
-    "yeast": "saccharomyces cerevisiae",
-    "zebrafish": "danio rerio",
-    "dog": "canis lupus familiaris",
-}
-
 # Separators used when a single species field states multiple organisms.
 _SPECIES_SPLIT_RE = re.compile(r"\s*(?:,|;|&|\band\b)\s*", re.IGNORECASE)
 
@@ -668,23 +736,24 @@ def _ensembl_species_slug(species: str) -> str:
     if not species:
         return "human"
     lower = species.lower()
-    if lower in _TAXON_LOCAL:
-        lower = _COMMON_TO_BINOMIAL.get(lower, lower)
+    if "_" not in lower:                              # a common or abbreviated name: its scientific name
+        org = _organism(lower)
+        lower = org[1].lower() if org else lower
     return re.sub(r"\s+", "_", lower)
 
 
 def normalize_species(raw: str) -> str:
-    """Canonicalize a species field: fix common-name/case variants via
-    _COMMON_TO_BINOMIAL, split combined multi-organism values, dedupe, and
-    rejoin with ", " in Title Case. Unknown terms are Title-Cased as-is
-    rather than guessed at."""
+    """Canonicalize a species field: common names to NCBI scientific names, split combined
+    multi-organism values, dedupe, and rejoin with ", " in Title Case. Unknown terms are
+    Title-Cased as-is rather than guessed at."""
     raw = (raw or "").strip()
     if not raw:
         return ""
     parts = [p.strip() for p in _SPECIES_SPLIT_RE.split(raw) if p.strip()]
     seen, out = set(), []
     for p in parts:
-        canon  = _COMMON_TO_BINOMIAL.get(p.lower(), p.lower())
+        org    = _organism(p)
+        canon  = org[1].lower() if org else p.lower()
         words  = canon.split()
         cased  = " ".join([words[0].capitalize()] + [w.lower() for w in words[1:]]) if words else canon
         if cased.lower() not in seen:
@@ -1145,6 +1214,64 @@ def _ensembl_local_gene(candidates: list, species: str) -> Optional[tuple]:
     return None
 
 
+# Gene family members add a number or one letter to the family stem (HGNC naming): IRF1, ESRRA, STAT5A, AP1B1
+_MEMBER_SUFFIX = re.compile(r"\d{1,2}[a-z]?|[a-z]\d?")
+
+
+def _symbol_form(text: str) -> str:
+    """A name written as gene symbols write it: Greek letters as their first Latin letter, no punctuation
+    ('NF-κB' → 'nfkb', 'IL-1β' → 'il1b')."""
+    import unicodedata
+    out = []
+    for c in (text or "").lower():
+        name = unicodedata.name(c, "")
+        out.append(name.split()[-1][0].lower() if name.startswith("GREEK") and " LETTER " in name else c)
+    return re.sub(r"[^a-z0-9]", "", "".join(out))
+
+
+@functools.lru_cache(maxsize=4096)
+def _gene_family(text: str, species: str = "") -> frozenset:
+    """Member symbols when the name is a gene family or complex ('IRF', 'NF-κB', 'STAT', 'AP-1'): not a gene
+    symbol itself, but the stem of 2+ symbols in the local Ensembl index. Empty for a single gene."""
+    from src import ensembl_local
+    stem = (text or "").strip()
+    s = _symbol_form(stem)
+    if " " in stem or len(s) < 2 or not s[0].isalpha():
+        return frozenset()
+    slug = _ensembl_species_slug(species)
+    slug = "homo_sapiens" if slug == "human" else slug        # no organism stated: the pipeline's default
+    # Only within the organism's own gene set: another organism's naming would mislead (plants, microbes)
+    if not ensembl_local.has_species(slug) or ensembl_local.symbol(s, slug) or ensembl_local.symbol(stem, slug):
+        return frozenset()
+    members = frozenset(m for m in ensembl_local.symbols_starting(s, slug) if _MEMBER_SUFFIX.fullmatch(m.lower()[len(s):]))
+    return members if len(members) >= 2 else frozenset()
+
+
+def _members_named(text: str, members: frozenset) -> set:
+    low = {m.lower() for m in members}
+    return {w for w in (_symbol_form(x) for x in re.split(r"[\s,;/()]+", text or "")) if w in low}
+
+
+def _is_family_term(result: dict, text: str, members: frozenset) -> bool:
+    """A term for the family itself: its label is the family's name ('NF-kappa B' for NF-κB), or it names two or
+    more members. An exact synonym alone is not enough: 'STAT' is also an old alias of SOAT1."""
+    if match_quality(text, result.get("canonical_name", "")) == EXACT:
+        return True
+    named = _members_named(f"{result.get('canonical_name', '')}; {result.get('synonyms') or ''}", members)
+    return len(named) >= 2
+
+
+def _family_term(text: str, members: frozenset) -> Optional[dict]:
+    """The ontology term for the family or complex itself ('NF-κB' → NF-kappa B), from an exact hit in any ontology."""
+    for cid, label, prefix, syns, iri in _ols4_candidates(text, [], rows=15):
+        hit = {"canonical_id": cid, "canonical_name": label, "id_source": "ols4", "ontology_prefix": prefix,
+               "needs_review": False, "synonyms": syns, "iri": iri}
+        if match_quality(text, label, syns.split("; ")) == EXACT and _is_family_term(hit, text, members) \
+                and not _kind_conflict("PROTEIN", cid):
+            return hit
+    return None
+
+
 def _ensembl_search_uncached(text: str, species: str = "human",
                              timeout: int = _TIMEOUT, retries: int = 2) -> Optional[tuple]:
     """Ensembl gene for a symbol — returns (canonical_id, display_name). Ensembl's own released gene index
@@ -1546,14 +1673,9 @@ def _ncbi_taxon_search(text: str) -> Optional[tuple]:
 
 
 def _local_taxon(text: str) -> Optional[str]:
-    """Common-organism table lookup, tolerant of abbreviations and typos."""
-    lower = text.lower().strip()
-    if lower in _TAXON_LOCAL:
-        return _TAXON_LOCAL[lower]
-    for name, taxid in _TAXON_LOCAL.items():
-        if " " in name and match_quality(text, name) != NONE:
-            return taxid
-    return None
+    """NCBI taxon ID of an organism name (scientific, abbreviated, misspelled or common), else None."""
+    org = _organism(text)
+    return org[0] if org else None
 
 
 def _wikidata_search(text: str, entity_type: str, timeout: int = _TIMEOUT) -> Optional[tuple]:
@@ -1599,6 +1721,8 @@ def _wikidata_search(text: str, entity_type: str, timeout: int = _TIMEOUT) -> Op
                                 "ORGANISM":      "NCBITaxon:",
                             }
                             pfx = _WD_PREFIX.get(entity_type, "")
+                            if ":" in ext_id:                  # stored as a full ID already ('DOID:7148')
+                                pfx = ""
                             return (f"{pfx}{ext_id}" if pfx else ext_id, label)
                 return (f"WD:{qid}", label)
     except Exception as e:
@@ -1706,6 +1830,7 @@ class _DocState:
         self.concepts: dict = {}
         self.genera: set = set()
         self.species: str = ""
+        self.organism_mentions: set = set()     # organism names Layer 4 tagged anywhere in the paper
         self.abbrevs: dict = {}
         self.abbrev_variants: dict = {}     # short form → every long form the paper gives, in order
         self.locks: dict = {}
@@ -1810,6 +1935,20 @@ def _expand_document_abbreviations(text: str) -> str:
     return text
 
 
+def _organism_label(label: str) -> bool:
+    """An NER or entity-type label for organisms: the schema's organism types, or a label whose Biolink class
+    is an organism taxon ('TAXON', 'SPECIES')."""
+    from src.schema.biolink_generated import ANCESTORS, ENTITY_CLASS, NER_LABEL_CLASS
+    cls = NER_LABEL_CLASS.get(label or "") or ENTITY_CLASS.get(label or "", "")
+    return _TYPE_FAMILY.get(label) == "organism" or "organism taxon" in ANCESTORS.get(cls, [])
+
+
+def remember_organism_mentions(chunks: list) -> None:
+    """The organism names Layer 4 tagged in the paper's chunks, for sentences in chunks without tags."""
+    _doc().organism_mentions.update(e["text"] for c in chunks for e in (c.get("entities") or [])
+                                    if _organism_label(e.get("label")) and e.get("text"))
+
+
 def reset_document_cache() -> None:
     """Start fresh per-paper state for this run."""
     _doc_var.set(_DocState())
@@ -1828,12 +1967,8 @@ def _expand_abbreviated_binomial(text: str) -> Optional[str]:
     if not m:
         return None
     initial, epithet = m.group(1), m.group(2)
-    known = [n for n in _TAXON_LOCAL if " " in n and "." not in n
-             and n.split()[0].startswith(initial.lower()) and n.split()[1] == epithet.lower()]
-    if len(known) == 1:
-        return known[0].capitalize()
-    for pool in (_doc().genera,
-                 {n.split()[0].capitalize() for n in _TAXON_LOCAL if " " in n and "." not in n}):
+    paper = (_doc().species or "").split(",")[0].strip()
+    for pool in (_doc().genera, {paper.split()[0].capitalize()} if " " in paper else set()):   # genera the paper names
         fits = sorted(g for g in pool if g.startswith(initial))
         real = [f"{g} {epithet}" for g in fits if _ncbi_taxon_search(f"{g} {epithet}")]
         if len(real) == 1:
@@ -1868,11 +2003,35 @@ def _concept_key(text: str, entity_type: str, species: str = "") -> Optional[tup
     return (family, key, _genus(species)) if family in _MOLECULAR and species else (family, key)
 
 
-# Organism encoded in gene/protein IDs → genus.
-_ID_GENUS = (("ENSEMBL:ENSG", "homo"), ("ENSEMBL:ENSMUSG", "mus"), ("ENSEMBL:ENSRNOG", "rattus"),
-             ("ENSEMBL:ENSDARG", "danio"), ("ENSEMBL:FBgn", "drosophila"), ("FB:FBgn", "drosophila"),
-             ("ENSEMBL:WBGene", "caenorhabditis"), ("WB:WBGene", "caenorhabditis"), ("hgnc:", "homo"),
-             ("HGNC:", "homo"), ("MGI:", "mus"), ("RGD:", "rattus"), ("ZFIN:", "danio"), ("SGD:", "saccharomyces"))
+_id_genus_cache: dict = {}
+
+
+def _id_genus(cid: str) -> str:
+    """Genus a gene ID is made for, from the gene itself: the local Ensembl index (Ensembl, FlyBase and WormBase
+    gene IDs), else MyGene.info's taxon for the ID ('RGD:2901' → 10116, 'MGI:96547' → 10090). '' when unknown."""
+    from src import ensembl_local
+    if cid in _id_genus_cache:
+        return _id_genus_cache[cid]
+    prefix, _, local = (cid or "").partition(":")
+    if not prefix or not local or not re.search(r"\d", local):
+        return ""
+    hit = ensembl_local.gene(local)
+    genus = hit[1].split("_")[0] if hit else ""
+    if not genus and prefix.upper() not in ("ENSEMBL", "TEXT", "LOCAL"):
+        try:
+            field = prefix.lower()
+            query = f"{field}:{local}" if ":" not in local else f'{field}:{local.replace(":", chr(92) + ":")}'
+            hits = _http_get("https://mygene.info/v3/query", params={"q": query, "fields": "taxid", "species": "all"},
+                             timeout=_TIMEOUT).json().get("hits", [])
+            taxa = {str(h.get("taxid")) for h in hits if h.get("taxid")}
+            if len(taxa) == 1:
+                cands = _ncbi_taxon_candidates(f"{taxa.pop()}[uid]", retmax=1)
+                genus = cands[0][1].lower().split()[0] if cands else ""
+        except Exception as e:
+            logger.warning("Organism of %s unknown: %s", cid, e)
+            return ""
+    _id_genus_cache[cid] = genus
+    return genus
 
 
 _GENE_SOURCES = {"ensembl", "ncbi_gene", "pubtator3"}
@@ -1895,11 +2054,11 @@ def _kind_conflict(entity_type: str, cid: str) -> bool:
     return group(t) != group(p)
 
 
-def _organism_conflict(cid: str, species: str) -> bool:
-    """An ID made for another organism than the one the relation names: a gene/protein ID system tied to
-    one organism, or an anatomy ontology whose organism scope does not contain this organism."""
-    genus = _genus(species)
-    id_genus = next((g for prefix, g in _ID_GENUS if (cid or "").startswith(prefix)), "")
+def _organism_conflict(cid: str, species: str, molecular: bool = True) -> bool:
+    """An ID made for another organism than the one the relation names: a gene/protein ID tied to one organism
+    (checked only for genes and proteins), or an anatomy ontology whose organism scope does not contain it."""
+    id_genus = _id_genus(cid) if molecular else ""
+    genus = _genus(species) if id_genus else ""
     if genus and id_genus:
         return genus != id_genus
     return _outside_ontology_scope(cid, species)
@@ -1967,9 +2126,14 @@ def normalize_entity(
     if result.get("canonical_name"):                     # NCBI's disambiguation tag: 'Drosophila <flies,genus>'
         result = {**result, "canonical_name": re.sub(r"\s*<[^<>]*>\s*$", "", result["canonical_name"])}
     fam = _TYPE_FAMILY.get(entity_type)
+    members = _gene_family(_clean_name(text), species or _doc().species) if fam in ("gene", "protein") else frozenset()
+    if members and _resolved(result.get("canonical_id", "")) and not _is_family_term(result, _clean_name(text), members):
+        logger.info("Rejected %s for %r: not a term for the gene family", result.get("canonical_id"), text)
+        return {"canonical_id": f"TEXT:{_slug(text)}", "canonical_name": "", "id_source": "fuzzy",
+                "ontology_prefix": "", "needs_review": True, "source_url": "", "family_member": result.get("canonical_id")}
     if result.get("network_degraded") and fam == "gene" and result.get("id_source") not in _GENE_SOURCES:
         # Gene sources failed on the network: retried later; after the last retry, NCBI Gene in the stated species
-        if _doc().gene_fallback:
+        if _doc().gene_fallback and not members:
             gene = _ncbi_gene(_clean_name(text), species or _doc().species)
             if gene and not (species and _organism_conflict(gene["canonical_id"], species)):
                 return gene
@@ -1979,7 +2143,7 @@ def normalize_entity(
         logger.info("Rejected %s for %r: not a %s", result["canonical_id"], text, entity_type)
         return {"canonical_id": f"TEXT:{_slug(text)}", "canonical_name": "", "id_source": "fuzzy",
                 "ontology_prefix": "", "needs_review": True, "source_url": "", "kind_mismatch": result["canonical_id"]}
-    if species and _organism_conflict(result.get("canonical_id", ""), species):
+    if species and _organism_conflict(result.get("canonical_id", ""), species, fam in _MOLECULAR):
         logger.info("Rejected %s for %r: made for another organism than %s", result["canonical_id"], text, species)
         return {"canonical_id": f"TEXT:{_slug(text)}", "canonical_name": "", "id_source": "fuzzy",
                 "ontology_prefix": "", "needs_review": True, "source_url": "",
@@ -2089,17 +2253,16 @@ def _normalize_entity_core(
             return {"canonical_id": f"NCBITaxon:{local_taxid}",
                     "canonical_name": "", "id_source": "ncbi_taxon", "ontology_prefix": "", "needs_review": False}
 
-    # ── Priority 2b: Fast local lookup for common lay disease terms ──────────
-    if entity_type == "DISEASE":
-        lower = text.lower().strip()
-        if lower in _DISEASE_LOCAL:
-            mesh_id, mesh_label = _DISEASE_LOCAL[lower]
-            return {"canonical_id": f"mesh:{mesh_id}", "canonical_name": mesh_label,
-                    "id_source": "mesh_local", "ontology_prefix": "mesh", "needs_review": False}
+    # A gene family or complex ('IRF', 'NF-κB') skips the single-gene databases below
+    family = _gene_family(text, species) if entity_type in ("GENE", "PROTEIN") else frozenset()
+    if family:
+        term = _family_term(text, family)
+        if term:
+            return term
 
     # ── Priority 3: Ensembl — checked before OLS4 so genes get ENSG not HGNC ───
     # (management requirement: gene IDs must be Ensembl, not HGNC/NCBI Gene)
-    if entity_type in ("GENE", "TRANSCRIPT", "EXON", "NON_CODING_RNA"):
+    if entity_type in ("GENE", "TRANSCRIPT", "EXON", "NON_CODING_RNA") and not family:
         species_slug = _ensembl_species_slug(species)
         ens = _ensembl_search(text, species=species_slug)
         if ens:
@@ -2108,7 +2271,7 @@ def _normalize_entity_core(
                     "ontology_prefix": eprefix, "needs_review": False, "ensembl_species": species_slug}
 
     # ── Priority 4: UniProt — proteins' canonical source (before OLS4 Protein Ontology).
-    if entity_type == "PROTEIN":
+    if entity_type == "PROTEIN" and not family:
         up = _uniprot_search(text, species=species or "Homo sapiens")
         if up:
             uid, ulabel, uprefix, usynonyms = up
@@ -2121,7 +2284,7 @@ def _normalize_entity_core(
                         "ontology_prefix": uprefix, "needs_review": False, "synonyms": usynonyms}
 
     # ── Priority 4b: a protein named by its gene's symbol — the local Ensembl index, no network ──
-    if entity_type == "PROTEIN":
+    if entity_type == "PROTEIN" and not family:
         species_slug = _ensembl_species_slug(species)
         local = _ensembl_local_gene([text, _strip_gene_suffix(text)], species_slug)
         if local:
@@ -2131,8 +2294,8 @@ def _normalize_entity_core(
     # ── Priority 5: OLS4 universal search ──────────────────────────────────────
     ontologies = _TYPE_TO_ONTOLOGIES.get(entity_type, [])
     if entity_type in ("GENE", "PROTEIN") and "hgnc" in ontologies \
-            and _ensembl_species_slug(species) != "human":
-        # Exclude HGNC for non-human species — it's human-only.
+            and (_ensembl_species_slug(species) != "human" or family):
+        # Exclude HGNC for non-human species — it's human-only — and for a family: its entries are single genes.
         ontologies = [o for o in ontologies if o != "hgnc"]
     ols = _ols4_search(text, ontologies)
 
@@ -2186,7 +2349,7 @@ def _normalize_entity_core(
             return {"canonical_id": hid, "canonical_name": "", "id_source": "hmdb", "ontology_prefix": "", "needs_review": False}
 
     # ── Priority 8: NCBI eSearch fallback per entity type ────────────────────
-    if entity_type in ("GENE", "PROTEIN", "TRANSCRIPT", "EXON", "NON_CODING_RNA"):
+    if entity_type in ("GENE", "PROTEIN", "TRANSCRIPT", "EXON", "NON_CODING_RNA") and not family:
         gene = _ncbi_gene(text, species)
         if gene:
             return gene
@@ -2527,26 +2690,36 @@ def _type_name_only(text: str, entity_type: str) -> str:
 
 
 def _organism_named(binomial: str, text: str) -> bool:
-    """True if the text names the organism (scientific name, common name or 'M. musculus')."""
-    low, target = (text or "").lower(), _COMMON_TO_BINOMIAL.get(binomial.lower(), binomial.lower())
-    names = {target} | {c for c, b in _COMMON_TO_BINOMIAL.items() if b == target}
-    genus, _, epithet = target.partition(" ")
-    if epithet:
-        names.add(f"{genus[0]}. {epithet}")
+    """True if the text names the organism (scientific name, NCBI common name or 'M. musculus')."""
+    names = _organism_names(binomial)
+    if names is None:                                 # NCBI unreadable: keep the stated organism
+        return True
+    low = (text or "").lower()
     return any(re.search(rf"(?<![\w-]){re.escape(n)}(?![\w-])", low) for n in names)
 
 
-def _sentence_organism(chunk_text: str, subject: str, obj: str) -> str:
-    """The one organism the sentences naming both entities mention ('human RA-FLS were stimulated with
-    IL-1β' → Homo sapiens); '' when they name none or several."""
-    sentences = [x for x in re.split(r"(?<=[.!?])\s+", chunk_text or "")
+def _mention_organism(mention: str) -> tuple:
+    """The organism an organism mention names: the whole mention, else its first or last word
+    ('rat PIA synovium' → rat, 'female DA rats' → rats)."""
+    words = mention.split()
+    for form in dict.fromkeys([mention] + ([words[0], words[-1]] if len(words) > 1 else [])):
+        org = _organism(form)
+        if org:
+            return org
+    return ()
+
+
+def _sentence_organism(chunk_text: str, subject: str, obj: str, mentions=()) -> str:
+    """The one organism the sentences naming both entities mention, from the chunk's organism mentions (Layer 4)
+    ('human RA-FLS were stimulated with IL-1β' → Homo sapiens); '' when they name none or several."""
+    sentences = [x.lower() for x in re.split(r"(?<=[.!?])\s+", chunk_text or "")
                  if subject and obj and subject.lower() in x.lower() and obj.lower() in x.lower()]
     found = set()
-    for x in sentences:
-        low = x.lower()
-        for name in set(_COMMON_TO_BINOMIAL) | {n for n in _TAXON_LOCAL if " " in n and "." not in n}:
-            if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", low):
-                found.add(_COMMON_TO_BINOMIAL.get(name, name))
+    for m in dict.fromkeys(mentions):
+        if any(re.search(rf"(?<![\w-]){re.escape(m.lower())}(?![\w-])", x) for x in sentences):
+            org = _mention_organism(m)
+            if org:
+                found.add(org[1])
     return normalize_species(found.pop()) if len(found) == 1 else ""
 
 
@@ -2566,7 +2739,11 @@ def normalize_record(record: dict, annotated_chunk: dict) -> dict:
     if _local_taxon(normalize_species(species) or "-") and not _organism_named(normalize_species(species), chunk_text):
         species = ""                                                  # organism not named in the text
     if not _local_taxon(normalize_species(species) or "-"):          # no organism stated for this fact
-        species = _sentence_organism(chunk_text, subject_name, object_name) or species
+        mentions = [e["text"] for e in annotated_chunk.get("entities", [])
+                    if _organism_label(e.get("label")) and e.get("text")]
+        if not annotated_chunk.get("entities"):           # figure chunks carry no tagged entities of their own
+            mentions = sorted(_doc().organism_mentions)
+        species = _sentence_organism(chunk_text, subject_name, object_name, mentions) or species
 
     layer4_map: dict = {
         e["text"].lower(): {
@@ -2662,8 +2839,17 @@ _PREFIX_FAMILY = {
 }
 
 
+def _genes_named(names: list) -> int:
+    """How many approved gene symbols (local Ensembl index, the paper's species) a list of names holds."""
+    from src import ensembl_local
+    slug = _ensembl_species_slug(_doc().species)
+    slug = "homo_sapiens" if slug == "human" or not ensembl_local.has_species(slug) else slug
+    return len({_symbol_form(n) for n in names if _symbol_like(n.strip()) and ensembl_local.symbol(_symbol_form(n), slug)})
+
+
 def merge_synonym_concepts(records: list) -> list:
-    """Merge concepts the databases list as synonyms."""
+    """Merge concepts the databases list as synonyms — but never a gene into a term whose synonyms name
+    several genes (MeSH 'Interleukin-17' lists IL17A … IL17F: a family, not one of them)."""
     fields = ("id", "canonical_name", "id_source", "source_url", "synonyms", "type")
     info: dict = {}
     for r in records:
@@ -2679,10 +2865,12 @@ def merge_synonym_concepts(records: list) -> list:
                              "syns": [x for x in syns if x],
                              "rank": _ontology_rank(_ontology_prefix_of(cid)),
                              "rec": {f: r.get(f"{side}_{f}") for f in fields}}
+    several = {c: i["fam"] in ("gene", "protein") and _genes_named([i["label"]] + i["syns"]) > 1 for c, i in info.items()}
     target: dict = {}
     for a, ia in info.items():
         for b, ib in info.items():
             if (a == b or ia["prefix"] == ib["prefix"] or ia["fam"] != ib["fam"] or not ia["label"]
+                    or several[a] != several[b]                # one gene vs a family
                     or match_quality(ia["label"], ib["label"], ib["syns"]) != EXACT):
                 continue                                       # reorderings like "control rodents" aren't enough
             keep, drop = (a, b) if ia["rank"] < ib["rank"] else (b, a)

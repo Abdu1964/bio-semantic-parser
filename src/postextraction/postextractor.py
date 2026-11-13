@@ -225,6 +225,7 @@ def process(
         if step_cb: step_cb(1, "Entity Normalization", f"{len(raw_records)} relations")
         log("Step 1 — Entity Normalization")
         entity_normalization.reset_document_cache()   # one ID per concept within this paper
+        entity_normalization.remember_organism_mentions(all_chunks)
         _n_total = len(raw_records)
 
         def _progress(done, total):

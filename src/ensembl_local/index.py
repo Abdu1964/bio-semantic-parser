@@ -47,6 +47,26 @@ def symbol(name: str, species: str) -> list:
             "SELECT gene_id, name FROM genes WHERE name_lower=? AND species=?", (name.strip().lower(), species))]
 
 
+def symbols_starting(stem: str, species: str) -> list:
+    """Gene symbols in this species that start with stem (lowercase)."""
+    conn = _db()
+    if conn is None or not stem:
+        return []
+    with _lock:
+        return [r[0] for r in conn.execute(
+            "SELECT DISTINCT name FROM genes WHERE name_lower >= ? AND name_lower < ? AND species=?",
+            (stem, stem + "￿", species))]
+
+
+def species_list() -> list:
+    """Species slugs in the index ('rattus_norvegicus', ...)."""
+    conn = _db()
+    if conn is None:
+        return []
+    with _lock:
+        return [r[0] for r in conn.execute("SELECT DISTINCT species FROM genes")]
+
+
 def gene(gene_id: str):
     """(symbol, species slug) of an Ensembl gene ID, or None."""
     conn = _db()
