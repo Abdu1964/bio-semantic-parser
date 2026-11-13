@@ -33,8 +33,10 @@ def test_scope_shown_to_validator():
     assert _scope({}) == "none stated"
 
 
-def test_negation_pass_needs_a_negating_sentence():
+def test_negation_pass_needs_a_negating_sentence(monkeypatch):
     from src.extraction.extractor import _text_negates
+    from src.preextraction import negation_detector
+    monkeypatch.setattr(negation_detector, "sentence_negated", lambda x: "unaffected" in x)
     chunk = {"text": "EMX2 was enriched in astrocytes. GAPDH was unaffected by IL-1β stimulation."}
     assert not _text_negates(_rel("EMX2", "astrocytes", negated=True), chunk)
     assert _text_negates(_rel("IL-1β", "GAPDH", negated=True), chunk)
@@ -57,7 +59,9 @@ def test_comparison_and_background_rules_in_prompt():
 
 def test_main_pass_negation_without_negating_text_is_lifted(monkeypatch):
     from src.extraction import extractor as X
+    from src.preextraction import negation_detector
     from src.schema.pydantic_model import ExtractionResult
+    monkeypatch.setattr(negation_detector, "sentence_negated", lambda x: "unaffected" in x)
     chunk = {"text": "We found EMX2 and NFIA as regulators in astrocytes. GAPDH was unaffected by IL-1β."}
     monkeypatch.setattr(X, "_NEGATION_PASS", False)
     monkeypatch.setattr(X, "_extract_main", lambda c, d=0: ExtractionResult(relations=[

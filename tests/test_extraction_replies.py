@@ -64,7 +64,10 @@ def test_long_chunk_is_split_until_replies_fit(fake_llm):
     assert {r.object_name for r in result.relations} == set(genes)
 
 
-def test_negation_pass_adds_negative_findings_once(fake_llm):
+def test_negation_pass_adds_negative_findings_once(fake_llm, monkeypatch):
+    from src.preextraction import negation_detector
+    monkeypatch.setattr(negation_detector, "sentence_negated", lambda x: "unaffected" in x)
+
     def answer(prompt):
         if "negative findings" in prompt:
             return _reply([dict(_rel("RTD-1", "GAPDH", "regulates"), negated=True)])

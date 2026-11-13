@@ -605,3 +605,19 @@ class TestPreextractor:
             preextractor.process(chunk)
 
         mock_pt.assert_not_called()
+
+
+def test_sentence_negated_without_word_lists():
+    pytest.importorskip("spacy")
+    import torch
+    if not hasattr(torch, "__version__"):
+        pytest.skip("torch is stubbed in this test run")
+    from src.preextraction import negation_detector as nd
+    nd._shared.update(detector=None, parser=None)
+    try:
+        nd._tools()
+    except Exception:
+        pytest.skip("NLI or spaCy model not installed")
+    assert nd.sentence_negated("GAPDH expression was unaffected by IL-1β stimulation.")
+    assert nd.sentence_negated("RTD-1 did not alter TNF levels in naive rats.")
+    assert not nd.sentence_negated("RTD-1 suppressed CCL7 expression in PIA synovium.")
