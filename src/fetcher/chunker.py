@@ -2,6 +2,8 @@ import os
 import tiktoken
 from dotenv import load_dotenv
 
+from src.sentences import split_sentences
+
 load_dotenv()
 
 
@@ -31,7 +33,7 @@ class Chunker:
 
     # Split into chunks under max_tokens, overlapping by a few sentences.
     def _split_with_overlap(self, text: str, section_tag: str) -> list:
-        sentences = text.split(". ")
+        sentences = split_sentences(text)
         chunks = []
         current_sentences = []
         current_tokens = 0
@@ -43,13 +45,13 @@ class Chunker:
             if current_tokens + sentence_tokens > self.max_tokens:
                 if current_sentences:
                     chunks.append({
-                        "text": ". ".join(current_sentences) + ".",
+                        "text": " ".join(current_sentences),
                         "section": section_tag,
                         "chunk_index": chunk_index,
                         "total_chunks": -1  # set below
                     })
                     chunk_index += 1
-                    current_sentences = current_sentences[-self.overlap_sentences:]
+                    current_sentences = current_sentences[len(current_sentences) - self.overlap_sentences:]
                     current_tokens = sum(
                         len(self.encoder.encode(s))
                         for s in current_sentences
@@ -60,7 +62,7 @@ class Chunker:
 
         if current_sentences:
             chunks.append({
-                "text": ". ".join(current_sentences) + ".",
+                "text": " ".join(current_sentences),
                 "section": section_tag,
                 "chunk_index": chunk_index,
                 "total_chunks": -1

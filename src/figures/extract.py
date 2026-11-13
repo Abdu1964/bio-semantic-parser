@@ -52,4 +52,7 @@ def save_figures(figures: list, out_dir) -> Path:
 
 
 def figures_dir(document_id: str) -> Path:
-    return FIGURES_ROOT / str(document_id).replace("/", "_").replace(":", "_")
+    name = str(document_id or "").replace("/", "_").replace("\\", "_").replace(":", "_")
+    if not name.strip(". "):
+        raise ValueError(f"invalid document ID for figure storage: {document_id!r}")
+    return FIGURES_ROOT / name

@@ -298,12 +298,22 @@ class TestNegationDetector:
         assert result["has_negation"] is False
         assert result["negated_entities"] == []
 
+    def test_neg_arc_only_inside_the_clause(self):
+        spacy = pytest.importorskip("spacy")
+        try:
+            nlp = spacy.load("en_core_sci_lg")
+        except OSError:
+            pytest.skip("en_core_sci_lg not installed")
+        span = next(nlp("IL6 was elevated, whereas TNF did not change.").sents)
+        assert NegationDetector._has_neg_arc(span, "TNF did not change.")
+        assert not NegationDetector._has_neg_arc(span, "IL6 was elevated,")
+
     def test_process_clause_caching(self, detector):
         """Same clause should only be classified once (via cache)."""
         call_count = {"n": 0}
         original = detector._is_negated
 
-        def counting_is_negated(clause):
+        def counting_is_negated(clause, neg_arc=False):
             call_count["n"] += 1
             return (False, 0.05)
 
@@ -320,6 +330,34 @@ class TestNegationDetector:
         detector.process(entities, doc)
         # _is_negated should only be called once for the shared clause
         assert call_count["n"] == 1
+
+    @pytest.mark.parametrize("probs,neg_arc,expected", [
+        # rows: positive hypothesis, then the negative ones; columns: contradiction, entailment, neutral
+        ([[0.02, 0.90, 0.08], [0.0, 0.01, 0.99], [0.0, 0.01, 0.99]], False, False),  # positive finding
+        ([[0.80, 0.05, 0.15], [0.0, 0.10, 0.90], [0.0, 0.10, 0.90]], True, True),    # contradicts, "not" in clause
+        ([[0.80, 0.05, 0.15], [0.0, 0.30, 0.70], [0.0, 0.10, 0.90]], False, True),   # contradicts, some negative entailment
+        ([[0.80, 0.05, 0.15], [0.0, 0.10, 0.90], [0.0, 0.10, 0.90]], False, False),  # contradiction alone ("loss")
+        ([[0.03, 0.02, 0.95], [0.0, 0.86, 0.14], [0.0, 0.20, 0.80]], False, True),   # entails a negative
+        ([[0.03, 0.02, 0.95], [0.0, 0.30, 0.70], [0.0, 0.40, 0.60]], False, False),  # neither check fires
+    ])
+    def test_is_negated_uses_positive_and_negative_hypotheses(self, detector, probs, neg_arc, expected):
+        import contextlib
+        import src.preextraction.negation_detector as nd
+        seen = {}
+
+        def tokenizer(premises, hypotheses, **kw):
+            seen["hypotheses"] = hypotheses
+            return {}
+
+        detector._tokenizer = tokenizer
+        detector._model = MagicMock()
+        with patch.object(nd, "torch") as fake_torch:
+            fake_torch.no_grad.return_value = contextlib.nullcontext()
+            fake_torch.softmax.return_value = probs
+            is_neg, score = detector._is_negated("Rapamycin did not alter mTOR phosphorylation.", neg_arc=neg_arc)
+        assert seen["hypotheses"][0] == nd._DEFAULT_HYPOTHESIS
+        assert seen["hypotheses"][1:] == list(nd._NEGATIVE_HYPOTHESES)
+        assert is_neg is expected
 
 
 

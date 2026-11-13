@@ -1,6 +1,7 @@
 """Extraction confidence from five evidence channels (rank-weighted, adapted from Open Targets)."""
 import re
 
+from src.sentences import split_sentences as _split_sentences
 
 # Channel weights (project's choice): wording certainty > statistics > section/claim > NLI/LLM.
 CHANNEL_WEIGHTS = {
@@ -30,32 +31,31 @@ def score(
     subj_key = subject_name.lower()[:12]
     obj_key  = object_name.lower()[:12]
 
-    # Extract the most relevant sentence for NLI channels (C2 + C5).
+    # Extract the most relevant sentence for C2 and the NLI channel (C5).
     # NLI models are calibrated for short sentence pairs, not full chunks.
     # Using the whole chunk gives near-zero entailment even for correct triples.
-    hyp       = f"{subject_name} {relation} {object_name}"
+    hyp       = _hypothesis(subject_name, relation, object_name, negated)
     best_sent = _best_sentence(text, subj_key, obj_key,
                                reasoning=reasoning,
-                               relation_hypothesis=hyp)
+                               relation_hypothesis=hyp, negated=negated)
 
     c1 = _channel_section(sec)
     c2 = _channel_factuality(best_sent, best_sent.lower())
     c3 = _channel_quantitative(text_lc)          # keep full chunk for stats
     c4 = _channel_direct_claim(text_lc, subj_key, obj_key)
-    c5 = _channel_nli_entailment(best_sent, subject_name, relation, object_name,
-                                 llm_fallback=float(llm_confidence or 0.5))
+    c5 = _channel_nli_entailment(best_sent, hyp,
+                                 llm_fallback=float(llm_confidence or 0.5),
+                                 max_score=_hedge_limit(c2))
 
-    combined = _combine_channels([c1, c2, c3, c4, c5])
-
-    # Negated relations: cap at 0.65
-    if negated:
-        combined = min(combined, 0.65)
+    # Negated facts are scored like positive ones: a definite negative finding is strong evidence.
+    # A hedged fact cannot score above its certainty level; the rank weighting would otherwise hide it.
+    combined = min(_combine_channels([c1, c2, c3, c4, c5]), _hedge_limit(c2))
 
     return round(min(max(combined, 0.0), 1.0), 4)
 
 
 # ── Sentence extractor ───────────────────────────────────────────────────────
-
+# this regex matches common negation cues near the entity in a sentence
 _NEGATION_NEAR = re.compile(
     r'\b(did not|does not|do not|no|not|never|neither|nor|without|'
     r'fail|failed|lack|lacks|absent|exclude|excluded|unlikely|cannot)\b',
@@ -63,10 +63,23 @@ _NEGATION_NEAR = re.compile(
 )
 
 
+# Construct the hypothesis sentence for NLI based on the fact and its negation status
+def _hypothesis(subject: str, relation: str, obj: str, negated: bool = False) -> str:
+    """The fact as a plain sentence for NLI; a negated fact is stated as negative."""
+    # Convert the relation to a readable string and construct the claim sentence
+    rel   = str(getattr(relation, "value", relation)).replace("_", " ")
+
+    # Construct the claim sentence with subject, relation, and object
+    claim = f"{subject} {rel} {obj}"
+    # Return the claim as a negated sentence if required
+    return f"It is not true that {claim}." if negated else claim
+
+
 def _best_sentence(text: str, subj_key: str, obj_key: str,
                    reasoning: str = "",
-                   relation_hypothesis: str = "") -> str:
-    """Return the sentence most relevant for NLI scoring."""
+                   relation_hypothesis: str = "",
+                   negated: bool = False) -> str:
+    """Return the sentence most relevant for NLI scoring; its polarity matches the fact's."""
     # Priority 1: quoted reasoning trace with both entities
     if reasoning:
         quoted = re.findall(r"['\"]([^'\"]{20,200})['\"]", reasoning)
@@ -74,8 +87,9 @@ def _best_sentence(text: str, subj_key: str, obj_key: str,
             if subj_key in q.lower() and obj_key in q.lower():
                 return q[:512]
 
-    sentences   = re.split(r'(?<=[.!?])\s+', text.strip())
+    sentences   = _split_sentences(text.strip())
     with_both   = []
+    other_polarity = []
     with_one    = []
 
     for sent in sentences:
@@ -83,10 +97,14 @@ def _best_sentence(text: str, subj_key: str, obj_key: str,
         has_subj = subj_key in sl
         has_obj  = obj_key  in sl
         if has_subj and has_obj:
-            if not _NEGATION_NEAR.search(sl):
+            # Matching negation words go first; the rest stay (e.g. "unaffected"), NLI ranks them.
+            if bool(_NEGATION_NEAR.search(sl)) == negated:
                 with_both.append(sent)
+            else:
+                other_polarity.append(sent)
         elif has_subj or has_obj:
             with_one.append(sent)
+    with_both += other_polarity
 
     if not with_both and not with_one:
         # Last resort — first sentence with either entity key
@@ -133,7 +151,7 @@ def _channel_section(section: str) -> float:
 
 
 def _get_nli_model():
-    """Shared NLI model singleton — loaded once, reused by C2 and C5; returns (tok, model) or (None, None)."""
+    """Shared NLI model singleton — loaded once, used for sentence choice and C5; returns (tok, model) or (None, None)."""
     if not hasattr(_get_nli_model, "_loaded"):
         try:
             import os
@@ -190,44 +208,40 @@ def _nli_score(premise: str, hypothesis: str):
     return float(probs[0]), float(probs[1]), float(probs[2])
 
 
-def _channel_factuality(text: str, text_lc: str) -> float:
-    """Channel 2 — NLI epistemic certainty; falls back to Kilicoglu 2017 regex (PMC5497973)."""
-    _, entailment, _ = _nli_score(text,
-        "This sentence makes a definitive, confirmed factual claim.")
+_DOUBTFUL = (
+    r"\b(unlikely|doubt|controversial|debate|disputed|contradict|"
+    r"cannot confirm|inconclusive|insufficient evidence)\b"
+)
+_POSSIBLE = (
+    r"\b(may|might|could|possibly|potentially|presumably|perhaps|"
+    r"unclear|uncertain|unknown|speculate|hypothesize|propose|"
+    r"putative|preliminary|tentative)\b"
+)
+_PROBABLE = (
+    r"\b(likely|probably|suggest|suggests|indicate|indicates|"
+    r"appear|appears|seem|seems|consistent with|support|supports|"
+    r"implies|correlate|associate|associated)\b"
+)
+_FACT = (
+    r"\b(demonstrate|demonstrates|demonstrated|show|shows|showed|"
+    r"prove|proves|confirm|confirms|confirmed|establish|establishes|"
+    r"identify|identifies|reveal|reveals|observe|observed|detect|"
+    r"detected|measure|measured|find|finds|found|report|reports|"
+    r"determine|determines|determined)\b"
+)
 
-    if entailment > 0.33:
-        # NLI available and confident — return entailment score directly
-        # Re-scale from [0,1] to match Kilicoglu factuality range [0.20, 0.95]
-        return 0.20 + entailment * 0.75
-    else:
-        # NLI unavailable or neutral — fall back to Kilicoglu 2017 regex
-        _DOUBTFUL = (
-            r"\b(unlikely|doubt|controversial|debate|disputed|contradict|"
-            r"fail to|failed to|did not|no evidence|cannot confirm|"
-            r"inconclusive|insufficient evidence)\b"
-        )
-        _POSSIBLE = (
-            r"\b(may|might|could|possibly|potentially|presumably|perhaps|"
-            r"unclear|uncertain|unknown|speculate|hypothesize|propose|"
-            r"putative|preliminary|tentative)\b"
-        )
-        _PROBABLE = (
-            r"\b(likely|probably|suggest|suggests|indicate|indicates|"
-            r"appear|appears|seem|seems|consistent with|support|supports|"
-            r"implies|correlate|associate|associated)\b"
-        )
-        _FACT = (
-            r"\b(demonstrate|demonstrates|demonstrated|show|shows|showed|"
-            r"prove|proves|confirm|confirms|confirmed|establish|establishes|"
-            r"identify|identifies|reveal|reveals|observe|observed|detect|"
-            r"detected|measure|measured|find|finds|found|report|reports|"
-            r"determine|determines|determined)\b"
-        )
-        if re.search(_DOUBTFUL, text_lc): return 0.20
-        if re.search(_POSSIBLE, text_lc): return 0.50
-        if re.search(_PROBABLE, text_lc): return 0.75
-        if re.search(_FACT,     text_lc): return 0.95
-        return 0.65
+
+def _channel_factuality(text: str, text_lc: str) -> float:
+    """Channel 2 — certainty of the wording, Kilicoglu 2017 levels (PMC5497973).
+
+    Polarity is not certainty: "did not" / "failed to" mark a definite negative
+    (counterfact), scored like its positive (fact). Only hedges lower the score.
+    """
+    if re.search(_DOUBTFUL, text_lc): return 0.20
+    if re.search(_POSSIBLE, text_lc): return 0.50
+    if re.search(_PROBABLE, text_lc): return 0.75
+    if re.search(_FACT,     text_lc): return 0.95
+    return 0.65
 
 
 def _channel_quantitative(text_lc: str) -> float:
@@ -255,22 +269,26 @@ def _channel_quantitative(text_lc: str) -> float:
 
 def _channel_direct_claim(text_lc: str, subj_key: str, obj_key: str) -> float:
     """Channel 4 — co-sentence presence: 0.90 if both entities in same sentence, else 0.35."""
-    sentences = re.split(r"(?<=[.!?])\s+", text_lc)
+    sentences = _split_sentences(text_lc)
     if any(subj_key in s and obj_key in s for s in sentences):
         return 0.90
     return 0.35
 
 
-def _channel_nli_entailment(text: str, subject: str, relation: str, obj: str,
-                             llm_fallback: float = 0.55) -> float:
-    """Channel 5 — NLI P(entailment) for the extracted triple; falls back to calibrated LLM self-report."""
-    hypothesis = f"{subject} {relation} {obj}"
+def _hedge_limit(factuality: float) -> float:
+    """Upper bound for C5 and the final score: a hedged sentence (possible/doubtful) cannot fully support a definite claim."""
+    return factuality if factuality <= 0.50 else 1.0
+
+
+def _channel_nli_entailment(text: str, hypothesis: str,
+                             llm_fallback: float = 0.55, max_score: float = 1.0) -> float:
+    """Channel 5 — NLI P(entailment) for the fact (negative hypothesis if negated); falls back to calibrated LLM self-report."""
     _, entailment, _ = _nli_score(text, hypothesis)
     # If NLI returned the fallback (0.33) the model wasn't available
     if entailment != 0.33:
-        return entailment
+        return min(entailment, max_score)
     # Fallback: compress LLM self-report into [0.37, 0.77] to match NLI range
-    return 0.37 + min(max(llm_fallback, 0.0), 1.0) * 0.40
+    return min(0.37 + min(max(llm_fallback, 0.0), 1.0) * 0.40, max_score)
 
 
 # ── Rank-weighted combination ──
@@ -303,27 +321,25 @@ def explain(
     obj_key  = object_name.lower()[:12]
     llm_raw  = float(llm_confidence or 0.5)
 
-    hyp2      = f"{subject_name} {relation} {object_name}"
+    hyp2      = _hypothesis(subject_name, relation, object_name, negated)
     best_sent = _best_sentence(text, subj_key, obj_key,
                                reasoning=reasoning,
-                               relation_hypothesis=hyp2)
+                               relation_hypothesis=hyp2, negated=negated)
 
     c1 = _channel_section(sec)
     c2 = _channel_factuality(best_sent, best_sent.lower())
     c3 = _channel_quantitative(text_lc)
     c4 = _channel_direct_claim(text_lc, subj_key, obj_key)
-    c5 = _channel_nli_entailment(best_sent, subject_name, relation, object_name,
-                                  llm_fallback=llm_raw)
+    c5 = _channel_nli_entailment(best_sent, hyp2, llm_fallback=llm_raw,
+                                 max_score=_hedge_limit(c2))
 
-    combined = _combine_channels([c1, c2, c3, c4, c5])
-    if negated:
-        combined = min(combined, 0.65)
+    combined = min(_combine_channels([c1, c2, c3, c4, c5]), _hedge_limit(c2))
 
     return {
         "final_score":          round(min(max(combined, 0.0), 1.0), 4),
         "channels": {
             "C1_section_weight":       round(c1, 4),
-            "C2_factuality_nli":       round(c2, 4),
+            "C2_factuality":           round(c2, 4),
             "C3_quantitative_evidence":round(c3, 4),
             "C4_direct_claim":         round(c4, 4),
             "C5_nli_entailment":       round(c5, 4),

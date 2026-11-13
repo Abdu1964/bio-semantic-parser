@@ -241,7 +241,7 @@ def _resolve_input(input_type, input_value, source_name, all_sources, scheduler)
         doc_id = hashlib.sha256(val.encode()).hexdigest()[:16]
         return src, doc_id, val
 
-    _uploads = [p for p in Path("data/uploads").glob(f"{val}.*") if _upload_id(p) == val] \
+    _uploads = [p for p in Path("data/uploads").iterdir() if p.is_file() and _upload_id(p) == val] \
         if Path("data/uploads").is_dir() else []
     if _uploads:
         src = {"name": "pdf", "type": "file", "format": "pdf",

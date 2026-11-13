@@ -10,6 +10,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from src.postextraction.name_matching import match_quality, normalize_term, spell_greek, term_key, tokens, EXACT, NONE
+from src.sentences import split_sentences
 import threading
 import time
 from urllib.parse import urlparse
@@ -136,7 +137,7 @@ def _extract_context_sentence(chunk_text: str, entity_text: str, window: int = 2
     end   = min(len(chunk_text), idx + len(entity_text) + window)
     snippet = chunk_text[start:end]
     # Trim to sentence boundaries within the snippet when they exist.
-    sentences = re.split(r"(?<=[.!?])\s+", snippet)
+    sentences = split_sentences(snippet)
     for s in sentences:
         if entity_text.lower() in s.lower():
             return s.strip()
@@ -1335,8 +1336,10 @@ def _hgnc_gene(symbol: str, timeout=_TIMEOUT) -> Optional[tuple]:
         except Exception as e:
             logger.warning("HGNC lookup failed for %r: %s", symbol, e)
             return None
-        if len(docs) == 1 and docs[0].get("ensembl_gene_id"):      # an alias shared by genes is ambiguous
-            return (f"ENSEMBL:{docs[0]['ensembl_gene_id']}", docs[0].get("symbol") or symbol, "")
+        if docs:                                                    # the first field that knows the symbol decides
+            if len(docs) == 1 and docs[0].get("ensembl_gene_id"):  # several genes: ambiguous, no ID
+                return (f"ENSEMBL:{docs[0]['ensembl_gene_id']}", docs[0].get("symbol") or symbol, "")
+            return None
     return None
 
 

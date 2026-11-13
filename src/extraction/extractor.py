@@ -15,6 +15,7 @@ import httpx
 from src.schema.taxonomy import TAXONOMY, ENTITY_TAXONOMY, RelationType, EntityType
 from src.schema.pydantic_model import BiologicalRelation, ExtractionResult
 from src.schema.biolink_generated import INVERSE_TO_CANONICAL
+from src.sentences import split_sentences
 
 logger = logging.getLogger(__name__)
 
@@ -370,10 +371,10 @@ def _salvage_relations(raw: str) -> list:
 def _split_chunk(chunk: dict) -> list:
     """Split a chunk's text in half at a sentence boundary, returning two sub-chunks (with other metadata)."""
     text = chunk.get("text", "")
-    sentences = text.split(". ")
+    sentences = split_sentences(text)
     mid = len(sentences) // 2
-    half1 = ". ".join(sentences[:mid]) + ("." if sentences[:mid] else "")
-    half2 = ". ".join(sentences[mid:])
+    half1 = " ".join(sentences[:mid])
+    half2 = " ".join(sentences[mid:])
     base = {k: v for k, v in chunk.items() if k != "text"}
     return [
         {**base, "text": half1, "_sub_chunk": "1/2"},

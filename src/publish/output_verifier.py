@@ -1,15 +1,16 @@
 """Layer 8 — verifies generated CSV/MeTTa output against the original paper text."""
 import csv
-import re
 from pathlib import Path
+
+from src.sentences import split_sentences
 
 
 _DELIMITER = "|"
 
 
 def _sentences(text: str) -> list:
-    """Split text into sentences on . ! ? followed by a space or end."""
-    return [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+    """Non-empty sentences of text."""
+    return [s.strip() for s in split_sentences(text) if s.strip()]
 
 
 def _find_supporting_sentence(

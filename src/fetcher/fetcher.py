@@ -131,7 +131,7 @@ class Fetcher:
             log(f"           ✓ Local file — {len(text):,} chars")
         else:
             content_type = response.headers.get("Content-Type", "")
-            format_type = self.format_detector.detect(content_type)
+            format_type = self.format_detector.detect(content_type, data=response.content, filename=url)
             if format_type in ("json", "xml", "html", "text"):
                 text = self._extract_text(format_type, response, source)
             else:                                           # PDF, archives, DOCX, unlabelled bytes
@@ -263,8 +263,8 @@ def _save_figures(data: bytes, filename: str, content_type: str, document_id: st
     try:
         from src.figures import extract_figures, figures_dir, save_figures
         figures = extract_figures(data, filename, content_type)
+        path = save_figures(figures or [], figures_dir(document_id))       # no figures also replaces an old index
         if figures:
-            path = save_figures(figures, figures_dir(document_id))
             with_caption = sum(bool(f.caption) for f in figures)
             log(f"           ✓ Figures: {len(figures)} ({with_caption} with caption) → {path.parent}")
     except Exception as e:
@@ -357,9 +357,9 @@ def _lookup_pmc_id(pmid: str, api_key_env: str = "") -> str:
 
 def _find_coref_rewrites(before: str, after: str) -> list:
     """Return list of (before_sentence, after_sentence) pairs that differ."""
-    import re
-    before_sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', before) if s.strip()]
-    after_sents  = [s.strip() for s in re.split(r'(?<=[.!?])\s+', after)  if s.strip()]
+    from src.sentences import split_sentences
+    before_sents = [s.strip() for s in split_sentences(before) if s.strip()]
+    after_sents  = [s.strip() for s in split_sentences(after)  if s.strip()]
     rewrites = []
     for b, a in zip(before_sents, after_sents):
         if b != a:

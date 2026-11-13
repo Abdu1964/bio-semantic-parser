@@ -156,11 +156,12 @@ class TestConfidenceScoringReal:
         assert 0.0 <= lo <= hi <= 1.0
         assert hi > lo
 
-    def test_negation_caps_confidence(self):
-        text = "SIRT1 does not upregulate FOXO3 in these cells."
-        capped = confidence_scorer.score("SIRT1", "FOXO3", True, 0.95, "results", text,
-                                         relation="upregulates")
-        assert capped <= 0.65
+    def test_negation_scored_like_positive(self):
+        pos = confidence_scorer.score("SIRT1", "FOXO3", False, 0.95, "results",
+                                      "SIRT1 upregulates FOXO3 in these cells.", relation="upregulates")
+        neg = confidence_scorer.score("SIRT1", "FOXO3", True, 0.95, "results",
+                                      "SIRT1 does not upregulate FOXO3 in these cells.", relation="upregulates")
+        assert neg > 0.65 and abs(pos - neg) <= 0.05
 
     def test_pvalue_boosts_quantitative_channel(self):
         strong = confidence_scorer.explain("A", "B", False, 0.8, "results",
@@ -308,7 +309,7 @@ class TestPostExtractorOrchestration:
             assert r["triple_id"] is not None            # persisted to store
             assert r["alignment_action"] in {"both_new", "connect_existing", "create_one_new"}
 
-    def test_negated_relation_confidence_capped_through_orchestrator(self, temp_triple_store):
+    def test_negated_relation_not_capped_through_orchestrator(self, temp_triple_store):
         from src.postextraction import postextractor
         results = [ExtractionResult(relations=[
             _relation("SIRT1", RelationType.UPREGULATES, "FOXO3", negated=True)])]
@@ -316,7 +317,7 @@ class TestPostExtractorOrchestration:
         norm, vbatch = self._patch_layer7_externals()
         with norm, vbatch:
             records = postextractor.process_batch(results, chunks)
-        assert records[0]["confidence"] <= 0.65
+        assert records[0]["confidence"] > 0.65
         assert records[0]["negated"] is True
 
     def test_non_viable_relations_dropped(self, temp_triple_store):
