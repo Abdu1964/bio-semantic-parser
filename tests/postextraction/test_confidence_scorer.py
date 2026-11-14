@@ -1,8 +1,10 @@
 """Confidence: definite negative findings score like definite positive ones; hedges score lower."""
 import pytest
 
-from src.postextraction import confidence_scorer as cs
+from src.postextraction import certainty, confidence_scorer as cs
 from src.schema.taxonomy import RelationType
+
+REAL_LEVEL = certainty.level
 
 PAIRS = [   # (positive, negative) with the same certainty
     ("SIRT1 overexpression upregulated FOXO3 in HEK293 cells.",
@@ -12,6 +14,14 @@ PAIRS = [   # (positive, negative) with the same certainty
     ("We found evidence that IL6 increases CRP.",
      "We found no evidence that IL6 increases CRP."),
 ]
+
+
+@pytest.fixture(autouse=True)
+def judged(monkeypatch):
+    """Certainty as the LLM would judge these test sentences (the scorer only reads the judged level)."""
+    from src.postextraction import certainty
+    label = lambda s: "DOUBTFUL" if "unlikely" in s else "POSSIBLE" if " may " in f" {s} " else "FACT"
+    monkeypatch.setattr(certainty, "level", lambda s: certainty._VALUE[label(s or "")])
 
 
 @pytest.fixture
@@ -86,3 +96,22 @@ def test_negative_finding_scores_like_positive(nli_supports, positive, negative)
     neg = cs.score(subj, obj, True, 0.9, "results", negative, relation="increases")
     assert neg > 0.65                                        # no cap on negated facts
     assert abs(pos - neg) <= 0.02
+
+
+def test_certainty_judged_in_batches_and_neutral_otherwise(monkeypatch):
+    monkeypatch.setattr(certainty, "level", REAL_LEVEL)
+    monkeypatch.setattr(certainty, "_cache", {})
+    monkeypatch.setattr(certainty, "call_llm", lambda msgs, **k: "1: POSSIBLE\n2: FACT")
+    assert certainty.prefetch(["IL6 may increase CRP.", "IL6 increased CRP.", ""]) == 2
+    assert certainty.level("IL6 may increase CRP.") == 0.50 and certainty.level("IL6 increased CRP.") == 0.95
+    assert certainty.level("Never judged.") == certainty.NEUTRAL
+
+
+def test_unreachable_llm_caps_nothing(monkeypatch):
+    monkeypatch.setattr(certainty, "level", REAL_LEVEL)
+    monkeypatch.setattr(certainty, "_cache", {})
+    def down(*a, **k):
+        raise ConnectionError("LLM down")
+    monkeypatch.setattr(certainty, "call_llm", down)
+    assert certainty.prefetch(["IL6 may increase CRP."]) == 0
+    assert certainty.level("IL6 may increase CRP.") == certainty.NEUTRAL
