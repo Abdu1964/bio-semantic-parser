@@ -203,6 +203,15 @@ def process(
     # Collect all chunks for cross-chunk sentence search in confidence scoring
     all_chunks = [chunk for _, chunk in extraction_pairs]
 
+    # Certainty of each fact's evidence sentence, judged in batches before scoring
+    from src.postextraction import certainty
+    from src.postextraction.confidence_scorer import evidence_sentence
+    _n_cert = certainty.prefetch(
+        evidence_sentence(r.subject_name, r.object_name, r.negated, chunk.get("text", ""), str(r.relation),
+                          r.reasoning or "")
+        for result, chunk in extraction_pairs for r in result.relations if r.extraction_viable)
+    log(f"Certainty judged for {_n_cert} evidence sentence(s)")
+
     # Build (document_id, chunk_index) → chunk lookup to avoid O(N²) scan in Step 1
     _chunk_map: dict = {}
     for result, chunk in extraction_pairs:

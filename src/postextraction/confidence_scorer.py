@@ -207,40 +207,19 @@ def _nli_score(premise: str, hypothesis: str):
     return float(probs[0]), float(probs[1]), float(probs[2])
 
 
-_DOUBTFUL = (
-    r"\b(unlikely|doubt|controversial|debate|disputed|contradict|"
-    r"cannot confirm|inconclusive|insufficient evidence)\b"
-)
-_POSSIBLE = (
-    r"\b(may|might|could|possibly|potentially|presumably|perhaps|"
-    r"unclear|uncertain|unknown|speculate|hypothesize|propose|"
-    r"putative|preliminary|tentative)\b"
-)
-_PROBABLE = (
-    r"\b(likely|probably|suggest|suggests|indicate|indicates|"
-    r"appear|appears|seem|seems|consistent with|support|supports|"
-    r"implies|correlate|associate|associated)\b"
-)
-_FACT = (
-    r"\b(demonstrate|demonstrates|demonstrated|show|shows|showed|"
-    r"prove|proves|confirm|confirms|confirmed|establish|establishes|"
-    r"identify|identifies|reveal|reveals|observe|observed|detect|"
-    r"detected|measure|measured|find|finds|found|report|reports|"
-    r"determine|determines|determined)\b"
-)
+def _channel_factuality(text: str, text_lc: str = "") -> float:
+    """Channel 2 — certainty of the claim, Kilicoglu 2017 levels (PMC5497973), judged by the LLM
+    (src.postextraction.certainty). Polarity is not certainty: a definite negative scores like a definite positive."""
+    from src.postextraction import certainty
+    return certainty.level(text)
 
 
-def _channel_factuality(text: str, text_lc: str) -> float:
-    """Channel 2 — certainty of the wording, Kilicoglu 2017 levels (PMC5497973).
-
-    Polarity is not certainty: "did not" / "failed to" mark a definite negative
-    (counterfact), scored like its positive (fact). Only hedges lower the score.
-    """
-    if re.search(_DOUBTFUL, text_lc): return 0.20
-    if re.search(_POSSIBLE, text_lc): return 0.50
-    if re.search(_PROBABLE, text_lc): return 0.75
-    if re.search(_FACT,     text_lc): return 0.95
-    return 0.65
+def evidence_sentence(subject_name: str, object_name: str, negated: bool, text: str,
+                      relation: str = "", reasoning: str = "") -> str:
+    """The sentence a fact is scored against (C2, C5) — the same one score() and explain() pick."""
+    return _best_sentence(text, subject_name.lower()[:12], object_name.lower()[:12], reasoning=reasoning,
+                          relation_hypothesis=_hypothesis(subject_name, relation, object_name, negated),
+                          negated=negated)
 
 
 def _channel_quantitative(text_lc: str) -> float:
