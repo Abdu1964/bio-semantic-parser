@@ -390,8 +390,8 @@ def _organism_raw(name: str) -> tuple:
     if key not in _organism_cache:
         e0 = _net_errors()
         hit, found = _ncbi_taxon_search(written), ()
-        if hit and not hit[2] and match_quality(written, hit[1]) == EXACT and not hit[1].endswith(" sp."):
-            found = (hit[0].split(":")[-1], hit[1])   # a scientific name ('Rattus sp.' is a placeholder)
+        if hit and not hit[2] and match_quality(written, hit[1]) != NONE and not hit[1].endswith(" sp."):
+            found = (hit[0].split(":")[-1], hit[1])   # a scientific name, or its misspelling ('Rattus sp.' is a placeholder)
         else:
             for form in _number_forms(key):           # a common name, or a misspelled scientific name
                 cands = [c for c in _ncbi_taxon_candidates(f'"{form}"[All Names]') if not c[1].endswith(" sp.")]
@@ -417,7 +417,7 @@ def _organism_names(species: str) -> Optional[set]:
         names = {org[1].lower()}
         genus, _, epithet = org[1].lower().partition(" ")
         if epithet:
-            names.add(f"{genus[0]}. {epithet}")
+            names |= {f"{genus[0]}. {epithet}", genus}            # the genus alone also names it ('Drosophila populations')
         fetch = lambda tid: _http_get(f"{_NCBI_BASE}/efetch.fcgi", params={"db": "taxonomy", "id": tid, "retmode": "xml"},
                                       timeout=_TIMEOUT).text
         try:
