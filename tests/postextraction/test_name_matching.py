@@ -247,6 +247,18 @@ def test_gene_family_from_the_gene_index():
     en._gene_family.cache_clear()
 
 
+def test_misspelled_scientific_name_resolves_but_common_name_needs_its_own_entry():
+    en.reset_document_cache()
+    for c in (en._organism_cache, en._rank_cache):
+        c.clear()
+    hits = {"Saccharmoyces cervisiae": ("NCBITaxon:4932", "Saccharomyces cerevisiae", False),
+            "fruit fly": ("NCBITaxon:103775", "Drosophila gunungcola", False)}
+    with patch(f"{EN}._ncbi_taxon_search", side_effect=lambda t: hits.get(t)), \
+         patch(f"{EN}._ncbi_taxon_candidates", return_value=[("4932", "Saccharomyces cerevisiae", "", "species")]):
+        assert en._organism("Saccharmoyces cervisiae") == ("4932", "Saccharomyces cerevisiae")
+        assert en._organism("fruit fly") != ("103775", "Drosophila gunungcola")     # a common-name hit is not taken as-is
+
+
 def test_no_family_check_outside_the_papers_own_gene_set():
     en._gene_family.cache_clear()
     with patch("src.ensembl_local.has_species", side_effect=lambda sp: sp == "homo_sapiens"), \
