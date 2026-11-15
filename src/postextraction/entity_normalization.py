@@ -349,6 +349,29 @@ def _number_forms(word: str) -> list:
     return list(dict.fromkeys(stems + [p for s in stems if not s.endswith("s") for p in _plural(s)]))
 
 
+_taxon_names_cache: dict = {}
+
+
+def _taxon_names(taxids: list) -> dict:
+    """{taxid: [scientific name and NCBI's other names except acronyms]} from one NCBI Taxonomy record fetch."""
+    import xml.etree.ElementTree as ET
+    todo = [t for t in taxids if t not in _taxon_names_cache]
+    if todo:
+        try:
+            xml = _http_get(f"{_NCBI_BASE}/efetch.fcgi", params={"db": "taxonomy", "id": ",".join(todo), "retmode": "xml"},
+                            timeout=_TIMEOUT).text
+            for taxon in ET.fromstring(xml).findall("Taxon"):
+                names = [taxon.findtext("ScientificName") or ""]
+                for other in taxon.find("OtherNames") if taxon.find("OtherNames") is not None else []:
+                    if "Acronym" not in other.tag and other.text and other.text.strip():
+                        names.append(other.text.strip())
+                    names += [n.text for n in other.iter("DispName") if n.text]
+                _taxon_names_cache[taxon.findtext("TaxId")] = [n for n in names if n]
+        except Exception as e:
+            logger.warning("NCBI Taxonomy names failed for %s: %s", todo, e)
+    return {t: _taxon_names_cache[t] for t in taxids if t in _taxon_names_cache}
+
+
 def _taxon_rank(taxid: str) -> str:
     if taxid not in _rank_cache:
         cands = _ncbi_taxon_candidates(f"{taxid}[uid]", retmax=1)
@@ -395,6 +418,9 @@ def _organism_raw(name: str) -> tuple:
         else:
             for form in _number_forms(key):           # a common name, or a misspelled scientific name
                 cands = [c for c in _ncbi_taxon_candidates(f'"{form}"[All Names]') if not c[1].endswith(" sp.")]
+                names = _taxon_names([c[0] for c in cands]) if cands else {}
+                # a name of the organism, not an acronym NCBI also lists ('scrs' is one for a phytoplasma)
+                cands = [c for c in cands if any(match_quality(form, n) != NONE for n in names.get(c[0], [c[1]]))]
                 if cands:                             # several organisms share the name: the group holding them
                     groups = [c for c in cands if c[3] not in _SPECIES_LEVEL] if len(cands) > 1 else []
                     c = groups[0] if groups else cands[0]
@@ -2850,6 +2876,19 @@ def _genes_named(names: list) -> int:
     return len({_symbol_form(n) for n in names if _symbol_like(n.strip()) and ensembl_local.symbol(_symbol_form(n), slug)})
 
 
+def _organism_from_genes(names) -> str:
+    """The species whose official gene symbols most of these names are, in the local Ensembl index ('Ubx', 'Scr',
+    'Antp' → Drosophila melanogaster); '' unless at least 3 names match and twice as many as in any other species
+    (IL6, TNF are symbols in human, mouse and rat alike: no inference)."""
+    from src import ensembl_local
+    names = {n.strip() for n in names if n and n.strip() and " " not in n.strip()}
+    counts = collections.Counter(sp for sp in ensembl_local.species_list() for n in names if ensembl_local.symbol(n, sp))
+    ranked = counts.most_common(2)
+    if not ranked or ranked[0][1] < 3 or (len(ranked) > 1 and ranked[0][1] < 2 * ranked[1][1]):
+        return ""
+    return ranked[0][0].replace("_", " ").capitalize()
+
+
 def merge_synonym_concepts(records: list) -> list:
     """Merge concepts the databases list as synonyms — but never a gene into a term whose synonyms name
     several genes (MeSH 'Interleukin-17' lists IL17A … IL17F: a family, not one of them)."""
@@ -2975,6 +3014,9 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
     named = collections.Counter(r.get("species") for r in records if r.get("species"))
     if named:
         _doc().species = named.most_common(1)[0][0]
+    else:                                                  # no organism stated: the genome its gene names come from
+        _doc().species = _organism_from_genes(r.get(f"{s}_name", "") for r in records for s in ("subject", "object")
+                                              if _TYPE_FAMILY.get(r.get(f"{s}_type")) in ("gene", "protein"))
     for chunk_text in dict.fromkeys(r.get("_chunk_text", "") for r in records):   # document order: first definition wins
         for short, long in find_abbreviations(chunk_text).items():
             _doc().abbrevs.setdefault(short, long)
