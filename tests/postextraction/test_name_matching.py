@@ -259,6 +259,17 @@ def test_misspelled_scientific_name_resolves_but_common_name_needs_its_own_entry
         assert en._organism("fruit fly") != ("103775", "Drosophila gunungcola")     # a common-name hit is not taken as-is
 
 
+def test_paper_organism_from_its_gene_names_only_when_decisive():
+    genomes = {"drosophila_melanogaster": {"ubx", "scr", "antp", "dfd"}, "homo_sapiens": {"il6", "tnf", "il1b"},
+               "mus_musculus": {"il6", "tnf", "il1b"}}
+    symbol = lambda n, sp: [("ID", n)] if n.lower() in genomes[sp] else []
+    with patch("src.ensembl_local.species_list", return_value=list(genomes)), \
+         patch("src.ensembl_local.symbol", side_effect=symbol):
+        assert en._organism_from_genes(["Ubx", "Scr", "Antp", "Dfd", "wingless protein"]) == "Drosophila melanogaster"
+        assert en._organism_from_genes(["IL6", "TNF", "IL1B"]) == ""          # human and mouse alike: no guess
+        assert en._organism_from_genes(["Ubx", "Scr"]) == ""                  # too few names
+
+
 def test_no_family_check_outside_the_papers_own_gene_set():
     en._gene_family.cache_clear()
     with patch("src.ensembl_local.has_species", side_effect=lambda sp: sp == "homo_sapiens"), \
