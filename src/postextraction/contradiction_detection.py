@@ -1,4 +1,5 @@
 """Layer 7 step 3 — flag opposing relations for the same entity pair as contradictions."""
+import json
 import sqlite3
 from pathlib import Path
 
@@ -40,7 +41,7 @@ def check_contradiction(record: dict) -> dict:
         checks.append((opposing.value, negated, f"'{rel_enum.value}' conflicts with existing '{opposing.value}'"))
 
     conn = _get_conn()
-    hit = None
+    hits = []
     for rel, neg, what in checks:
         row = conn.execute(
             "SELECT id, source_papers FROM triples "
@@ -48,9 +49,12 @@ def check_contradiction(record: dict) -> dict:
             (subject_id, rel, object_id, neg),
         ).fetchone()
         if row:
-            hit = (row, what)
-            break
+            hits.append((row, what))
     conn.close()
+    hit = hits[0] if hits else None
+    if hits:                                       # stored rows it conflicts with, and how many papers state each
+        record = {**record, "conflict_rows": [(row["id"], len(json.loads(row["source_papers"] or "[]")))
+                                              for row, _ in hits]}
 
     if hit:
         row, what = hit
@@ -82,3 +86,36 @@ def flag_existing_as_contradiction(triple_id: int, reason: str) -> None:
     )
     conn.commit()
     conn.close()
+
+
+def _conflict(a: dict, b: dict) -> bool:
+    """Same entity pair with the opposite relation, or the same relation with the opposite negation."""
+    if (a.get("subject_id"), a.get("object_id")) != (b.get("subject_id"), b.get("object_id")):
+        return False
+    try:
+        ra, rb = RelationType(a.get("relation", "")), RelationType(b.get("relation", ""))
+    except ValueError:
+        return False
+    same_neg = bool(a.get("negated")) == bool(b.get("negated"))
+    return (ra == rb and not same_neg) or (OPPOSING_RELATIONS.get(ra) == rb and same_neg)
+
+
+def prefer_text_over_figures(checked: list, before: list) -> list:
+    """The paper's text outweighs a vision model's reading of a figure: a text fact whose only conflicts in
+    this paper are figure facts returns to how it was; the figure facts stay contradictions.
+    A conflict with a stored fact that another paper states is kept."""
+    out = list(checked)
+    for i, r in enumerate(checked):
+        if not r.get("is_contradiction") or r.get("section") == "figure":
+            continue
+        partners = [o for o in checked if o is not r and _conflict(r, o)]
+        figure_rows = {o.get("triple_id") for o in partners if o.get("section") == "figure"}
+        stored_ok = all(tid in figure_rows and n == 1 for tid, n in r.get("conflict_rows", []))
+        if partners and all(o.get("section") == "figure" for o in partners) and stored_ok:
+            out[i] = before[i]
+            for j, o in enumerate(checked):
+                if o in partners and not o.get("is_contradiction"):
+                    out[j] = {**o, "is_contradiction": True, "flagged_for_review": True,
+                              "review_reason": (o.get("review_reason", "") + " | CONTRADICTION: conflicts with "
+                                                "the paper's text").strip(" |")}
+    return out

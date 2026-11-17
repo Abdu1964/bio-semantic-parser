@@ -18,6 +18,13 @@ def _parse_json(raw: str) -> dict:
     return _parse_json_client(raw)
 
 
+def _scope(record: dict) -> str:
+    """The fact's stated scope: condition, tissue or cell system, and whether it is cited work."""
+    parts = [record.get("condition") or "", record.get("tissue") or "",
+             "cited from earlier work" if record.get("source") == "cited" else ""]
+    return "; ".join(p for p in parts if p) or "none stated"
+
+
 def _taxonomy_definition(relation: str) -> str:
     """Return definition + not_this for the given relation type."""
     try:
@@ -57,6 +64,7 @@ EXTRACTED RELATION TO VERIFY:
   Subject  : {subject}
   Relation : {relation}{'  [NEGATED]' if negated else ''}
   Object   : {obj}
+  Scope    : {_scope(record)}
 
 TAXONOMY DEFINITION FOR '{relation}':
 {taxonomy_def}
@@ -95,7 +103,7 @@ VERDICT RULES:
   VALID  — all 5 dimensions correct
   REVIEW — 1-2 issues, extraction is plausible but needs human confirmation
   REJECT — 3+ issues, or wrong direction, or hallucinated entity, or complete mismatch
-  ALSO REJECT a relation when: (a) its subject or object is an unnamed group of entities of one kind (genes, disease genes, target genes, cytokines, DEGs) rather than one specific entity or a named family — processes, phenotypes and outcomes (e.g. disease progression, pathogenesis) are allowed; (b) it describes how the experiment was done (a reference gene used for normalization, a reagent, kit, instrument or cell line used as a tool) rather than a biological finding; (c) its direction (up/down, activates/inhibits) is not stated in the text for that entity.
+  ALSO REJECT a relation when: (a) its subject or object is an unnamed group of entities of one kind (genes, disease genes, target genes, cytokines, DEGs) rather than one specific entity or a named family — processes, phenotypes and outcomes (e.g. disease progression, pathogenesis) are allowed; (b) it describes how the experiment was done (a reference gene used for normalization, a reagent, kit, instrument or cell line used as a tool) rather than a biological finding; (c) its direction (up/down, activates/inhibits) is not stated in the text for that entity; (d) it is [NEGATED] but the text limits that negative finding to a time point, group or system (e.g. 'after 1 day', 'in healthy animals', 'in cell line X') that its Scope does not carry. A [NEGATED] relation is CORRECT when the text says the effect did not occur (unaffected, unchanged, not elevated) — never reject it for that.
 """
 
     return [
@@ -208,6 +216,7 @@ def _build_batch_prompt(items: list) -> list:
             f"Subject : {subject}\n"
             f"Relation: {relation}{'  [NEGATED]' if negated else ''}\n"
             f"Object  : {obj}\n"
+            f"Scope   : {_scope(record)}\n"
             f"Reasoning from extraction LLM: {reasoning}"
         )
 
@@ -215,7 +224,7 @@ def _build_batch_prompt(items: list) -> list:
         "SOURCE TEXT (all relations below were extracted from this same chunk of text):\n"
         f"\"{shared_source}\"\n\n"
         "Validate each of the following relations against the SOURCE TEXT above.\n"
-        "ALSO REJECT a relation when: (a) its subject or object is an unnamed group of entities of one kind (genes, disease genes, target genes, cytokines, DEGs) rather than one specific entity or a named family — processes, phenotypes and outcomes (e.g. disease progression, pathogenesis) are allowed; (b) it describes how the experiment was done (a reference gene used for normalization, a reagent, kit, instrument or cell line used as a tool) rather than a biological finding; (c) its direction (up/down, activates/inhibits) is not stated in the text for that entity.\n"
+        "ALSO REJECT a relation when: (a) its subject or object is an unnamed group of entities of one kind (genes, disease genes, target genes, cytokines, DEGs) rather than one specific entity or a named family — processes, phenotypes and outcomes (e.g. disease progression, pathogenesis) are allowed; (b) it describes how the experiment was done (a reference gene used for normalization, a reagent, kit, instrument or cell line used as a tool) rather than a biological finding; (c) its direction (up/down, activates/inhibits) is not stated in the text for that entity; (d) it is [NEGATED] but the text limits that negative finding to a time point, group or system (e.g. 'after 1 day', 'in healthy animals', 'in cell line X') that its Scope does not carry. A [NEGATED] relation is CORRECT when the text says the effect did not occur (unaffected, unchanged, not elevated) — never reject it for that.\n"
         "For each relation return one JSON object in a top-level 'results' array.\n\n"
         + "\n\n".join(blocks)
         + "\n\nReturn ONLY this JSON:\n"
@@ -302,7 +311,7 @@ def validate_batch(pairs: list) -> list:
     messages = _build_batch_prompt(pairs)
     try:
         raw  = _call_llm(messages=messages, model=_MODEL, temperature=_TEMPERATURE,
-                         max_tokens=int(os.getenv("LLM_OUTPUT_TOKENS", "4096")))
+                         max_tokens=max(int(os.getenv("LLM_OUTPUT_TOKENS", "4096")), 400 * len(pairs)))   # room for every verdict
         data = _parse_json(raw)
         results = data.get("results", [])
     except Exception as exc:
