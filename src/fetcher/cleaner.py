@@ -55,6 +55,19 @@ _REF_ENTRY_END = re.compile(r"(?:19|20)\d\d[a-z]?\)?[.;]|\d+\s?[–-]\s?\d+\.|do
 _REF_NUMBER = re.compile(r"(?:\[\d{1,4}\]|\b\d{1,4}\.)\s*$")
 
 
+def _next_heading(text: str, pos: int, within: int = 600) -> int:
+    """Start of the first section heading line after pos (within a few lines), else the text's end."""
+    from src.fetcher.section_splitter import SectionSplitter
+    splitter, start = SectionSplitter(), text.find("\n", pos)
+    while 0 <= start < pos + within:
+        line_end = text.find("\n", start + 1)
+        line = text[start + 1: line_end if line_end >= 0 else len(text)].strip()
+        if line and splitter._detect_section(line):
+            return start + 1
+        start = line_end
+    return len(text)
+
+
 class TextCleaner:
 
     BOILERPLATE_PATTERNS = [
@@ -224,7 +237,8 @@ class TextCleaner:
             if num:
                 start = num.start()                               # entry number "12." or "[12]"
             end = c[-1].end()
-            for m in _REF_ENTRY_END.finditer(text, end, min(len(text), end + 500)):
+            stop = _next_heading(text, end)                       # a new section after the list is kept
+            for m in _REF_ENTRY_END.finditer(text, end, min(len(text), end + 500, stop)):
                 if m.start() - end > 200:
                     break
                 end = m.end()                                     # last entry's title, journal, year, DOI

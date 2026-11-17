@@ -223,6 +223,12 @@ def _system_prompt() -> str:
 
 
 def _user_message(chunk: dict) -> str:
+    return (_chunk_context(chunk) + "\n\nExtract ALL biological relations from the text above — be exhaustive, "
+                                    "do not skip any. Return JSON only.")
+
+
+def _chunk_context(chunk: dict) -> str:
+    """Section, text, and the Layer 4 entity and negation lists the extraction rules refer to."""
     text     = chunk.get("text", "")
     section  = chunk.get("section", "unknown")
     entities = chunk.get("entities", [])
@@ -248,14 +254,7 @@ def _user_message(chunk: dict) -> str:
             + "\nSet negated=true for any relation involving these entities."
         )
 
-    return (
-        f"SECTION: {section}\n\n"
-        f"TEXT:\n{text}"
-        + entity_block
-        + negation_block
-        + "\n\nExtract ALL biological relations from the text above — be exhaustive, "
-          "do not skip any. Return JSON only."
-    )
+    return f"SECTION: {section}\n\nTEXT:\n{text}" + entity_block + negation_block
 
 
 # ── JSON parser ───────────────────────────────────────────────────────────────
@@ -362,8 +361,7 @@ _NEGATION_ASK = (
 def _negative_findings(chunk: dict) -> list:
     """A second, small pass for negative findings, which the main pass tends to skip."""
     messages = [{"role": "system", "content": _get_system_prompt()},
-                {"role": "user", "content": f"SECTION: {chunk.get('section', 'unknown')}\n\nTEXT:\n"
-                                            f"{chunk.get('text', '')}\n\n{_NEGATION_ASK}"}]
+                {"role": "user", "content": f"{_chunk_context(chunk)}\n\n{_NEGATION_ASK}"}]   # entity list: Rule 3
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
         response = pool.submit(lambda: _client().chat.completions.create(

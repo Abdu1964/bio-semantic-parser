@@ -56,10 +56,10 @@ def read_document(data: bytes, filename: str = "", content_type: str = "", text_
             (name, content), figures = pick_main(unpack(data, fmt, filename))
         except ArchiveError as e:
             raise UnsupportedFormat(f"archive rejected: {e}")
-        inner = FormatDetector().detect(data=content, filename=name)
-        if inner in ARCHIVES:
+        if FormatDetector().detect(data=content, filename=name) in ARCHIVES:
             raise UnsupportedFormat("no document found inside the archive")
-        return Document(_extract(inner, content, text_field), inner, name, figures)
+        doc = read_document(content, filename=name, text_field=text_field)    # same path: text fallback, binary check
+        return Document(doc.text, doc.format, name, figures)
     if fmt == "unknown":
         if b"\x00" in data[:8000]:
             raise UnsupportedFormat("unknown binary format")
