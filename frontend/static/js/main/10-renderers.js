@@ -139,6 +139,51 @@ function openModalInTab() {
 
 function closeViewer() { closeModal(); }
 
+// Figure facts: show the figure image so the reviewer can check the relation against it.
+function _figureBlock(r) {
+  const f = r.figure;
+  if (!f || !f.file) return '';
+  const m = (r.reasoning || '').match(/^\[[^\]]*?,\s*panel\s+([^\]]+)\]/i);
+  const where = [f.label || 'Figure', f.page ? `page ${f.page}` : '', m ? `panel ${m[1]}` : ''].filter(Boolean).join(' · ');
+  const src = '/api/file?path=' + encodeURIComponent(f.file);
+  return `<div style="margin:8px 0;padding:8px 10px;background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.35);border-radius:8px">
+    <div style="color:#a855f7;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:6px">Read from figure — ${esc(where)}</div>
+    <a href="${src}" target="_blank" onclick="event.stopPropagation()" title="Open full size">
+      <img src="${src}" loading="lazy" alt="${esc(f.label || 'figure')}"
+        style="max-width:100%;max-height:420px;display:block;border-radius:6px;background:#fff;cursor:zoom-in"></a>
+  </div>`;
+}
+
+// Figure facts inserted without review (the paper's text states the same) — listed for audit with their image.
+async function loadFigureFactsAuto(runDir) {
+  document.getElementById('figure-auto-section')?.remove();
+  const review = document.getElementById('review-section');
+  if (!review || !runDir) return;
+  const resp = await fetch('/api/file?path=' + encodeURIComponent(runDir + '/figure_facts_auto.jsonl'));
+  if (!resp.ok) return;
+  const rows = (await resp.text()).split('\n').filter(Boolean).map(l => JSON.parse(l));
+  if (!rows.length) return;
+  const sec = document.createElement('div');
+  sec.id = 'figure-auto-section';
+  sec.style.marginTop = '20px';
+  sec.innerHTML = `<div style="color:#a855f7;font-weight:700;margin-bottom:8px">Added automatically from figures (${rows.length})
+      <span style="color:var(--text3);font-weight:400;font-size:12px"> — validated, and not contradicted by the paper's text</span></div>`
+    + rows.map(r => {
+      const p = r.provenance || {}, t = p.confirmed_by_text || {};
+      return `<details style="padding:8px 10px;margin-bottom:8px;background:var(--bg2);border:1px solid rgba(168,85,247,.35);border-radius:8px">
+        <summary style="cursor:pointer">${esc(r.subject_name)} <b>${esc(String(r.relation).replace('RelationType.', ''))}</b> ${esc(r.object_name)}
+          <span style="color:var(--text3);font-size:11px"> · ${esc((p.figure || {}).label || 'figure')}</span></summary>
+        ${_figureBlock({ ...r, figure: p.figure })}
+        ${t.subject_name ? `<div style="font-size:12px;color:var(--text2)">Confirmed by text (${esc(t.section || '')}):
+          ${esc(t.subject_name)} <b>${esc(String(t.relation || '').replace('RelationType.', ''))}</b> ${esc(t.object_name || '')}
+          ${t.reasoning ? `<div style="font-style:italic;margin-top:4px">"${esc(t.reasoning)}"</div>` : ''}</div>`
+          : `<div style="font-size:12px;color:var(--text2)">Validated against the figure — no sentence in the text states it.
+          ${r.reasoning ? `<div style="font-style:italic;margin-top:4px">"${esc(r.reasoning)}"</div>` : ''}</div>`}
+      </details>`;
+    }).join('');
+  review.after(sec);
+}
+
 async function loadHumanReview(runDir, stagingDb) {
   const sec = document.getElementById('review-section');
   const cards = document.getElementById('review-cards');
@@ -206,6 +251,7 @@ async function loadHumanReview(runDir, stagingDb) {
             style="background:rgba(56,189,248,.15);border:1px solid var(--blue);border-radius:6px;padding:3px 12px;color:var(--blue);font-size:11px;cursor:pointer;font-family:var(--font);font-weight:600;white-space:nowrap;align-self:flex-end">
             ↕ Apply suggestion</button>` : ''}
         </div>` : ''}
+        ${_figureBlock(r)}
 
         <div style="margin-top:10px;margin-bottom:6px">
           <button id="rc-sg-btn-${i}" data-subj="${esc(r.subject_name||'')}" data-obj="${esc(r.object_name||'')}" data-rel="${esc(r.relation||'')}" onclick="event.stopPropagation();verifyReviewSource(${i})"
@@ -776,6 +822,7 @@ function renderOutput(d) {
   renderInspectActions(d);
   // Load human review triples if any
   if (d.run_dir && d.staging_db) loadHumanReview(d.run_dir, d.staging_db);
+  if (d.run_dir) loadFigureFactsAuto(d.run_dir);
   document.getElementById('output').classList.add('show');
 
   // Refresh verification stats from server (verification_report.json may have been

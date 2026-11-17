@@ -50,6 +50,16 @@ _GREEK = dict(zip("αβγδεζηθικλμνξοπρστυφχψωϵς",
                   "sigma tau upsilon phi chi psi omega epsilon sigma".split()))
 
 
+def spell_greek(text: str) -> str:
+    """Greek letters written out as ontologies label them: 'θ-defensins' → 'theta-defensins'."""
+    import unicodedata
+    out = []
+    for c in text or "":
+        name = unicodedata.name(c, "")                       # 'GREEK SMALL LETTER THETA'
+        out.append(name.split()[-1].lower() if name.startswith("GREEK") and " LETTER " in name else c)
+    return "".join(out)
+
+
 def normalize_term(text: str) -> str:
     """Lowercase, ASCII, US spelling, punctuation stripped."""
     if not text:

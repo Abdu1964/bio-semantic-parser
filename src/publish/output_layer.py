@@ -156,6 +156,7 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
         f"{len(discarded)} discarded (rejected.jsonl)")
     if discarded:
         _write_rejected(discarded, run)
+    _write_figure_facts(auto_insert, run)
     _write_alignment(auto_insert + human_review + discarded, run)
     _write_fact_merges(auto_insert + human_review + discarded, run)
 
@@ -196,6 +197,7 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
                             "WHERE subject_id=? AND relation=? AND object_id=? AND negated=?",
                             (_sid, _rel, _oid, _neg),
                         )
+            _write_provenance(_sc, auto_insert)
             _sc.commit()
             _sc.close()
         except Exception:
@@ -367,6 +369,28 @@ def _write_fact_merges(records: list, run_dir) -> None:
     with path.open("w", encoding="utf-8") as f:
         for row in rows:
             f.write(_json.dumps(row, default=str) + "\n")
+
+
+def _write_figure_facts(records: list, run_dir) -> None:
+    """Figure facts inserted without review → <run_dir>/figure_facts_auto.jsonl, with figure and confirming text."""
+    import json as _json
+    rows = [r for r in records if r.get("provenance")]
+    if not rows:
+        return
+    with open(Path(run_dir) / "figure_facts_auto.jsonl", "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(_json.dumps(r, default=str) + "\n")
+
+
+def _write_provenance(conn, records: list) -> None:
+    """Keep each staged fact's provenance (figure, confirming text) so it stays auditable in the graph."""
+    import json as _json
+    if "provenance" not in {c[1] for c in conn.execute("PRAGMA table_info(triples)")}:
+        conn.execute("ALTER TABLE triples ADD COLUMN provenance TEXT")
+    for r in records:
+        if r.get("provenance") and r.get("triple_id"):
+            conn.execute("UPDATE triples SET provenance=? WHERE id=?",
+                         (_json.dumps(r["provenance"], default=str), r["triple_id"]))
 
 
 def _write_rejected(records: list, run_dir) -> None:

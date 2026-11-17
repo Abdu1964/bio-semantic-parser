@@ -339,7 +339,8 @@ class EntityResolver:
             # Search for the entity ID in Gene database
             search_url = (f"{base}esearch.fcgi?db=gene&term={entity_id}"
                           f"[Gene+ID]&retmode=json&retmax=1")
-            resp = requests.get(search_url, timeout=10)
+            from src.api_cache import cached_get
+            resp = cached_get(search_url, timeout=10)
             resp.raise_for_status()
             ids  = resp.json().get("esearchresult", {}).get("idlist", [])
             if not ids:
@@ -377,7 +378,8 @@ class EntityResolver:
         try:
             base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
             url  = f"{base}esummary.fcgi?db=pubmed&id={','.join(pmids)}&retmode=json"
-            resp = requests.get(url, timeout=10)
+            from src.api_cache import cached_get
+            resp = cached_get(url, timeout=10)
             resp.raise_for_status()
             result = resp.json().get("result", {})
             for pub in pubs:

@@ -74,7 +74,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 "subject_source_url", "object_source_url",
                 "subject_synonyms", "object_synonyms",
                 "subject_id_source", "object_id_source",
-                "subject_evidence", "object_evidence"):
+                "subject_evidence", "object_evidence",
+                "provenance"):                      # JSON: e.g. the figure a fact was read from
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE triples ADD COLUMN {col} TEXT")
     # subject/object_needs_review: persisted so re-exports don't lose the resolver's uncertainty flag.
