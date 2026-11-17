@@ -16,10 +16,22 @@ def _is_other_type(entity_type: str) -> bool:
     return entity_type == "OTHER"
 
 
+def _figure_provenance(r: dict, text_facts: list) -> dict:
+    """For a figure fact inserted without review: the figure and the text fact that confirmed it, kept for audit."""
+    from src.figures.vision.relations import corroborating_fact
+    if r.get("section") != "figure":
+        return {}
+    t = corroborating_fact(r, text_facts) or {}
+    confirmed = {k: t.get(k) for k in ("subject_name", "relation", "object_name", "section", "reasoning")} if t else None
+    return {"provenance": {"figure": r.get("figure"), "confirmed_by_text": confirmed}}
+
+
 def route(records: list) -> tuple:
     """Split records into (auto_insert, human_review)."""
+    from src.figures.vision.relations import review_required
     auto_insert  = []
     human_review = []
+    text_facts   = [r for r in records if r.get("section") != "figure"]
 
     for r in records:
         verdict     = r.get("validation_verdict", "SKIPPED")
@@ -41,6 +53,7 @@ def route(records: list) -> tuple:
             _is_other_type(subject_type) or
             _is_other_type(object_type)
         )
+        from_figure = review_required(r, text_facts)
 
         passes = (
             verdict == "VALID"
@@ -48,10 +61,11 @@ def route(records: list) -> tuple:
             and not hard_unresolved
             and not text_label       # TEXT: entities need canonical ID correction first
             and not other_type       # OTHER entity type needs a human to assign the real type
+            and not from_figure      # read from a figure image: a human checks it first
         )
 
         if passes:
-            auto_insert.append({**r, "insert_path": "auto"})
+            auto_insert.append({**r, "insert_path": "auto", **_figure_provenance(r, text_facts)})
         else:
             reason_parts = []
             if text_label and verdict == "VALID":
@@ -72,10 +86,15 @@ def route(records: list) -> tuple:
                 reason_parts.append("semantic validation needs REVIEW")
             elif verdict == "SKIPPED":
                 reason_parts.append("semantic validation was skipped — needs manual check")
-            else:
+            elif verdict != "VALID":
                 reason_parts.append(f"semantic validation verdict={verdict}")
             if contra:
                 reason_parts.append("contradiction detected")
+            if from_figure:
+                fig = r.get("figure") or {}
+                reason_parts.append(f"read from {fig.get('label') or 'a figure'}"
+                                    f"{' (page ' + str(fig['page']) + ')' if fig.get('page') else ''}"
+                                    " contradicts the paper's text — check it against the image")
             if hard_unresolved:
                 reason_parts.append(
                     f"unresolved entity IDs: "

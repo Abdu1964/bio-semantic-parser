@@ -95,6 +95,7 @@ VERDICT RULES:
   VALID  — all 5 dimensions correct
   REVIEW — 1-2 issues, extraction is plausible but needs human confirmation
   REJECT — 3+ issues, or wrong direction, or hallucinated entity, or complete mismatch
+  ALSO REJECT a relation when: (a) its subject or object is an unnamed group of entities of one kind (genes, disease genes, target genes, cytokines, DEGs) rather than one specific entity or a named family — processes, phenotypes and outcomes (e.g. disease progression, pathogenesis) are allowed; (b) it describes how the experiment was done (a reference gene used for normalization, a reagent, kit, instrument or cell line used as a tool) rather than a biological finding; (c) its direction (up/down, activates/inhibits) is not stated in the text for that entity.
 """
 
     return [
@@ -214,6 +215,7 @@ def _build_batch_prompt(items: list) -> list:
         "SOURCE TEXT (all relations below were extracted from this same chunk of text):\n"
         f"\"{shared_source}\"\n\n"
         "Validate each of the following relations against the SOURCE TEXT above.\n"
+        "ALSO REJECT a relation when: (a) its subject or object is an unnamed group of entities of one kind (genes, disease genes, target genes, cytokines, DEGs) rather than one specific entity or a named family — processes, phenotypes and outcomes (e.g. disease progression, pathogenesis) are allowed; (b) it describes how the experiment was done (a reference gene used for normalization, a reagent, kit, instrument or cell line used as a tool) rather than a biological finding; (c) its direction (up/down, activates/inhibits) is not stated in the text for that entity.\n"
         "For each relation return one JSON object in a top-level 'results' array.\n\n"
         + "\n\n".join(blocks)
         + "\n\nReturn ONLY this JSON:\n"
