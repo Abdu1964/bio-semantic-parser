@@ -2,6 +2,7 @@
 import csv
 import json
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,6 +13,20 @@ _CSV_PATH   = _QUEUE_PATH.with_suffix(".csv")
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _pinned(figure, run_dir: Path):
+    """The figure with its image copied into the run folder, so a rerun cannot replace it."""
+    if not figure or not run_dir or not figure.get("file"):
+        return figure
+    src = Path(figure["file"])
+    if not src.is_file():
+        return figure
+    dst = Path(run_dir) / "figures" / src.name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if not dst.exists():
+        shutil.copy2(src, dst)
+    return {**figure, "file": str(dst)}
 
 
 def append(records: list, run_dir: Path = None, target_format: str = "both") -> int:
@@ -34,7 +49,7 @@ def append(records: list, run_dir: Path = None, target_format: str = "both") -> 
                 "document_id":        r.get("document_id", ""),
                 "source_name":        r.get("source_name", ""),
                 "section":            r.get("section", ""),
-                "figure":             r.get("figure"),   # {id, label, page, file, kind} when read from a figure
+                "figure":             _pinned(r.get("figure"), run_dir),   # {id, label, page, file, kind}
                 # The extraction
                 "subject_name":       r.get("subject_name", ""),
                 "subject_type":       r.get("subject_type", ""),
@@ -70,6 +85,8 @@ def append(records: list, run_dir: Path = None, target_format: str = "both") -> 
                 "tissue":             r.get("tissue",       ""),
                 "condition":          r.get("condition",    ""),
                 "effect_size":        r.get("effect_size",  ""),
+                "source":             r.get("source") or "study",        # study or cited
+                "evidence":           r.get("evidence") or "measured",   # measured or predicted
                 # Actions for reviewer
                 "reviewer_action":    "",    # filled by reviewer
                 "reviewer_note":      "",
@@ -193,7 +210,7 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
                 "subject_source_url", "object_source_url",
                 "subject_synonyms", "object_synonyms",
                 "subject_id_source", "object_id_source",
-                "subject_evidence", "object_evidence"):
+                "subject_evidence", "object_evidence", "source", "evidence"):
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE triples ADD COLUMN {col} TEXT")
     for col in ("subject_needs_review", "object_needs_review"):
@@ -217,9 +234,9 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
                  object_id, object_name, object_canonical_name, object_source_url, object_synonyms, object_id_source, object_evidence, object_needs_review, object_type,
                  negated,
                  confidence, source_papers, reasoning,
-                 species, tissue, condition, effect_size,
+                 species, tissue, condition, effect_size, source, evidence,
                  flagged_for_review, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
             """, (
                 r.get("subject_id")  or f"TEXT:{r.get('subject_name','')}",
                 r.get("subject_name",""),
@@ -248,6 +265,8 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
                 r.get("tissue",""),
                 r.get("condition",""),
                 r.get("effect_size",""),
+                r.get("source") or "study",
+                r.get("evidence") or "measured",
                 now,
                 now,
             ))

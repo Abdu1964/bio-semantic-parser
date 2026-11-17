@@ -72,3 +72,12 @@ def test_dash_glyph_repaired_only_in_affected_documents():
     assert "Hutchinson–Gilford" in out and "206–217" in out and "LeBlanc" in out
     assert c.dashes_repaired == 6
     assert TextCleaner()._repair_dash_glyphs("HutchinsoneGilford, 2e5") == "HutchinsoneGilford, 2e5"
+
+
+def test_reference_removal_stops_at_the_next_section():
+    refs = "\n".join(f"{i}. Smith J, Brown K, Lee M, Chen L, Wang Y. Title of study number {i} on arthritis. "
+                     f"J Biol. 2015; 12: 3{i}4-35{i}. doi:10.1000/x{i}" for i in range(1, 25))
+    text = "References\n" + refs + "\nSupplementary Results\nIL6 expression increased in samples collected in 2020."
+    out = TextCleaner()._remove_reference_blocks(text)
+    assert "Smith J" not in out
+    assert "Supplementary Results\nIL6 expression increased in samples collected in 2020." in out

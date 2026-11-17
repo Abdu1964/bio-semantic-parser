@@ -90,6 +90,8 @@ class SectionSplitter:
         for i, (start, end, section_name) in enumerate(unique_positions):
             next_start = unique_positions[i + 1][0] if i + 1 < len(unique_positions) else len(text)
             section_text = text[end:next_start].strip()
+            if i == 0 and preamble and section_name == "abstract":    # title before ABSTRACT joins it
+                section_text = f"{preamble} {section_text}".strip()
             if section_text:
                 sections.append({
                     "section": section_name,
