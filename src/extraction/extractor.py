@@ -497,7 +497,7 @@ def _extract_main(chunk: dict, _depth: int = 0) -> ExtractionResult:
                 for r in all_relations:
                     key = (getattr(r, "subject_name", "").lower(),
                            r.relation.value if r.relation else "",
-                           getattr(r, "object_name",  "").lower())
+                           getattr(r, "object_name",  "").lower(), bool(r.negated))
                     if key not in seen:
                         seen.add(key)
                         unique.append(r)

@@ -91,8 +91,10 @@ def _same_entity(a: dict, b: dict, side: str) -> bool:
         return False
     if a.get(f"{side}_id") == b.get(f"{side}_id"):
         return True
-    ga, gb = _genus(a.get("species") or ""), _genus(b.get("species") or "")
-    if not (ga and ga == gb):
+    from src.postextraction.entity_normalization import normalize_species
+    sa, sb = (normalize_species(x.get("species") or "").lower() for x in (a, b))
+    same = sa == sb if " " in sa and " " in sb else _genus(sa) == _genus(sb)    # species when both name one
+    if not (sa and sb and same):
         return False
     from src.postextraction.entity_normalization import _symbol_key
     sa, sb = _symbol_key(a.get(f"{side}_name") or ""), _symbol_key(b.get(f"{side}_name") or "")
