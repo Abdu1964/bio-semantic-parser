@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 # OCR zoom levels; each misreads different small labels, so their union reads the most names exactly.
 _SCALES = [float(s) for s in os.getenv("FIGURE_OCR_SCALES", "1,2").split(",") if s.strip()]
-_TOKEN = re.compile(r"[a-z0-9]+(?:[-.][a-z0-9]+)*")
+_TOKEN = re.compile(r"[^\W_]+(?:[-.][^\W_]+)*")          # letters of any script: IL-1α ≠ IL-1β
 
 
 def figure_text(image: bytes) -> str:

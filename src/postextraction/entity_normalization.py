@@ -1849,7 +1849,7 @@ def _concept_key(text: str, entity_type: str, species: str = "") -> Optional[tup
         return None
     family = _TYPE_FAMILY.get(entity_type, "concept")
     # Rat IL6 and human IL6 are different genes: molecular concepts are remembered per species
-    return (family, key, _genus(species)) if family in _MOLECULAR and species else (family, key)
+    return (family, key, normalize_species(species).lower()) if family in _MOLECULAR and species else (family, key)
 
 
 # Organism encoded in gene/protein IDs → genus.

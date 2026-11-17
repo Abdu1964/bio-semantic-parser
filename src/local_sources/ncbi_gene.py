@@ -27,7 +27,8 @@ def available() -> bool:
 
 
 def has_taxon(tax_id: str) -> bool:
-    return bool(tax_id) and bool(query(_DB, "SELECT 1 FROM genes WHERE tax_id=? LIMIT 1", (str(tax_id),)))
+    # names has the (tax_id, key, kind) index; genes.tax_id has none
+    return bool(tax_id) and bool(query(_DB, "SELECT 1 FROM names WHERE tax_id=? LIMIT 1", (str(tax_id),)))
 
 
 def find(text: str, tax_id: str):

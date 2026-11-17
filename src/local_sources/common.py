@@ -21,11 +21,22 @@ def norm(text: str) -> str:
 
 
 def connect(db_path: str):
-    """Read-only connection to a built copy, or None while it is not built."""
+    """Read-only connection to a built copy, or None while it is not built.
+    A copy rebuilt by another process (a new file) is reopened."""
     with _lock:
-        if db_path not in _conns and os.path.exists(db_path):
-            _conns[db_path] = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
-        return _conns.get(db_path)
+        try:
+            ino = os.stat(db_path).st_ino
+        except OSError:
+            ino = None
+        conn, opened = _conns.get(db_path, (None, None))
+        if conn is not None and opened != ino:
+            conn.close()
+            conn = None
+            _conns.pop(db_path)
+        if conn is None and ino is not None:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, check_same_thread=False)
+            _conns[db_path] = (conn, ino)
+        return conn
 
 
 def query(db_path: str, sql: str, args=()) -> list:
@@ -64,7 +75,7 @@ def swap_in(conn: sqlite3.Connection, db_path: str, meta: dict) -> None:
     conn.commit()
     conn.close()
     with _lock:
-        old = _conns.pop(db_path, None)
+        old, _ = _conns.pop(db_path, (None, None))
         if old is not None:
             old.close()
         os.replace(db_path + ".building", db_path)
