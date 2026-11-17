@@ -81,6 +81,7 @@ function _resumeWithPub(entityId, pubIndex) {
   AppState.clear();
   resetUI();
   _startTime = Date.now(); _totalChunks = 0;
+  runTimerStart();
   setBtn(true);
   setStatus('running', 'Running…');
   initSimpleProcessing(pub.input_value || entityId);
