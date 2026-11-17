@@ -85,6 +85,8 @@ def append(records: list, run_dir: Path = None, target_format: str = "both") -> 
                 "tissue":             r.get("tissue",       ""),
                 "condition":          r.get("condition",    ""),
                 "effect_size":        r.get("effect_size",  ""),
+                "source":             r.get("source") or "study",        # study or cited
+                "evidence":           r.get("evidence") or "measured",   # measured or predicted
                 # Actions for reviewer
                 "reviewer_action":    "",    # filled by reviewer
                 "reviewer_note":      "",
@@ -208,7 +210,7 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
                 "subject_source_url", "object_source_url",
                 "subject_synonyms", "object_synonyms",
                 "subject_id_source", "object_id_source",
-                "subject_evidence", "object_evidence"):
+                "subject_evidence", "object_evidence", "source", "evidence"):
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE triples ADD COLUMN {col} TEXT")
     for col in ("subject_needs_review", "object_needs_review"):
@@ -232,9 +234,9 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
                  object_id, object_name, object_canonical_name, object_source_url, object_synonyms, object_id_source, object_evidence, object_needs_review, object_type,
                  negated,
                  confidence, source_papers, reasoning,
-                 species, tissue, condition, effect_size,
+                 species, tissue, condition, effect_size, source, evidence,
                  flagged_for_review, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
             """, (
                 r.get("subject_id")  or f"TEXT:{r.get('subject_name','')}",
                 r.get("subject_name",""),
@@ -263,6 +265,8 @@ def approve_records(approved: list, staging_db: str, queue_path: Path = None) ->
                 r.get("tissue",""),
                 r.get("condition",""),
                 r.get("effect_size",""),
+                r.get("source") or "study",
+                r.get("evidence") or "measured",
                 now,
                 now,
             ))

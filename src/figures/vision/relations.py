@@ -216,10 +216,16 @@ def _attach(tagged_chunks: list, results: list, fig_results: list, fig_chunks: l
     if len(results) > len(tagged_chunks):
         log("Figure relations skipped: results and chunks are out of step")
         return 0
-    results.extend(ExtractionResult(relations=[]) for _ in range(len(tagged_chunks) - len(results)))
-    results.extend(fig_results)
-    tagged_chunks.extend(fig_chunks)
-    if save_path:
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        save_path.write_text(json.dumps(fig_chunks, default=str), encoding="utf-8")
+    n_results, n_chunks = len(results), len(tagged_chunks)
+    try:
+        results.extend(ExtractionResult(relations=[]) for _ in range(len(tagged_chunks) - len(results)))
+        results.extend(fig_results)
+        tagged_chunks.extend(fig_chunks)
+        if save_path:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_text(json.dumps(fig_chunks, default=str), encoding="utf-8")
+    except Exception as e:                              # figures are optional: keep the text results as they were
+        del results[n_results:], tagged_chunks[n_chunks:]
+        log(f"Figure relations skipped: {e}")
+        return 0
     return sum(len(r.relations) for r in fig_results)

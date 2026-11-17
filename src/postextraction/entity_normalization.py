@@ -1833,10 +1833,14 @@ def _kind_conflict(entity_type: str, cid: str) -> bool:
     return group(t) != group(p)
 
 
+def _id_genus(cid: str) -> str:
+    """Genus a gene/protein ID belongs to, when the ID encodes it."""
+    return next((g for prefix, g in _ID_GENUS if (cid or "").startswith(prefix)), "")
+
+
 def _organism_conflict(cid: str, species: str) -> bool:
     """A gene/protein ID from another organism than the one the relation names."""
-    genus = _genus(species)
-    id_genus = next((g for prefix, g in _ID_GENUS if (cid or "").startswith(prefix)), "")
+    genus, id_genus = _genus(species), _id_genus(cid)
     return bool(genus and id_genus and genus != id_genus)
 
 
@@ -2535,16 +2539,27 @@ def merge_synonym_concepts(records: list) -> list:
 
 
 def _symbol_key(name: str) -> str:
-    """Comparable form of a gene/protein symbol ('IL-6', 'IL6 mRNA' → 'il6'; 'IL-1β' → 'il1b'); '' if not symbol-shaped."""
-    import unicodedata
+    """Comparable form of a gene/protein symbol ('IL-6', 'IL6 mRNA', 'Il6' → 'il6'; 'IL-1β' → 'il1b'); '' if not
+    symbol-shaped. Rodent symbols are capitalised ('Tnf', 'Rara': MGI/RGD nomenclature)."""
     base = (_strip_gene_suffix(name or "") or name or "").strip()
     last = base.split()[-1] if base else ""
     if " " in base and len(last) >= 3 and sum(c.isupper() for c in last) >= 2:
         base = last                                   # 'liver X receptors NR1H2' names NR1H2
-    if not base or " " in base or not _symbol_like(base):
+    if not base or " " in base or not (_symbol_like(base) or re.fullmatch(r"[A-Z][a-z0-9]+", base)):
         return ""
-    latin = "".join(unicodedata.name(c, "X").split()[-1][0] if ord(c) > 127 and c.isalpha() else c for c in base)
-    return re.sub(r"[^a-z0-9]", "", latin.lower())
+    return re.sub(r"[^a-z0-9]", "", "".join(_greek(c)[:1] or c for c in base).lower())
+
+
+def _greek(c: str) -> str:
+    """Name of a Greek letter ('β' → 'beta'); '' for other characters."""
+    import unicodedata
+    name = unicodedata.name(c, "") if ord(c) > 127 else ""
+    return name.split()[-1].lower() if name.startswith("GREEK") else ""
+
+
+def _greek_letters(name: str) -> tuple:
+    """The Greek letters a name is written with: 'PKCε' and 'PKCη' share a key but are different proteins."""
+    return tuple(g for g in map(_greek, name or "") if g)
 
 
 # Gene and protein ID systems, most preferred first (gene IDs must be Ensembl)
@@ -2559,35 +2574,44 @@ def merge_same_molecule(records: list) -> list:
     unplaced = []
     for r in records:
         named = normalize_species(r.get("species") or "")
-        known = "," not in named and (_local_taxon(named) or named.split(" ")[0] in _doc().genera)
-        genus = _genus(named) if known else ""                     # one recognised organism, else unplaced
+        known = "," not in named and " " in named and (_local_taxon(named) or named.split(" ")[0] in _doc().genera)
+        organism = named.lower() if known else ""                  # one recognised species, else unplaced
         for side in ("subject", "object"):
             cid = r.get(f"{side}_id", "")
             fam = _PREFIX_FAMILY.get(_ontology_prefix_of(cid)) or _TYPE_FAMILY.get(r.get(f"{side}_type"))
-            key = _symbol_key(r.get(f"{side}_name", ""))
-            if key and _resolved(cid) and fam in ("gene", "protein"):
-                (groups[(key, genus)] if genus else unplaced).append((key, r, side))
-    for key, r, side in unplaced:                      # no organism stated: join the symbol's only organism, if one
-        known = [g for (k, g) in groups if k == key and g]
+            name = r.get(f"{side}_name", "")
+            key = (_symbol_key(name), _greek_letters(name))
+            if key[0] and _resolved(cid) and fam in ("gene", "protein"):
+                (groups[(key, organism)] if organism else unplaced).append((key, r, side))
+    for key, r, side in unplaced:                      # no species stated: join the symbol's only species, if one
+        known = [o for (k, o) in groups if k == key and o]
         groups[(key, known[0] if len(known) == 1 else "")].append((key, r, side))
     groups = {k: [(r, side) for _, r, side in v] for k, v in groups.items()}
-    fields = ("id", "canonical_name", "id_source", "source_url", "synonyms")
+    for (key, organism), members in list(groups.items()):     # 'IL1B' joins 'IL-1β' only if no other letter is used
+        if not key[1] and sum(1 for (k, o) in groups if k[0] == key[0] and k[1] and o == organism) == 1:
+            other = next(k for k in groups if k[0][0] == key[0] and k[0][1] and k[1] == organism)
+            groups[other] += groups.pop((key, organism))
+    fields = ("id", "canonical_name", "id_source", "source_url", "synonyms", "needs_review")
     merged = 0
-    for (key, genus), members in groups.items():
-        ids = collections.Counter(r[f"{side}_id"] for r, side in members)
-        if len(ids) < 2:
+    for ((key, _), organism), members in groups.items():
+        ids = collections.Counter(r[f"{side}_id"] for r, side in members
+                                  if not r.get(f"{side}_needs_review"))      # uncertain IDs are never adopted
+        if not ids or len({r[f"{side}_id"] for r, side in members}) < 2:
             continue
-        rank = lambda c: (bool(genus) and _organism_conflict(c, genus),
+        rank = lambda c: (bool(organism) and _organism_conflict(c, organism),
                           next((i for i, p in enumerate(_MOLECULE_ID_ORDER) if c.startswith(p)), len(_MOLECULE_ID_ORDER)),
                           -ids[c])
         best = min(ids, key=rank)
         src = next((r, side) for r, side in members if r[f"{side}_id"] == best)
         values = {f: src[0].get(f"{src[1]}_{f}") for f in fields}
         for r, side in members:
+            own = _id_genus(r[f"{side}_id"])
+            if own and _id_genus(best) and own != _id_genus(best):
+                continue                                           # another organism's gene: not the same molecule
             for f, v in values.items():
                 r[f"{side}_{f}"] = v
         merged += 1
-        logger.info("One ID for %r (%s): %s from %s", key, genus or "any organism", best, sorted(ids))
+        logger.info("One ID for %r (%s): %s from %s", key, organism or "any organism", best, sorted(ids))
     if merged:
         logger.info("Merged %d molecule(s) named differently across the paper", merged)
     return records

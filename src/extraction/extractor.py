@@ -14,6 +14,7 @@ import httpx
 
 from src.schema.taxonomy import TAXONOMY, ENTITY_TAXONOMY, RelationType, EntityType
 from src.schema.pydantic_model import BiologicalRelation, ExtractionResult
+from src.llm_client import llm_slot
 
 logger = logging.getLogger(__name__)
 
@@ -364,9 +365,10 @@ def _negative_findings(chunk: dict) -> list:
                 {"role": "user", "content": f"{_chunk_context(chunk)}\n\n{_NEGATION_ASK}"}]   # entity list: Rule 3
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        response = pool.submit(lambda: _client().chat.completions.create(
-            model=_MODEL, messages=messages, temperature=_TEMPERATURE, max_tokens=_OUT_RESERVE,
-            response_format={"type": "json_object"})).result(timeout=_WALL_TIMEOUT)
+        with llm_slot():
+            response = pool.submit(lambda: _client().chat.completions.create(
+                model=_MODEL, messages=messages, temperature=_TEMPERATURE, max_tokens=_OUT_RESERVE,
+                response_format={"type": "json_object"})).result(timeout=_WALL_TIMEOUT)
         raw = response.choices[0].message.content or ""
         try:
             relations = _valid_relations(_parse_json(raw).get("relations", []))
@@ -393,11 +395,12 @@ def _members(name: str) -> list:
 
 
 def _expand_lists(relations: list) -> list:
-    """One relation per member when the model returned a numbered list as one entity."""
+    """One relation per member when the model returned a numbered list as one entity.
+    Lists on both sides stay as written: pairwise ('respectively') or every pair can't be told apart."""
     out = []
     for r in relations:
         subs, objs = _members(r.subject_name), _members(r.object_name)
-        if len(subs) == 1 and len(objs) == 1:
+        if len(subs) == 1 and len(objs) == 1 or len(subs) > 1 and len(objs) > 1:
             out.append(r)
             continue
         out += [r.model_copy(update={"subject_name": s, "object_name": o}) for s in subs for o in objs]
@@ -417,7 +420,7 @@ def extract(chunk: dict, _depth: int = 0) -> ExtractionResult:
         return result
     key = lambda r: (r.subject_name.lower(), r.relation.value if r.relation else "", r.object_name.lower())
     seen = {(*key(r), bool(r.negated)) for r in result.relations}
-    extra = [r for r in negatives.result()
+    extra = [r for r in _expand_lists(negatives.result())
              if r.relation and (*key(r), True) not in seen]                    # non-viable ones have no relation
     return ExtractionResult(relations=result.relations + extra) if extra else result
 
@@ -465,9 +468,9 @@ def _extract_main(chunk: dict, _depth: int = 0) -> ExtractionResult:
             # Wall-clock timeout via ThreadPoolExecutor — fires even when the
             # server sends TCP keepalive bytes (unlike httpx read timeout).
             _pool   = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            _future = _pool.submit(_call)
             try:
-                response = _future.result(timeout=_WALL_TIMEOUT)
+                with llm_slot():                       # shared with the negation pass and figure reads
+                    response = _pool.submit(_call).result(timeout=_WALL_TIMEOUT)
                 last_raw = response.choices[0].message.content or ""
             except concurrent.futures.TimeoutError:
                 _pool.shutdown(wait=False)

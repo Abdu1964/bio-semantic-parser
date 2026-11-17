@@ -22,6 +22,8 @@ _EXPRESSED_TYPES = {"GENE", "PROTEIN", "TRANSCRIPT", "EXON", "NON_CODING_RNA", "
 _OUTCOME_TYPES = {"DISEASE", "CANCER", "PHENOTYPE", "SYMPTOM", "PATHWAY", "BIOLOGICAL_PROCESS", "REACTION",
                   "MOLECULAR_FUNCTION", "PHYSIOLOGICAL_PROCESS", "PATHOLOGICAL_PROCESS", "CLINICAL_FINDING",
                   "DISEASE_OUTCOME", "MORTALITY_OUTCOME", "BEHAVIORAL_OUTCOME", "EPIDEMIOLOGICAL_OUTCOME"}
+# Existing conditions (Biolink ameliorates/exacerbates_condition range): a change in them is milder or worse, not prevented
+_CONDITION_TYPES = {"DISEASE", "CANCER", "PHENOTYPE", "SYMPTOM", "CLINICAL_FINDING"}
 
 def _compute_confidence(relation, chunk: dict,
                         all_chunks = None) -> tuple:
@@ -242,14 +244,18 @@ def process(
         obj_type = r.get("object_type", "")
         if rel_val not in ("upregulates", "downregulates") or obj_type in _EXPRESSED_TYPES or obj_type in ("OTHER", ""):
             continue
-        if obj_type in _OUTCOME_TYPES:
+        if obj_type in _CONDITION_TYPES:
+            r["relation"] = "exacerbates" if rel_val == "upregulates" else "ameliorates"
+            n_target_fixed += 1
+        elif obj_type in _OUTCOME_TYPES:
             r["relation"] = "promotes" if rel_val == "upregulates" else "prevents"
             n_target_fixed += 1
         else:
             r["invalid_reason"] = f"'{rel_val}' needs a gene, transcript or protein target, not a {obj_type.lower()}"
+            r["invalid_for"] = [rel_val, obj_type]          # a later correction of either clears it
             n_target_flagged += 1
     if n_target_fixed or n_target_flagged:
-        log(f"  → expression relations: {n_target_fixed} with a process/outcome target became promotes/prevents, "
+        log(f"  → expression relations: {n_target_fixed} with a process/outcome target became promotes/prevents or ameliorates/exacerbates, "
             f"{n_target_flagged} with a non-molecular target discarded")
 
     # ── Entity ontology gate — flag non-biomedical triples ────────────────────
