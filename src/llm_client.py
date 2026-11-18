@@ -1,5 +1,6 @@
 """Shared LLM client — OpenAI-compatible, wall-clock timeout, global concurrency cap."""
 import concurrent.futures
+import contextlib
 import json
 import os
 import re
@@ -19,6 +20,13 @@ WALL_TIMEOUT = int(os.getenv("LLM_WALL_TIMEOUT",   "300"))
 
 _GLOBAL_CONCURRENCY = int(os.getenv("LLM_GLOBAL_CONCURRENCY", "4"))
 _global_sem         = threading.Semaphore(_GLOBAL_CONCURRENCY)
+
+
+@contextlib.contextmanager
+def llm_slot():
+    """One of the LLM_GLOBAL_CONCURRENCY request slots shared by all callers."""
+    with _global_sem:
+        yield
 
 
 def make_client() -> OpenAI:

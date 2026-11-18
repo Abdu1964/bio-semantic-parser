@@ -14,7 +14,7 @@ def link_within_paper(records: list) -> list:
         # The same triple can appear in two different chunks due to chunk overlap
         # (the last sentence of chunk N is repeated at the start of chunk N+1).
         # Key = (subject_id, relation, object_id, negated) — if two triples match
-        # this key they are the same fact. Keep only the one with higher confidence.
+        # this key they are the same fact. Keep a text one over a figure one, then the higher confidence.
         seen: dict = {}
         deduped = []
         for r in doc_records:
@@ -22,7 +22,8 @@ def link_within_paper(records: list) -> list:
                    r.get("negated", False))
             if key in seen:
                 existing_idx = seen[key]
-                if r.get("confidence", 0) > deduped[existing_idx].get("confidence", 0):
+                rank = lambda x: (x.get("section") != "figure", x.get("confidence", 0))   # text before figures
+                if rank(r) > rank(deduped[existing_idx]):
                     deduped[existing_idx] = r
             else:
                 seen[key] = len(deduped)

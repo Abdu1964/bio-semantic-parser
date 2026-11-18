@@ -508,6 +508,9 @@ _PROCESSES_AND_OUTCOMES = [EntityType.DISEASE, EntityType.CANCER, EntityType.PHE
                            EntityType.PATHOLOGICAL_PROCESS, EntityType.CLINICAL_FINDING, EntityType.DISEASE_OUTCOME,
                            EntityType.MORTALITY_OUTCOME, EntityType.BEHAVIORAL_OUTCOME,
                            EntityType.EPIDEMIOLOGICAL_OUTCOME]
+# Biolink DiseaseOrPhenotypicFeature: the range of ameliorates_condition / exacerbates_condition
+_CONDITIONS = [EntityType.DISEASE, EntityType.CANCER, EntityType.PHENOTYPE, EntityType.SYMPTOM,
+               EntityType.CLINICAL_FINDING]
 
 TAXONOMY: Dict[RelationType, dict] = {
 
@@ -1035,12 +1038,14 @@ TAXONOMY: Dict[RelationType, dict] = {
         "definition": "Gene, treatment, or intervention A ameliorates (mitigates or reduces severity of) disease or condition B without necessarily curing it — weaker than TREATS.",
         "example": "Metformin ameliorates insulin resistance in type 2 diabetes.",
         "not_this": "Use TREATS if the intervention provides established therapeutic benefit or cure. Use PREVENTS if A stops B from occurring. AMELIORATES implies partial improvement in existing condition.",
+        "range": _CONDITIONS,
     },
 
     RelationType.EXACERBATES: {
         "definition": "Gene, compound, or condition A exacerbates (worsens or accelerates) disease or condition B.",
         "example": "High dietary fat intake exacerbates non-alcoholic fatty liver disease.",
         "not_this": "Use CAUSES if A is the initial cause of B. Use PROMOTES for broader positive regulatory effects. EXACERBATES specifically means A makes an already-existing condition B worse.",
+        "range": _CONDITIONS,
     },
 
     RelationType.IN_TAXON: {
@@ -1756,8 +1761,8 @@ CROSS_SCHEMA_MAP: Dict[RelationType, dict] = {
     RelationType.GENETICALLY_INTERACTS_WITH:      {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:genetically_interacts_with"},
     RelationType.PHARMACOLOGICALLY_INTERACTS_WITH:{"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:pharmacologically_interacts_with"},
     RelationType.PRECEDES:                        {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:precedes (RO:0002566)"},
-    RelationType.AMELIORATES:                     {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:ameliorates_condition"},
-    RelationType.EXACERBATES:                     {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:exacerbates_condition"},
+    RelationType.AMELIORATES:                     {"bionlp": "Negative_regulation", "hetionet": None, "openbiolink": None, "biolink": "biolink:ameliorates_condition"},
+    RelationType.EXACERBATES:                     {"bionlp": "Positive_regulation", "hetionet": None, "openbiolink": None, "biolink": "biolink:exacerbates_condition"},
     RelationType.IN_TAXON:                        {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:in_taxon (RO:0002162)"},
     # Category 23: Clinical outcome / risk (Biolink v4)
     RelationType.PREDISPOSES:                     {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:predisposes (RO:0003302)"},

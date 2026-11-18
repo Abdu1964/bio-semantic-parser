@@ -48,3 +48,8 @@ def test_text_before_abstract_header_joins_abstract():
 
 def test_no_headers_is_one_abstract():
     assert _assert_lossless("Rapamycin inhibits mTOR. It extends lifespan in mice.") == ["abstract"]
+
+
+def test_title_before_an_inline_abstract_heading_is_kept():
+    sections = SectionSplitter()._split_inline("A study of mTOR ABSTRACT Rapamycin extends lifespan. METHODS Mice were treated.")
+    assert sections[0] == {"section": "abstract", "text": "A study of mTOR Rapamycin extends lifespan."}

@@ -321,6 +321,32 @@ class TestNegationDetector:
         # _is_negated should only be called once for the shared clause
         assert call_count["n"] == 1
 
+    @pytest.mark.parametrize("probs,expected", [
+        # rows: positive hypothesis, then the negative ones; columns: contradiction, entailment, neutral
+        ([[0.02, 0.90, 0.08], [0.0, 0.01, 0.99], [0.0, 0.01, 0.99]], False),   # positive finding
+        ([[0.80, 0.05, 0.15], [0.0, 0.10, 0.90], [0.0, 0.10, 0.90]], True),    # contradicts the positive
+        ([[0.03, 0.02, 0.95], [0.0, 0.86, 0.14], [0.0, 0.20, 0.80]], True),    # neutral to positive, entails a negative
+        ([[0.03, 0.02, 0.95], [0.0, 0.30, 0.70], [0.0, 0.40, 0.60]], False),   # neither check fires
+    ])
+    def test_is_negated_uses_positive_and_negative_hypotheses(self, detector, probs, expected):
+        import contextlib
+        import src.preextraction.negation_detector as nd
+        seen = {}
+
+        def tokenizer(premises, hypotheses, **kw):
+            seen["hypotheses"] = hypotheses
+            return {}
+
+        detector._tokenizer = tokenizer
+        detector._model = MagicMock()
+        with patch.object(nd, "torch") as fake_torch:
+            fake_torch.no_grad.return_value = contextlib.nullcontext()
+            fake_torch.softmax.return_value = probs
+            is_neg, score = detector._is_negated("Rapamycin did not alter mTOR phosphorylation.")
+        assert seen["hypotheses"][0] == nd._DEFAULT_HYPOTHESIS
+        assert seen["hypotheses"][1:] == list(nd._NEGATIVE_HYPOTHESES)
+        assert is_neg is expected
+
 
 
 # _resolve_overlaps / _relocalize_to_chunk

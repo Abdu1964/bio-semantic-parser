@@ -76,7 +76,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 "subject_synonyms", "object_synonyms",
                 "subject_id_source", "object_id_source",
                 "subject_evidence", "object_evidence",
-                "provenance"):                      # JSON: e.g. the figure a fact was read from
+                "provenance",                       # JSON: e.g. the figure a fact was read from
+                "source", "evidence"):              # study or cited; measured or predicted
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE triples ADD COLUMN {col} TEXT")
     # subject/object_needs_review: persisted so re-exports don't lose the resolver's uncertainty flag.
@@ -164,10 +165,10 @@ def deduplicate(record: dict) -> dict:
              relation,
              object_id, object_name, object_canonical_name, object_source_url, object_synonyms, object_id_source, object_evidence, object_needs_review, object_type,
              negated, confidence, source_papers,
-             species, tissue, condition, effect_size, reasoning,
+             species, tissue, condition, effect_size, reasoning, source, evidence,
              is_contradiction, flagged_for_review, review_reason,
              created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         subject_id, record.get("subject_name",""), record.get("subject_canonical_name",""),
         record.get("subject_source_url",""), record.get("subject_synonyms",""), record.get("subject_id_source",""),
@@ -183,7 +184,7 @@ def deduplicate(record: dict) -> dict:
         negated, confidence, json.dumps([doc_id]),
         record.get("species",""), record.get("tissue",""),
         record.get("condition",""), record.get("effect_size",""),
-        record.get("reasoning",""),
+        record.get("reasoning",""), record.get("source") or "study", record.get("evidence") or "measured",
         1 if record.get("is_contradiction") else 0,
         1 if record.get("flagged_for_review") else 0,
         record.get("review_reason",""),
@@ -363,7 +364,7 @@ def count_triples_for_paper(doc_id: str) -> int:
 _SYNC_FIELDS = ("subject_id", "subject_name", "subject_type", "relation", "object_id", "object_name",
                 "object_type", "species", "subject_canonical_name", "subject_source_url", "subject_synonyms",
                 "subject_id_source", "object_canonical_name", "object_source_url", "object_synonyms",
-                "object_id_source")
+                "object_id_source", "source", "evidence")
 
 
 def _plain(v):

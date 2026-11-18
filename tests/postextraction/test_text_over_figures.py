@@ -37,5 +37,5 @@ def test_relation_targets_follow_taxonomy_ranges():
             {"relation": "promotes", "object_type": "GENE"},
             {"relation": "upregulates", "object_type": "GENE"}]
     assert fit_relation_targets(recs) == (2, 1)
-    assert [r["relation"] for r in recs] == ["promotes", "downregulates", "upregulates", "upregulates"]
+    assert [r["relation"] for r in recs] == ["exacerbates", "downregulates", "upregulates", "upregulates"]
     assert "invalid_reason" in recs[1]

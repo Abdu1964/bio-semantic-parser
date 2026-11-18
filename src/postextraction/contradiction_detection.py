@@ -1,4 +1,5 @@
 """Layer 7 step 3 — flag opposing relations for the same entity pair as contradictions."""
+import json
 import sqlite3
 from pathlib import Path
 
@@ -55,7 +56,7 @@ def check_contradiction(record: dict) -> dict:
         checks.append((opposing.value, negated, f"'{rel_enum.value}' conflicts with existing '{opposing.value}'"))
 
     conn = _get_conn()
-    hit = None
+    hits = []
     for rel, neg, what in checks:
         row = conn.execute(
             "SELECT id, source_papers, subject_name, object_name FROM triples "
@@ -63,9 +64,12 @@ def check_contradiction(record: dict) -> dict:
             (subject_id, rel, object_id, neg),
         ).fetchone()
         if row and _same_entities(record, row):
-            hit = (row, what)
-            break
+            hits.append((row, what))
     conn.close()
+    hit = hits[0] if hits else None
+    if hits:                                       # stored rows it conflicts with, and how many papers state each
+        record = {**record, "conflict_rows": [(row["id"], len(json.loads(row["source_papers"] or "[]")))
+                                              for row, _ in hits]}
 
     if hit:
         row, what = hit
@@ -113,13 +117,16 @@ def _conflict(a: dict, b: dict) -> bool:
 
 def prefer_text_over_figures(checked: list, before: list) -> list:
     """The paper's text outweighs a vision model's reading of a figure: a text fact whose only conflicts in
-    this paper are figure facts returns to how it was; the figure facts stay contradictions."""
+    this paper are figure facts returns to how it was; the figure facts stay contradictions.
+    A conflict with a stored fact that another paper states is kept."""
     out = list(checked)
     for i, r in enumerate(checked):
         if not r.get("is_contradiction") or r.get("section") == "figure":
             continue
         partners = [o for o in checked if o is not r and _conflict(r, o)]
-        if partners and all(o.get("section") == "figure" for o in partners):
+        figure_rows = {o.get("triple_id") for o in partners if o.get("section") == "figure"}
+        stored_ok = all(tid in figure_rows and n == 1 for tid, n in r.get("conflict_rows", []))
+        if partners and all(o.get("section") == "figure" for o in partners) and stored_ok:
             out[i] = before[i]
             for j, o in enumerate(checked):
                 if o in partners and not o.get("is_contradiction"):

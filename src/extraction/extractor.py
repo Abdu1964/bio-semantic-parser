@@ -15,6 +15,7 @@ import httpx
 from src.schema.taxonomy import TAXONOMY, ENTITY_TAXONOMY, RelationType, EntityType
 from src.schema.pydantic_model import BiologicalRelation, ExtractionResult
 from src.schema.biolink_generated import INVERSE_TO_CANONICAL
+from src.llm_client import llm_slot
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +245,12 @@ def _system_prompt(hidden: frozenset = frozenset()) -> str:
 
 
 def _user_message(chunk: dict) -> str:
+    return (_chunk_context(chunk) + "\n\nExtract ALL biological relations from the text above — be exhaustive, "
+                                    "do not skip any. Return JSON only.")
+
+
+def _chunk_context(chunk: dict) -> str:
+    """Section, text, and the Layer 4 entity and negation lists the extraction rules refer to."""
     text     = chunk.get("text", "")
     section  = chunk.get("section", "unknown")
     entities = chunk.get("entities", [])
@@ -269,14 +276,7 @@ def _user_message(chunk: dict) -> str:
             + "\nSet negated=true for any relation involving these entities."
         )
 
-    return (
-        f"SECTION: {section}\n\n"
-        f"TEXT:\n{text}"
-        + entity_block
-        + negation_block
-        + "\n\nExtract ALL biological relations from the text above — be exhaustive, "
-          "do not skip any. Return JSON only."
-    )
+    return f"SECTION: {section}\n\nTEXT:\n{text}" + entity_block + negation_block
 
 
 # ── JSON parser ───────────────────────────────────────────────────────────────
@@ -413,9 +413,10 @@ def _second_pass(user: str, name: str, chunk: dict = None) -> list:
     messages = [{"role": "system", "content": _get_system_prompt(chunk)}, {"role": "user", "content": user}]
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        response = pool.submit(lambda: _client().chat.completions.create(
-            model=_MODEL, messages=messages, temperature=_TEMPERATURE, max_tokens=_OUT_RESERVE,
-            response_format={"type": "json_object"})).result(timeout=_WALL_TIMEOUT)
+        with llm_slot():
+            response = pool.submit(lambda: _client().chat.completions.create(
+                model=_MODEL, messages=messages, temperature=_TEMPERATURE, max_tokens=_OUT_RESERVE,
+                response_format={"type": "json_object"})).result(timeout=_WALL_TIMEOUT)
         raw = response.choices[0].message.content or ""
         try:
             return _valid_relations(_parse_json(raw).get("relations", []))
@@ -430,8 +431,7 @@ def _second_pass(user: str, name: str, chunk: dict = None) -> list:
 
 def _negative_findings(chunk: dict) -> list:
     """A second, small pass for negative findings, which the main pass tends to skip."""
-    relations = _second_pass(f"SECTION: {chunk.get('section', 'unknown')}\n\nTEXT:\n{chunk.get('text', '')}"
-                             f"\n\n{_NEGATION_ASK}", "Negation", chunk)
+    relations = _second_pass(f"{_chunk_context(chunk)}\n\n{_NEGATION_ASK}", "Negation", chunk)   # entity list: Rule 3
     return [r for r in relations if r.negated and r.relation and r.extraction_viable and _text_negates(r, chunk)]
 
 
@@ -498,11 +498,12 @@ def _members(name: str) -> list:
 
 
 def _expand_lists(relations: list) -> list:
-    """One relation per member when the model returned a numbered list as one entity."""
+    """One relation per member when the model returned a numbered list as one entity.
+    Lists on both sides stay as written: pairwise ('respectively') or every pair can't be told apart."""
     out = []
     for r in relations:
         subs, objs = _members(r.subject_name), _members(r.object_name)
-        if len(subs) == 1 and len(objs) == 1:
+        if len(subs) == 1 and len(objs) == 1 or len(subs) > 1 and len(objs) > 1:
             out.append(r)
             continue
         out += [r.model_copy(update={"subject_name": s, "object_name": o}) for s in subs for o in objs]
@@ -609,7 +610,7 @@ def extract(chunk: dict, _depth: int = 0) -> ExtractionResult:
         relations += [r for r in _tidy(_missed_findings(chunk, relations), chunk) if key(r) not in seen]
         seen = {key(r) for r in relations}
     if _NEGATION_PASS:
-        relations += [r for r in _negative_findings(chunk) if key(r) not in seen]
+        relations += [r for r in _expand_lists(_negative_findings(chunk)) if key(r) not in seen]
     return result if len(relations) == len(result.relations) else ExtractionResult(relations=relations)
 
 
@@ -656,9 +657,9 @@ def _extract_main(chunk: dict, _depth: int = 0) -> ExtractionResult:
             # Wall-clock timeout via ThreadPoolExecutor — fires even when the
             # server sends TCP keepalive bytes (unlike httpx read timeout).
             _pool   = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            _future = _pool.submit(_call)
             try:
-                response = _future.result(timeout=_WALL_TIMEOUT)
+                with llm_slot():                       # shared with the negation pass and figure reads
+                    response = _pool.submit(_call).result(timeout=_WALL_TIMEOUT)
                 last_raw = response.choices[0].message.content or ""
             except concurrent.futures.TimeoutError:
                 _pool.shutdown(wait=False)
@@ -685,7 +686,7 @@ def _extract_main(chunk: dict, _depth: int = 0) -> ExtractionResult:
                 for r in all_relations:
                     key = (getattr(r, "subject_name", "").lower(),
                            r.relation.value if r.relation else "",
-                           getattr(r, "object_name",  "").lower())
+                           getattr(r, "object_name",  "").lower(), bool(r.negated))
                     if key not in seen:
                         seen.add(key)
                         unique.append(r)
