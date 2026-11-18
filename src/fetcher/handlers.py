@@ -185,13 +185,19 @@ class DocxHandler:
     _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
     def extract(self, content: bytes, text_field: str = None) -> str:
-        import io, zipfile
-        root = ET.fromstring(zipfile.ZipFile(io.BytesIO(content)).read("word/document.xml"))
+        from src.fetcher.archive import bounded_zip
+        root = ET.fromstring(bounded_zip(content).read("word/document.xml"))
         lines = []
         for p in root.iter(f"{self._W}p"):
-            text = "".join(t.text or "" for t in p.iter(f"{self._W}t")).strip()
-            if text:
-                lines.append(text)
+            parts = []
+            for el in p.iter():
+                if el.tag == f"{self._W}t":
+                    parts.append(el.text or "")
+                elif el.tag == f"{self._W}tab":
+                    parts.append("\t")
+                elif el.tag in (f"{self._W}br", f"{self._W}cr"):
+                    parts.append("\n")
+            lines += [line.strip() for line in "".join(parts).split("\n") if line.strip()]
         return "\n".join(lines)
 
 
@@ -199,8 +205,10 @@ class EpubHandler:
     """EPUB: chapter text in reading order (OPF spine)."""
 
     def extract(self, content: bytes, text_field: str = None) -> str:
-        import io, posixpath, zipfile
-        zf = zipfile.ZipFile(io.BytesIO(content))
+        import posixpath
+        from urllib.parse import unquote, urlsplit
+        from src.fetcher.archive import bounded_zip
+        zf = bounded_zip(content)
         container = ET.fromstring(zf.read("META-INF/container.xml"))
         opf_path = next(el.get("full-path") for el in container.iter() if el.get("full-path"))
         opf = ET.fromstring(zf.read(opf_path))
@@ -213,7 +221,8 @@ class EpubHandler:
             if not href:
                 continue
             try:
-                html = zf.read(posixpath.normpath(posixpath.join(base, href)))
+                path = unquote(urlsplit(href).path)               # a URI: decode, drop fragment and query
+                html = zf.read(posixpath.normpath(posixpath.join(base, path)))
             except KeyError:
                 continue
             texts.append(HTMLHandler().extract(html.decode("utf-8", errors="ignore")))
@@ -229,7 +238,9 @@ class MarkdownHandler:
         text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)                  # links → their text
         text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)                     # heading marks
         text = re.sub(r"(?m)^\s*([-*+]|\d+\.)\s+", "", text)                  # list markers
-        text = re.sub(r"[*_`>]{1,3}", "", text)                               # emphasis, quotes, code
+        text = re.sub(r"(?m)^\s{0,3}(>\s?)+", "", text)                        # blockquote markers at line start
+        text = re.sub(r"`([^`\n]+)`", r"\1", text)                             # inline code
+        text = re.sub(r"(?<!\w)(\*\*|__|\*|_)(?=\S)(.+?)(?<=\S)\1(?!\w)", r"\2", text)  # emphasis pairs only
         return "\n".join(l.strip() for l in text.splitlines() if l.strip())
 
 

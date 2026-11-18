@@ -92,8 +92,10 @@ def _same_entity(a: dict, b: dict, side: str) -> bool:
         return False
     if a.get(f"{side}_id") == b.get(f"{side}_id"):
         return True
-    ga, gb = _genus(a.get("species") or ""), _genus(b.get("species") or "")
-    if not (ga and ga == gb):
+    from src.postextraction.entity_normalization import normalize_species
+    sa, sb = (normalize_species(x.get("species") or "").lower() for x in (a, b))
+    same = sa == sb if " " in sa and " " in sb else _genus(sa) == _genus(sb)    # species when both name one
+    if not (sa and sb and same):
         return False
     from src.postextraction.entity_normalization import _symbol_key
     sa, sb = _symbol_key(a.get(f"{side}_name") or ""), _symbol_key(b.get(f"{side}_name") or "")
@@ -241,10 +243,16 @@ def _attach(tagged_chunks: list, results: list, fig_results: list, fig_chunks: l
     if len(results) > len(tagged_chunks):
         log("Figure relations skipped: results and chunks are out of step")
         return 0
-    results.extend(ExtractionResult(relations=[]) for _ in range(len(tagged_chunks) - len(results)))
-    results.extend(fig_results)
-    tagged_chunks.extend(fig_chunks)
-    if save_path:
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        save_path.write_text(json.dumps(fig_chunks, default=str), encoding="utf-8")
+    n_results, n_chunks = len(results), len(tagged_chunks)
+    try:
+        results.extend(ExtractionResult(relations=[]) for _ in range(len(tagged_chunks) - len(results)))
+        results.extend(fig_results)
+        tagged_chunks.extend(fig_chunks)
+        if save_path:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_text(json.dumps(fig_chunks, default=str), encoding="utf-8")
+    except Exception as e:                              # figures are optional: keep the text results as they were
+        del results[n_results:], tagged_chunks[n_chunks:]
+        log(f"Figure relations skipped: {e}")
+        return 0
     return sum(len(r.relations) for r in fig_results)

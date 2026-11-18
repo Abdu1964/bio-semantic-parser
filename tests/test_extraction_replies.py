@@ -81,3 +81,11 @@ def test_non_viable_relation_without_type_does_not_break_negation_pass(fake_llm)
     fake_llm(lambda prompt: _reply([] if "negative findings" in prompt else [_rel("RTD-1", "CCL7"), not_viable]))
     result = extractor.extract({"text": "RTD-1 suppressed CCL7. Tissue was stored at -80C."})
     assert not result.rejected and "CCL7" in [r.object_name for r in result.relations]
+
+
+def test_negation_pass_gets_the_entity_list_its_rules_require(fake_llm):
+    sent = fake_llm(lambda prompt: _reply([]))
+    extractor.extract({"text": "GAPDH was unaffected by RTD-1.",
+                       "entities": [{"text": "GAPDH", "label": "GENE"}, {"text": "RTD-1", "label": "CHEMICAL"}]})
+    negation = [t for t in sent if "negative findings" in t]
+    assert negation and "PRE-TAGGED ENTITIES" in negation[0] and "[GAPDH]" in negation[0]

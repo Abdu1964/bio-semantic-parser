@@ -28,6 +28,9 @@ def _stem(name: str) -> str:
 def extract_jats_figures(xml, files=()) -> list:
     """One Figure per <fig>; the image is attached when a package file matches its graphic."""
     root = ET.fromstring(xml)
+    for el in root.iter():                                     # default namespace: '{ns}fig' → 'fig'
+        if isinstance(el.tag, str) and "}" in el.tag:
+            el.tag = el.tag.split("}", 1)[1]
     images = {_stem(n): (n, c) for n, c in files if n.lower().endswith(FIGURE_EXT)}
     figures = []
     for n, fig in enumerate(root.iter("fig"), 1):

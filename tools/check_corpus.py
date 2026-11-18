@@ -24,10 +24,11 @@ def _read(path: Path) -> str:
     except ImportError:
         if path.suffix.lower() == ".pdf":
             return PDFHandler().extract(str(path))
-        if path.suffix.lower() in (".xml", ".nxml"):
-            from src.fetcher.handlers import XMLHandler
-            return XMLHandler().extract(path.read_text(encoding="utf-8", errors="replace"))
-        return path.read_text(encoding="utf-8", errors="replace")
+        from src.fetcher.handlers import HTMLHandler, JSONHandler, XMLHandler
+        handler = {".xml": XMLHandler, ".nxml": XMLHandler, ".html": HTMLHandler, ".htm": HTMLHandler,
+                   ".json": JSONHandler}.get(path.suffix.lower())
+        content = path.read_text(encoding="utf-8", errors="replace")
+        return handler().extract(content) if handler else content       # the text Layer 3 reads, not markup
 
 
 def check(path: Path) -> dict:
