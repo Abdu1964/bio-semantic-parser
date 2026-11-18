@@ -41,7 +41,7 @@ def score(
     c1 = _channel_section(sec)
     c2 = _channel_factuality(best_sent, best_sent.lower())
     c3 = _channel_quantitative(text_lc)          # keep full chunk for stats
-    c4 = _channel_direct_claim(text_lc, subj_key, obj_key)
+    c4 = _channel_direct_claim(text, subj_key, obj_key)
     c5 = _channel_nli_entailment(best_sent, hyp,
                                  llm_fallback=float(llm_confidence or 0.5),
                                  max_score=_hedge_limit(c2))
@@ -61,8 +61,9 @@ _NEGATION_NEAR = re.compile(
 )
 
 
-# A period after a single letter (C. elegans, E. coli, initials) does not end a sentence.
-_SENTENCE_END = re.compile(r"(?<=[.!?])(?<!\b[A-Za-z]\.)\s+")
+# A period after a single letter ends a sentence unless a lowercase word follows (C. elegans, E. coli);
+# 'vitamin D. FOXO3 …' is two sentences.
+_SENTENCE_END = re.compile(r"(?<=[.!?])(?<!\b[A-Za-z]\.)\s+|(?<=\b[A-Za-z]\.)\s+(?![a-z])")
 
 # Split text into sentences while handling common abbreviations correctly
 def _split_sentences(text: str) -> list:
@@ -236,17 +237,21 @@ _FACT = (
 )
 
 
+_LEVELS = {"fact": 0.95, "probable": 0.75, "none": 0.65, "possible": 0.50, "doubtful": 0.20}
+_HEDGED = {_LEVELS["probable"], _LEVELS["possible"], _LEVELS["doubtful"]}
+
+
 def _channel_factuality(text: str, text_lc: str) -> float:
     """Channel 2 — certainty of the wording, Kilicoglu 2017 levels (PMC5497973).
 
     Polarity is not certainty: "did not" / "failed to" mark a definite negative
     (counterfact), scored like its positive (fact). Only hedges lower the score.
     """
-    if re.search(_DOUBTFUL, text_lc): return 0.20
-    if re.search(_POSSIBLE, text_lc): return 0.50
-    if re.search(_PROBABLE, text_lc): return 0.75
-    if re.search(_FACT,     text_lc): return 0.95
-    return 0.65
+    if re.search(_DOUBTFUL, text_lc): return _LEVELS["doubtful"]
+    if re.search(_POSSIBLE, text_lc): return _LEVELS["possible"]
+    if re.search(_PROBABLE, text_lc): return _LEVELS["probable"]
+    if re.search(_FACT,     text_lc): return _LEVELS["fact"]
+    return _LEVELS["none"]
 
 
 def _channel_quantitative(text_lc: str) -> float:
@@ -272,17 +277,19 @@ def _channel_quantitative(text_lc: str) -> float:
     return 0.40
 
 
-def _channel_direct_claim(text_lc: str, subj_key: str, obj_key: str) -> float:
-    """Channel 4 — co-sentence presence: 0.90 if both entities in same sentence, else 0.35."""
-    sentences = _split_sentences(text_lc)
+def _channel_direct_claim(text: str, subj_key: str, obj_key: str) -> float:
+    """Channel 4 — co-sentence presence: 0.90 if both entities in same sentence, else 0.35.
+    Split before lowercasing: the case after a period tells a sentence end from 'C. elegans'."""
+    sentences = [x.lower() for x in _split_sentences(text)]
     if any(subj_key in s and obj_key in s for s in sentences):
         return 0.90
     return 0.35
 
 
 def _hedge_limit(factuality: float) -> float:
-    """Upper bound for C5: a hedged sentence (possible/doubtful) cannot fully support a definite claim."""
-    return factuality if factuality <= 0.50 else 1.0
+    """Upper bound for C5: a hedged sentence (probable/possible/doubtful) cannot support a claim beyond its
+    own certainty; unhedged wording (fact or none) is not capped."""
+    return factuality if factuality in _HEDGED else 1.0
 
 
 def _channel_nli_entailment(text: str, hypothesis: str,
@@ -334,7 +341,7 @@ def explain(
     c1 = _channel_section(sec)
     c2 = _channel_factuality(best_sent, best_sent.lower())
     c3 = _channel_quantitative(text_lc)
-    c4 = _channel_direct_claim(text_lc, subj_key, obj_key)
+    c4 = _channel_direct_claim(text, subj_key, obj_key)
     c5 = _channel_nli_entailment(best_sent, hyp2, llm_fallback=llm_raw,
                                  max_score=_hedge_limit(c2))
 
