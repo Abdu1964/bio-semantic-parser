@@ -67,13 +67,12 @@ class SectionSplitter:
         for section_name, patterns in SECTION_PATTERNS.items():
             for pattern in patterns:
                 inline_pattern = pattern.lstrip("^")
-                # An all-caps header ("INTRODUCTION") counts anywhere
-                for match in re.finditer(rf"\b{inline_pattern.upper()}\b", text):
-                    strong.setdefault(section_name, []).append((match.start(), match.end(), section_name))
-                # Otherwise the header must start the text, a line, or a sentence
-                for match in re.finditer(rf"{inline_pattern}\b", text, re.IGNORECASE):
+                for match in re.finditer(rf"\b{inline_pattern}\b", text, re.IGNORECASE):
                     start = match.start()
-                    if start == 0 or text[start-1] == "\n" or text[max(0, start-2):start] in [". ", ".\n"]:
+                    if match.group(0).isupper():           # an all-caps header ("INTRODUCTION") counts anywhere
+                        strong.setdefault(section_name, []).append((start, match.end(), section_name))
+                    # Otherwise the header must start the text, a line, or a sentence
+                    elif start == 0 or text[start-1] == "\n" or text[max(0, start-2):start] in [". ", ".\n"]:
                         weak.setdefault(section_name, []).append((start, match.end(), section_name))
 
         # First occurrence of each section, all-caps headers first
