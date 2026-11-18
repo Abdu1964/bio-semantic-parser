@@ -7,6 +7,7 @@ from pathlib import Path
 from src.publish.validation_gate    import route, split_discards
 from src.publish.human_review       import append as queue_for_review
 from src.publish.atomspace_inserter import insert_to_atomspace
+from src.postextraction import staging
 from src.publish.output_verifier    import verify_run
 
 _KG_ROOT = Path(os.getenv("KG_OUTPUT_ROOT", "data/kg_output"))
@@ -165,7 +166,7 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
     # semantic validation ran.  Now that the gate has decided, update the staging
     # DB so commit_staging_to_main sees the correct flagged_for_review values.
     import os as _os
-    _staging_path = _os.getenv("TRIPLE_STORE_PATH", "")
+    _staging_path = staging.path()
     if _staging_path and _staging_path != "data/triple_store.db":
         import sqlite3 as _sq
         try:
@@ -259,8 +260,8 @@ def process(records: list, verbose: bool = False, text_by_doc: dict = None,
     return summary
 
 
-def export_csvs_from_db(staging_db: str, run_dir: str, formats: str = "neo4j") -> None:
-    """Re-export Neo4j/MeTTa CSVs from the staging DB after human-review approval."""
+def export_csvs_from_db(staging_db: str, run_dir: str, formats: str = "neo4j", allow_shrink: bool = True) -> None:
+    """Re-export Neo4j/MeTTa CSVs from the staging DB; allow_shrink=False keeps a larger existing export."""
     import sqlite3 as _sq
     from pathlib import Path as _Path
 
@@ -278,6 +279,14 @@ def export_csvs_from_db(staging_db: str, run_dir: str, formats: str = "neo4j") -
         conn.close()
     except Exception:
         return
+
+    if not allow_shrink:
+        _existing = sum(max(0, len(f.read_text(encoding="utf-8").splitlines()) - 1)
+                        for f in (run / "neo4j").glob("*/edges_*.csv"))
+        if len(rows) < _existing:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("Export kept: staging DB %s has %d facts, run has %d", sdb, len(rows), _existing)
+            return
 
     if not rows:                               # nothing approved left: empty the exports, don't keep stale ones
         import shutil as _sh

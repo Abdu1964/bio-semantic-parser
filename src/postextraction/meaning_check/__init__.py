@@ -7,6 +7,7 @@ better candidate, or left unresolved. Gene and protein symbols keep their databa
 MEANING_CHECK=false turns the step off.
 """
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from src.postextraction import entity_normalization as en
@@ -70,9 +71,19 @@ def run(records: list, log=print) -> dict:
         return stats
     keys = list(mentions)
     with ThreadPoolExecutor(max_workers=_WORKERS) as ex:
-        prepared = list(ex.map(lambda k: _prepare(*mentions[k][0]), keys))       # lookups, in parallel
-        keys = [k for k, it in zip(keys, prepared) if it is not None]           # unreachable terms keep their IDs
-        items = [it for it in prepared if it is not None]
+        prepared = dict(zip(keys, ex.map(lambda k: _prepare(*mentions[k][0]), keys)))   # lookups, in parallel
+        for rnd in range(1, en._NETWORK_RETRY_ROUNDS + 1):                     # ontology service down: wait, retry
+            missing = [k for k, it in prepared.items() if it is None]
+            if not missing:
+                break
+            log(f"  Meaning check: ontology service unreachable for {len(missing)} concept(s) — "
+                f"retry {rnd}/{en._NETWORK_RETRY_ROUNDS} in {en._NETWORK_RETRY_WAIT * rnd} s")
+            time.sleep(en._NETWORK_RETRY_WAIT * rnd)
+            en.reset_network_state()
+            prepared.update(zip(missing, ex.map(lambda k: _prepare(*mentions[k][0]), missing)))
+        stats["unverified"] = sum(1 for it in prepared.values() if it is None)  # still unreachable: IDs kept
+        keys = [k for k, it in prepared.items() if it is not None]
+        items = [prepared[k] for k in keys]
         batches = [items[i:i + _BATCH] for i in range(0, len(items), _BATCH)]
         judged = [v for b in ex.map(judge_batch, batches) for v in b]           # several concepts per LLM call
     verdicts = {k: _outcome(it, *v) for k, it, v in zip(keys, items, judged)}

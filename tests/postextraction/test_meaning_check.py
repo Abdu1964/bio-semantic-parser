@@ -19,7 +19,7 @@ def test_wrong_meaning_left_unresolved(monkeypatch):
     _patch(monkeypatch, ("DIFFERENT", None))
     recs = [_rec("erosion", "BIOLOGICAL_PROCESS", "ENVO:01001346"), _rec("erosion", "BIOLOGICAL_PROCESS", "ENVO:01001346")]
     st = M.run(recs, log=lambda m: None)
-    assert st == {"checked": 1, "kept": 0, "replaced": 0, "unresolved": 1}          # one concept, both mentions
+    assert st == {"checked": 1, "kept": 0, "replaced": 0, "unresolved": 1, "unverified": 0}   # one concept, both mentions
     assert all(r["object_id"].startswith("TEXT:") and r["object_meaning_rejected"] == "ENVO:01001346" for r in recs)
 
 
@@ -55,5 +55,24 @@ def test_batch_answer_parsing(monkeypatch):
 def test_unreachable_ontology_service_keeps_the_id(monkeypatch):
     _patch(monkeypatch, ("DIFFERENT", None))
     monkeypatch.setattr(M, "describe", lambda cid: None)                  # OLS could not be asked
+    monkeypatch.setattr(M.time, "sleep", lambda s: None)                  # retry rounds, without waiting
     recs = [_rec("RTD-1", "SMALL_MOLECULE", "mesh:C000713949")]
-    assert M.run(recs, log=lambda m: None)["checked"] == 0 and recs[0]["object_id"] == "mesh:C000713949"
+    st = M.run(recs, log=lambda m: None)
+    assert st["checked"] == 0 and st["unverified"] == 1 and recs[0]["object_id"] == "mesh:C000713949"
+
+
+def test_unreachable_service_is_retried(monkeypatch):
+    import src.postextraction.meaning_check as mc
+    from src.postextraction import entity_normalization as en
+    calls = {"n": 0}
+
+    def prepare(record, side):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else {"name": "x", "current": {"id": "GO:1"}, "alts": []}
+    monkeypatch.setattr(mc, "_prepare", prepare)
+    monkeypatch.setattr(mc, "_needs_check", lambda r, s: s == "subject")
+    monkeypatch.setattr(mc, "judge_batch", lambda b: [("SAME", None)] * len(b))
+    monkeypatch.setattr(mc.time, "sleep", lambda s: None)
+    monkeypatch.setattr(en, "reset_network_state", lambda: None)
+    st = mc.run([{"subject_name": "x", "subject_type": "BIOLOGICAL_PROCESS", "subject_id": "GO:1"}], log=lambda *a: None)
+    assert calls["n"] == 2 and st["checked"] == 1 and st["unverified"] == 0

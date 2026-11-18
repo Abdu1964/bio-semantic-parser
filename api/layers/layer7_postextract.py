@@ -3,6 +3,7 @@ import os
 import sys
 from pathlib import Path
 from api.pipeline_utils import _emit, _log, _pre, _post, _ckpt
+from src.postextraction import staging
 
 
 def run_layer7(emit, doc_id, _safe_id, results, tagged_chunks, output_format, _completed_layers):
@@ -23,7 +24,7 @@ def run_layer7(emit, doc_id, _safe_id, results, tagged_chunks, output_format, _c
         staging_db.parent.mkdir(parents=True, exist_ok=True)
         if not _skip(6) and not _skip(7):
             staging_db.unlink(missing_ok=True)
-        os.environ["TRIPLE_STORE_PATH"] = str(staging_db)
+        staging.use(staging_db)
 
         from src.postextraction.postextractor import process as postprocess
         from src.pipeline_checkpoint import (
@@ -155,6 +156,6 @@ def run_layer7(emit, doc_id, _safe_id, results, tagged_chunks, output_format, _c
         _log(emit, 7, f"  Full traceback:\n{tb[-600:]}", "warn")
         sys.stderr.write(f"[Layer 7] ERROR: {e}\n{tb[-800:]}\n")
         sys.stderr.flush()
-        os.environ.pop("TRIPLE_STORE_PATH", None)
+        staging.use("")
         _emit(emit, 7, "error", str(e))
         return None
