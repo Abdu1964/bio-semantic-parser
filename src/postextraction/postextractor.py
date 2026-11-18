@@ -16,14 +16,63 @@ from src.postextraction import (
 
 from src.postextraction.confidence_scorer import score as _score_confidence
 
-# Targets of up/downregulates: molecules whose abundance changes; processes and outcomes (→ promotes/prevents)
-_EXPRESSED_TYPES = {"GENE", "PROTEIN", "TRANSCRIPT", "EXON", "NON_CODING_RNA", "MICRO_RNA", "SI_RNA",
-                    "MACROMOLECULAR_COMPLEX", "SMALL_MOLECULE"}
-_OUTCOME_TYPES = {"DISEASE", "CANCER", "PHENOTYPE", "SYMPTOM", "PATHWAY", "BIOLOGICAL_PROCESS", "REACTION",
-                  "MOLECULAR_FUNCTION", "PHYSIOLOGICAL_PROCESS", "PATHOLOGICAL_PROCESS", "CLINICAL_FINDING",
-                  "DISEASE_OUTCOME", "MORTALITY_OUTCOME", "BEHAVIORAL_OUTCOME", "EPIDEMIOLOGICAL_OUTCOME"}
-# Existing conditions (Biolink ameliorates/exacerbates_condition range): a change in them is milder or worse, not prevented
-_CONDITION_TYPES = {"DISEASE", "CANCER", "PHENOTYPE", "SYMPTOM", "CLINICAL_FINDING"}
+from src.schema.taxonomy import CROSS_SCHEMA_MAP, TAXONOMY, EntityType, RelationType
+
+# What each relation's object may be (taxonomy ranges), and each relation's direction (BioNLP event type)
+_RANGE = {rel.value: {t.value for t in entry["range"]} for rel, entry in TAXONOMY.items() if entry.get("range")}
+_EVENT = {rel.value: (m or {}).get("bionlp") for rel, m in CROSS_SCHEMA_MAP.items()}
+
+
+def _swap_sides(r: dict) -> None:
+    for k in [k for k in r if k.startswith("subject_")]:
+        o = "object_" + k[len("subject_"):]
+        r[k], r[o] = r.get(o), r.get(k)
+
+
+def fit_relation_targets(records: list) -> tuple:
+    """A target outside its relation's range (taxonomy): swap the sides if the subject fits, else take the
+    relation with the same direction whose range fits most narrowly; with none, the fact is discarded. Returns (moved, discarded)."""
+    moved = discarded = 0
+    for r in records:
+        rel = r.get("relation")
+        rel_val = rel.value if hasattr(rel, "value") else rel
+        obj_type = r.get("object_type", "")
+        allowed = _RANGE.get(rel_val)
+        if not allowed or obj_type in allowed or obj_type in ("OTHER", ""):
+            continue
+        if r.get("subject_type") in allowed:                 # written backwards: the subject is the target
+            _swap_sides(r)
+            moved += 1
+            continue
+        fit = min((x for x, rng in _RANGE.items()                # same direction; the narrowest range that fits
+                   if obj_type in rng and _EVENT.get(x) and _EVENT.get(x) == _EVENT.get(rel_val)),
+                  key=lambda x: len(_RANGE[x]), default=None)
+        if fit:
+            r["relation"] = fit
+            moved += 1
+        else:
+            r["invalid_reason"] = f"'{rel_val}' does not take a {obj_type.lower()} as its target (taxonomy range)"
+            r["invalid_for"] = [rel_val, obj_type]          # a later correction of either clears it
+            discarded += 1
+    return moved, discarded
+
+_ORGANISMS = {t.value for t in EntityType if any(k in t.value for k in ("ORGANISM", "POPULATION", "COHORT"))}
+_CONDITIONS = {"DISEASE", "CANCER", "SYMPTOM", "CLINICAL_FINDING", "PATHOLOGICAL_PROCESS"}
+_EFFECT_RELATIONS = {r.value for r in RelationType if _EVENT.get(r.value) in ("Positive_regulation", "Negative_regulation",
+                                                                               "Regulation")} | {"causes", "participates_in"}
+
+
+def organism_traits(records: list) -> int:
+    """An organism or population as the agent of its own trait ('guppy promotes mortality') has that trait."""
+    n = 0
+    for r in records:
+        rel = getattr(r.get("relation"), "value", r.get("relation"))
+        if (r.get("subject_type") in _ORGANISMS and rel in _EFFECT_RELATIONS
+                and r.get("object_type") not in _CONDITIONS | _ORGANISMS):
+            r["relation"] = RelationType.HAS_PHENOTYPE.value
+            n += 1
+    return n
+
 
 def _compute_confidence(relation, chunk: dict,
                         all_chunks = None) -> tuple:
@@ -209,6 +258,42 @@ def process(
         if step_cb: step_cb(1, "Entity Normalization", f"checkpoint loaded ({len(records)} records)")
         log(f"Step 1 — Entity Normalization: skipped (checkpoint, {len(records)} records)")
 
+    # ── Step 1b: Meaning check — each ID must mean what the authors mean ──────
+    if resume_from_step <= 2 and records:
+        from src.postextraction import meaning_check
+        if meaning_check.ENABLED:
+            import time as _t1b
+            _t0 = _t1b.time()
+            if step_cb: step_cb(1, "Meaning check", "checking that each ID means what the paper means")
+            _st = meaning_check.run(records, log)
+            _msg = (f"Meaning check: {_st['checked']} concept(s) checked — {_st['kept']} kept, "
+                    f"{_st['replaced']} replaced, {_st['unresolved']} left without an ID"
+                    + f" ({_t1b.time() - _t0:.0f}s)")
+            if step_cb: step_cb(1, "Meaning check", _msg)
+            log(_msg)
+
+    # ── Step 1c: facts read from figures, checked against the paper's text by meaning ──
+    if resume_from_step <= 2 and records:
+        from src.figures.vision import text_check
+        if text_check.ENABLED and any(r.get("section") == "figure" for r in records):
+            _paper = " ".join(c.get("text", "") for c in all_chunks if c.get("section") != "figure")
+            _fc = text_check.check(records, _paper)
+            _msg = (f"Figure facts vs text: {_fc['checked']} checked — {_fc['supported']} supported, "
+                    f"{_fc['contradicted']} contradicted (held back), {_fc['unaddressed']} not addressed by the text")
+            if step_cb: step_cb(1, "Figure facts vs text", _msg)
+            log(_msg)
+
+    # ── Step 1d: direction of reversed / restored findings ──
+    if resume_from_step <= 2 and records:
+        from src.postextraction import reversal_check
+        _texts: dict = {}
+        for c in all_chunks:                          # chunk numbers restart in each section
+            k = f"{c.get('section')}|{c.get('chunk_index')}"
+            _texts[k] = (_texts.get(k, "") + " " + c.get("text", "")).strip()
+        _n_rev = reversal_check.check(records, _texts)
+        if _n_rev:
+            log(f"  → {_n_rev} reversed/restored finding(s) given the direction the paper states")
+
     # ── Relation / subject-type constraint check ──────────────────────────────
     # has_phenotype requires a molecular subject; has_symptom requires a disease/condition.
     # Correct mismatches deterministically — taxonomy states this outright.
@@ -235,28 +320,13 @@ def process(
         log(f"  → {n_relation_fixed} relation(s) corrected: has_phenotype/has_symptom "
             f"didn't match subject's entity type")
 
-    # up/downregulates change a molecule's expression (taxonomy). A process or outcome target takes
-    # promotes/prevents (defined for "process or outcome B"); a place or cell type is no expression fact.
-    n_target_fixed = n_target_flagged = 0
-    for r in records:
-        rel = r.get("relation")
-        rel_val = rel.value if hasattr(rel, "value") else rel
-        obj_type = r.get("object_type", "")
-        if rel_val not in ("upregulates", "downregulates") or obj_type in _EXPRESSED_TYPES or obj_type in ("OTHER", ""):
-            continue
-        if obj_type in _CONDITION_TYPES:
-            r["relation"] = "exacerbates" if rel_val == "upregulates" else "ameliorates"
-            n_target_fixed += 1
-        elif obj_type in _OUTCOME_TYPES:
-            r["relation"] = "promotes" if rel_val == "upregulates" else "prevents"
-            n_target_fixed += 1
-        else:
-            r["invalid_reason"] = f"'{rel_val}' needs a gene, transcript or protein target, not a {obj_type.lower()}"
-            r["invalid_for"] = [rel_val, obj_type]          # a later correction of either clears it
-            n_target_flagged += 1
+    n_target_fixed, n_target_flagged = fit_relation_targets(records)
+    n_traits = organism_traits(records)
+    if n_traits:
+        log(f"  → {n_traits} organism trait(s) stated as has_phenotype")
     if n_target_fixed or n_target_flagged:
-        log(f"  → expression relations: {n_target_fixed} with a process/outcome target became promotes/prevents or ameliorates/exacerbates, "
-            f"{n_target_flagged} with a non-molecular target discarded")
+        log(f"  → relation targets checked against the taxonomy: {n_target_fixed} moved to the relation of the same "
+            f"direction that fits, {n_target_flagged} with no fitting relation discarded")
 
     # ── Entity ontology gate — flag non-biomedical triples ────────────────────
     # A triple is considered non-biomedical if BOTH subject and object fail to
@@ -269,6 +339,11 @@ def process(
         if not entity_id or entity_id == "NEEDS_REVIEW" or entity_id.startswith("TEXT:"):
             return False
         return ":" in entity_id
+
+    from src.postextraction import local_concepts
+    _n_local = local_concepts.mark(records, " ".join(c.get("text", "") for c in all_chunks))
+    if _n_local:
+        log(f"  → {_n_local} names without an ontology ID given a local ID")
 
     n_flagged_non_bio = 0
     for r in records:
