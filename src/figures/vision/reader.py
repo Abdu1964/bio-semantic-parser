@@ -20,6 +20,7 @@ _TILE_FROM = int(os.getenv("FIGURE_TILE_FROM", "1200"))      # larger figures al
 _MAX_TOKENS = int(os.getenv("FIGURE_OUTPUT_TOKENS", "3000"))
 _MAX_RELATIONS = int(os.getenv("FIGURE_MAX_RELATIONS", "30"))   # keeps dense figures within the output limit
 _TIMEOUT = int(os.getenv("FIGURE_TIMEOUT", "240"))              # seconds per model call
+_TIMEOUT = max(_TIMEOUT, _MAX_TOKENS // 10 + 60)                 # a full answer at 10 tokens/s still fits
 _MAX_OCR_CHARS = 4000
 # expressed_in is for genes and their products; a cell type in a tissue is part_of it.
 _MOLECULAR = {"GENE", "PROTEIN", "TRANSCRIPT", "EXON", "NON_CODING_RNA", "MICRO_RNA", "SI_RNA"}
@@ -106,7 +107,8 @@ Return ONLY this JSON:
       "negated": false,
       "confidence": 0.0,
       "reasoning": "<min 50 chars — what in the figure shows this (arrow, link, highlighted cell, significant bar)>",
-      "species": "", "tissue": "", "condition": "", "effect_size": ""
+      "species": "", "tissue": "", "condition": "", "effect_size": "",
+      "evidence": "measured"
     }
   ]
 }"""
@@ -133,7 +135,16 @@ RULES:
 10. Never relate an entity to itself. A similarity or correlation matrix comparing the same kinds of
    things (cell types vs cell types, samples vs samples) shows no biological relation — skip it.
 11. Each name must be one specific entity, never a group or category ('target genes', 'SNPs',
-   'altered TFs', 'top motifs', 'modules'). A cell type found in a tissue is part_of that tissue."""
+   'altered TFs', 'top motifs', 'modules'). A cell type found in a tissue is part_of that tissue.
+12. Two items are related only where the figure links them: an arrow or line, the same row of one
+   table, or the cell where a row and a column of one matrix meet. Items in separate panels, or in
+   lists or columns placed side by side, are never related by their position. In a table row, each
+   value describes the row's subject (its first column); two values from other columns of that row
+   (e.g. a process and a motif) are not related to each other.
+13. A colour, cluster, box or legend group shows only that its items share the group — never a relation
+   between an item and the group.
+14. evidence: predicted for activity an analysis infers (upstream regulator or pathway analysis,
+   z-scores, enrichment); measured for observed results."""
 
 
 def _compact(title: str, taxonomy: dict) -> str:

@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 from src.figures.extract import figures_dir
@@ -91,8 +92,14 @@ def _same_entity(a: dict, b: dict, side: str) -> bool:
         return False
     if a.get(f"{side}_id") == b.get(f"{side}_id"):
         return True
-    ga, gb = _genus(a.get("species") or ""), _genus(b.get("species") or "")
-    return bool(ga) and ga == gb and bool(_names(a, side) & _names(b, side))
+    from src.postextraction.entity_normalization import normalize_species
+    sa, sb = (normalize_species(x.get("species") or "").lower() for x in (a, b))
+    same = sa == sb if " " in sa and " " in sb else _genus(sa) == _genus(sb)    # species when both name one
+    if not (sa and sb and same):
+        return False
+    from src.postextraction.entity_normalization import _symbol_key
+    sa, sb = _symbol_key(a.get(f"{side}_name") or ""), _symbol_key(b.get(f"{side}_name") or "")
+    return bool(_names(a, side) & _names(b, side)) or (bool(sa) and sa == sb)     # same symbol: 'RARA' / 'Rara'
 
 
 def corroborating_fact(record: dict, text_facts: list):
@@ -122,9 +129,29 @@ def _figures(document_id: str) -> list:
     return [{**f, "path": str(d / f["file"])} for f in figs[:_MAX_FIGURES]]
 
 
-def _chunk(fig: dict, out: dict, rels: list, template: dict, index: int) -> dict:
+_PAPER_EVIDENCE_CHARS = 3000
+
+
+def _paper_sentences(rels: list, sentences: list) -> list:
+    """The paper's own sentences naming both entities of a figure relation, so the text can confirm or
+    contradict what was read from the image."""
+    out = []
+    for r in rels:
+        a, b = r.subject_name.lower(), r.object_name.lower()
+        out += [x for x in sentences if a in x.lower() and b in x.lower()][:2]
+    picked, size = [], 0
+    for x in dict.fromkeys(out):
+        if size + len(x) > _PAPER_EVIDENCE_CHARS:
+            break
+        picked.append(x)
+        size += len(x)
+    return picked
+
+
+def _chunk(fig: dict, out: dict, rels: list, template: dict, index: int, sentences: list = ()) -> dict:
     """A pseudo-chunk for one figure. Its text is what Layer 7 checks figure facts against:
-    caption, summary, the visual evidence for each relation, and the figure's own words (OCR)."""
+    caption, summary, the visual evidence for each relation, the figure's own words (OCR), and the
+    paper's sentences about the same entities."""
     label = fig.get("label") or fig["fig_id"]
     text = f"{label}. {fig.get('caption', '')}".strip()
     if out["summary"]:
@@ -133,6 +160,9 @@ def _chunk(fig: dict, out: dict, rels: list, template: dict, index: int) -> dict
         f"- {r.subject_name} {r.relation.value.replace('_', ' ')} {r.object_name}: {r.reasoning}" for r in rels)
     if out.get("ocr", "").strip():
         text += "\nText in the figure: " + " ".join(out["ocr"].split())[:3000]
+    about = _paper_sentences(rels, sentences)
+    if about:
+        text += "\nThe paper's text about these entities:\n" + "\n".join(f"- {x}" for x in about)
     return {**{k: template.get(k) for k in _CHUNK_KEYS if k in template},
             "text": text, "section": "figure", "chunk_index": index,
             "entities": [], "negated_entities": [], "has_negation": False,
@@ -148,6 +178,7 @@ def figure_results(document_id: str, template: dict, first_index: int, log=None,
         return [], []
     log(f"Reading {len(figs)} figure(s) with the vision model…")
     context = tokens(paper_text) if paper_text else None           # once per paper, shared by all figures
+    sentences = re.split(r"(?<=[.!?])\s+", paper_text) if paper_text else []
 
     def one(fig):
         try:
@@ -176,29 +207,52 @@ def figure_results(document_id: str, template: dict, first_index: int, log=None,
             + (f", {out['not_entities']} self-loops or group names dropped" if out.get("not_entities") else ""))
         if rels:
             results.append(ExtractionResult(relations=rels))
-            chunks.append(_chunk(fig, out, rels, template, first_index + len(chunks)))
+            chunks.append(_chunk(fig, out, rels, template, first_index + len(chunks), sentences))
     return results, chunks
+
+
+def start_figure_relations(document_id: str, tagged_chunks: list, log=None):
+    """Start reading the figures in the background — they need only the paper's text, not its results.
+    Returns finish(results, save_path) that adds them once the text results are in; finish returns the count."""
+    log = log or (lambda m: None)
+    if not enabled():
+        return lambda results, save_path=None: 0
+    template = tagged_chunks[0] if tagged_chunks else {"document_id": document_id}
+    paper_text = " ".join(str(c.get("text", "")) for c in tagged_chunks if c.get("section") != "figure")
+    pool = ThreadPoolExecutor(max_workers=1)
+    reading = pool.submit(figure_results, document_id, template, len(tagged_chunks), log, paper_text)
+    pool.shutdown(wait=False)
+
+    def finish(results: list, save_path=None) -> int:
+        try:
+            fig_results, fig_chunks = reading.result()
+        except Exception as e:
+            log(f"Figure relations skipped: {e}")
+            return 0
+        return _attach(tagged_chunks, results, fig_results, fig_chunks, save_path, log)
+    return finish
 
 
 def add_figure_relations(document_id: str, tagged_chunks: list, results: list, save_path=None, log=None) -> int:
     """Append figure results and figure chunks in place (kept 1:1 for Layer 7); returns the relation count."""
-    log = log or (lambda m: None)
-    if not enabled():
-        return 0
+    return start_figure_relations(document_id, tagged_chunks, log)(results, save_path)
+
+
+def _attach(tagged_chunks: list, results: list, fig_results: list, fig_chunks: list, save_path, log) -> int:
+    """Figure results and their chunks after the text ones, kept 1:1."""
     if len(results) > len(tagged_chunks):
         log("Figure relations skipped: results and chunks are out of step")
         return 0
-    results.extend(ExtractionResult(relations=[]) for _ in range(len(tagged_chunks) - len(results)))
+    n_results, n_chunks = len(results), len(tagged_chunks)
     try:
-        template = tagged_chunks[0] if tagged_chunks else {"document_id": document_id}
-        paper_text = " ".join(str(c.get("text", "")) for c in tagged_chunks if c.get("section") != "figure")
-        fig_results, fig_chunks = figure_results(document_id, template, len(tagged_chunks), log, paper_text)
-    except Exception as e:
+        results.extend(ExtractionResult(relations=[]) for _ in range(len(tagged_chunks) - len(results)))
+        results.extend(fig_results)
+        tagged_chunks.extend(fig_chunks)
+        if save_path:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_text(json.dumps(fig_chunks, default=str), encoding="utf-8")
+    except Exception as e:                              # figures are optional: keep the text results as they were
+        del results[n_results:], tagged_chunks[n_chunks:]
         log(f"Figure relations skipped: {e}")
         return 0
-    results.extend(fig_results)
-    tagged_chunks.extend(fig_chunks)
-    if save_path:
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        save_path.write_text(json.dumps(fig_chunks, default=str), encoding="utf-8")
     return sum(len(r.relations) for r in fig_results)

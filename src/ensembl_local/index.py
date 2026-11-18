@@ -24,13 +24,23 @@ SPECIES = [s.strip() for s in os.getenv(
 _ATTR = re.compile(r'(\w+) "([^"]*)"')
 _lock = threading.Lock()
 _conn = None
+_ino = None
 
 
 def _db():
-    global _conn
-    if _conn is None and os.path.exists(_DB):
-        _conn = sqlite3.connect(_DB, check_same_thread=False)
-    return _conn
+    """Connection to the index; reopened when another process has rebuilt it (a new file)."""
+    global _conn, _ino
+    with _lock:
+        try:
+            ino = os.stat(_DB).st_ino
+        except OSError:
+            ino = None
+        if _conn is not None and ino != _ino:
+            _conn.close()
+            _conn = None
+        if _conn is None and ino is not None:
+            _conn, _ino = sqlite3.connect(_DB, check_same_thread=False), ino
+        return _conn
 
 
 def available() -> bool:
@@ -94,9 +104,10 @@ def build(species: list = None, log=print) -> dict:
     for sp in species:
         try:
             url = _gtf_url(release, sp)
-        except (ValueError, requests.RequestException) as e:
-            log(f"  {sp}: skipped — no gene file found ({e})")
-            continue
+        except (ValueError, requests.RequestException) as e:   # keep the current index until all are rebuilt
+            conn.close()
+            os.remove(tmp)
+            raise RuntimeError(f"{sp}: no gene file found ({e}); index not replaced") from e
         t = time.time()
         rows = []
         gz_path = os.path.join(os.path.dirname(_DB), url.rsplit("/", 1)[1])

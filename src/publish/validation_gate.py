@@ -36,6 +36,10 @@ def route(records: list) -> tuple:
     for r in records:
         verdict     = r.get("validation_verdict", "SKIPPED")
         contra      = r.get("is_contradiction",   False)
+        if verdict == "VALID" and not contra:                # local ID for an unresolved name
+            r = {**r, **{f"{s}_id": r[f"{s}_local_id"] for s in ("subject", "object")
+                         if r.get(f"{s}_local_id") and (_is_text_label(r.get(f"{s}_id"))
+                                                        or _is_hard_unresolved(r.get(f"{s}_id")))}}
         subject_id  = r.get("subject_id", "")
         object_id   = r.get("object_id",  "")
         subject_type = r.get("subject_type", "")
@@ -120,7 +124,9 @@ def split_discards(human_review: list) -> tuple:
         if r.get("is_contradiction"):          # conflicting findings are always shown to a human
             keep.append(r)
             continue
-        reasons = []
+        rel = getattr(r.get("relation"), "value", r.get("relation"))
+        current = not r.get("invalid_for") or list(r["invalid_for"]) == [rel, r.get("object_type")]
+        reasons = [r["invalid_reason"]] if r.get("invalid_reason") and current else []
         if r.get("subject_id") and r.get("subject_id") == r.get("object_id"):
             reasons.append("subject and object are the same entity")
         if r.get("validation_verdict") == "REJECT":

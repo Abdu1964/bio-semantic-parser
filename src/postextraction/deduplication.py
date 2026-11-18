@@ -3,6 +3,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from src.postextraction import staging
 
 
 # Legacy / staging path (used by Layer 7 during paper processing)
@@ -24,7 +25,7 @@ def db_path_for_format(fmt: str) -> Path:
 
 def _get_conn() -> sqlite3.Connection:
     import os as _os
-    path = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
+    path = Path(staging.path(str(_DB_PATH)))
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -75,7 +76,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 "subject_synonyms", "object_synonyms",
                 "subject_id_source", "object_id_source",
                 "subject_evidence", "object_evidence",
-                "provenance"):                      # JSON: e.g. the figure a fact was read from
+                "provenance",                       # JSON: e.g. the figure a fact was read from
+                "source", "evidence"):              # study or cited; measured or predicted
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE triples ADD COLUMN {col} TEXT")
     # subject/object_needs_review: persisted so re-exports don't lose the resolver's uncertainty flag.
@@ -111,7 +113,7 @@ def deduplicate(record: dict) -> dict:
     # Fix: for PDF papers, always use the SHA256 hash as the canonical source ID.
     # The hash is recoverable from the staging DB filename (set in TRIPLE_STORE_PATH).
     import os as _os, re as _re
-    _staging = _os.getenv("TRIPLE_STORE_PATH", "")
+    _staging = staging.path()
     if _staging:
         _m = _re.search(r'([0-9a-f]{64})', Path(_staging).name)
         if _m:
@@ -163,10 +165,10 @@ def deduplicate(record: dict) -> dict:
              relation,
              object_id, object_name, object_canonical_name, object_source_url, object_synonyms, object_id_source, object_evidence, object_needs_review, object_type,
              negated, confidence, source_papers,
-             species, tissue, condition, effect_size, reasoning,
+             species, tissue, condition, effect_size, reasoning, source, evidence,
              is_contradiction, flagged_for_review, review_reason,
              created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         subject_id, record.get("subject_name",""), record.get("subject_canonical_name",""),
         record.get("subject_source_url",""), record.get("subject_synonyms",""), record.get("subject_id_source",""),
@@ -182,7 +184,7 @@ def deduplicate(record: dict) -> dict:
         negated, confidence, json.dumps([doc_id]),
         record.get("species",""), record.get("tissue",""),
         record.get("condition",""), record.get("effect_size",""),
-        record.get("reasoning",""),
+        record.get("reasoning",""), record.get("source") or "study", record.get("evidence") or "measured",
         1 if record.get("is_contradiction") else 0,
         1 if record.get("flagged_for_review") else 0,
         record.get("review_reason",""),
@@ -210,7 +212,7 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
     Returns {"new": int, "updated": int, "total": int}.
     """
     import os as _os
-    main_path = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
+    main_path = Path(staging.path(str(_DB_PATH)))
     staging = Path(staging_path)
     if not staging.exists() or staging.resolve() == main_path.resolve():
         return {"new": 0, "updated": 0, "total": 0}
@@ -296,7 +298,7 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
         updated    += (len(rows) - fmt_committed)
 
     import os as _os
-    legacy = Path(_os.getenv("TRIPLE_STORE_PATH", str(_DB_PATH)))
+    legacy = Path(staging.path(str(_DB_PATH)))
     if legacy != _DB_NEO4J and legacy != _DB_METTA and str(legacy) != str(staging):
         legacy.parent.mkdir(parents=True, exist_ok=True)
         lc = sqlite3.connect(str(legacy))
@@ -362,7 +364,7 @@ def count_triples_for_paper(doc_id: str) -> int:
 _SYNC_FIELDS = ("subject_id", "subject_name", "subject_type", "relation", "object_id", "object_name",
                 "object_type", "species", "subject_canonical_name", "subject_source_url", "subject_synonyms",
                 "subject_id_source", "object_canonical_name", "object_source_url", "object_synonyms",
-                "object_id_source")
+                "object_id_source", "source", "evidence")
 
 
 def _plain(v):

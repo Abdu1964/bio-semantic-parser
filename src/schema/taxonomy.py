@@ -419,6 +419,25 @@ class SectionLabel(str, Enum):
 # Sources: https://biolink.github.io/biolink-model/ · https://github.com/hetio/hetionet/blob/main/describe/definitions.json
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Target kinds used as relation ranges (what a relation's object may be), as in Biolink domain/range
+_MOLECULES = [EntityType.GENE, EntityType.PROTEIN, EntityType.TRANSCRIPT, EntityType.EXON, EntityType.NON_CODING_RNA,
+              EntityType.MICRO_RNA, EntityType.SI_RNA, EntityType.MACROMOLECULAR_COMPLEX, EntityType.SMALL_MOLECULE]
+_GENOMIC_REGIONS = [EntityType.REGULATORY_REGION, EntityType.ENHANCER, EntityType.SUPER_ENHANCER, EntityType.PROMOTER,
+                    EntityType.TRANSCRIPTION_FACTOR_BINDING_SITE, EntityType.MOTIF, EntityType.EPIGENOMIC_FEATURE,
+                    EntityType.GENOMIC_VARIANT, EntityType.SEQUENCE_VARIANT, EntityType.STRUCTURAL_VARIANT,
+                    EntityType.CHROMOSOME, EntityType.TAD]
+_PROCESSES = [EntityType.PATHWAY, EntityType.BIOLOGICAL_PROCESS, EntityType.MOLECULAR_FUNCTION, EntityType.REACTION,
+              EntityType.PHYSIOLOGICAL_PROCESS, EntityType.PATHOLOGICAL_PROCESS, EntityType.CELLULAR_COMPONENT]
+_PROCESSES_AND_OUTCOMES = [EntityType.DISEASE, EntityType.CANCER, EntityType.PHENOTYPE, EntityType.SYMPTOM,
+                           EntityType.PATHWAY, EntityType.BIOLOGICAL_PROCESS, EntityType.REACTION,
+                           EntityType.MOLECULAR_FUNCTION, EntityType.PHYSIOLOGICAL_PROCESS,
+                           EntityType.PATHOLOGICAL_PROCESS, EntityType.CLINICAL_FINDING, EntityType.DISEASE_OUTCOME,
+                           EntityType.MORTALITY_OUTCOME, EntityType.BEHAVIORAL_OUTCOME,
+                           EntityType.EPIDEMIOLOGICAL_OUTCOME]
+# Biolink DiseaseOrPhenotypicFeature: the range of ameliorates_condition / exacerbates_condition
+_CONDITIONS = [EntityType.DISEASE, EntityType.CANCER, EntityType.PHENOTYPE, EntityType.SYMPTOM,
+               EntityType.CLINICAL_FINDING]
+
 TAXONOMY: Dict[RelationType, dict] = {
 
     # ── Category 1: Expression ────────────────────────────────────────────────
@@ -452,14 +471,16 @@ TAXONOMY: Dict[RelationType, dict] = {
         "not_this": "Use DOWNREGULATES if the effect is on mRNA or protein abundance. Use PREVENTS if A stops a process or event from occurring.",
     },
     RelationType.UPREGULATES: {
-        "definition": "A increases the expression level of B — specifically mRNA abundance or protein abundance as measured by sequencing, qPCR, or proteomics.",
+        "definition": "A increases the expression level of B — specifically mRNA abundance or protein abundance as measured by sequencing, qPCR, or proteomics. B must be a gene, transcript or protein; A may be a molecule, treatment, condition or disease state compared with its control.",
         "example": "Fasting upregulates SIRT1 mRNA expression 2.5-fold in mouse liver.",
         "not_this": "Use ACTIVATES if the effect is on protein activity rather than abundance. Use TRANSCRIBES_TO if the transcription event itself is described.",
+        "range": _MOLECULES,
     },
     RelationType.DOWNREGULATES: {
-        "definition": "A decreases the expression level of B — specifically mRNA or protein abundance as measured by molecular assays (sequencing, qPCR, proteomics). Strictly molecular: subject and object must be genes, proteins, or molecular entities.",
+        "definition": "A decreases the expression level of B — specifically mRNA or protein abundance as measured by molecular assays (sequencing, qPCR, proteomics). B must be a gene, transcript or protein; A may be a molecule, treatment, condition or disease state compared with its control.",
         "example": "Ageing downregulates FOXO3 protein levels in human skeletal muscle.",
         "not_this": "Use INHIBITS if the effect is on protein activity rather than abundance. Use PREVENTS if A blocks a process. Use REGULATES if the subject is a dietary factor, clinical intervention, or physiological condition affecting a non-molecular outcome (e.g. sodium intake and blood pressure — use REGULATES, not DOWNREGULATES).",
+        "range": _MOLECULES,
     },
     RelationType.REGULATES: {
         "definition": "A modulates B without a specified direction, or controls B in a context-dependent bidirectional manner. Applies at any level: molecular (gene/protein), physiological (e.g. dietary sodium regulates blood pressure), or clinical (e.g. treatment regulates glucose levels).",
@@ -553,6 +574,7 @@ TAXONOMY: Dict[RelationType, dict] = {
     # ── Category 4: Molecular Interactions ───────────────────────────────────
 
     RelationType.BINDS_TO: {
+        "range": _MOLECULES + _GENOMIC_REGIONS,
         "definition": "A forms a direct, demonstrated physical molecular bond with B — receptor-ligand, protein-protein domain contact, or protein-DNA binding confirmed by biochemical assay.",
         "example": "Rapamycin binds to FKBP12, forming a ternary complex that allosterically inhibits mTOR.",
         "not_this": "Use INTERACTS_WITH for functional interactions where direct binding is not demonstrated. Use IS_TARGET_OF for validated pharmacological target relationships.",
@@ -609,6 +631,7 @@ TAXONOMY: Dict[RelationType, dict] = {
         "not_this": "Use UBIQUITINATES if the tagging mechanism is the finding. Use CLEAVES if A produces specific defined fragments from B.",
     },
     RelationType.PARTICIPATES_IN: {
+        "range": _PROCESSES,
         "definition": "Gene, protein, or compound A is a functional member of pathway or biological process B, contributing to its execution.",
         "example": "FOXO3 participates in the insulin/IGF-1 signalling pathway as a transcription factor target.",
         "not_this": "Use REGULATES if A controls the pathway rather than being a member. Use PART_OF if A is a structural physical component rather than a functional participant.",
@@ -635,11 +658,13 @@ TAXONOMY: Dict[RelationType, dict] = {
         "definition": "A facilitates, accelerates, or increases the likelihood of process or outcome B without being a direct sufficient cause.",
         "example": "Caloric restriction promotes autophagy in liver, muscle, and brain tissue of aged rodents.",
         "not_this": "Use CAUSES if A is the direct and sufficient experimental cause. Use ACTIVATES if A directly increases activity of a specific protein.",
+        "range": _PROCESSES_AND_OUTCOMES,
     },
     RelationType.PREVENTS: {
         "definition": "A blocks, suppresses, or reduces the occurrence or onset of process, disease, or outcome B.",
         "example": "Regular aerobic exercise prevents age-related muscle atrophy in elderly human subjects.",
         "not_this": "Use INHIBITS if A directly blocks a specific molecular activity. Use TREATS if A is a therapeutic for an already established disease.",
+        "range": _PROCESSES_AND_OUTCOMES,
     },
 
     # ── Category 8: Clinical / Therapeutic ───────────────────────────────────
@@ -795,6 +820,7 @@ TAXONOMY: Dict[RelationType, dict] = {
     },
 
     RelationType.OPEN_CHROMATIN_AT: {
+        "range": _GENOMIC_REGIONS + [EntityType.GENE, EntityType.PROTEIN],          # TF motifs go by their TF
         "definition": "A cell type, condition, or genomic element is characterised by open/accessible chromatin at a specific genomic region (ATAC-seq or DNase-seq accessibility).",
         "example": "T-helper cells show open_chromatin_at the IL2 promoter region upon activation.",
         "not_this": "Use EPIGENOMIC_FEATURE as an entity type for the chromatin feature itself. Use REGULATES_EXPRESSION_OF if the finding is about gene expression control, not chromatin accessibility. This type is for accessibility evidence specifically.",
@@ -938,12 +964,14 @@ TAXONOMY: Dict[RelationType, dict] = {
         "definition": "Gene, treatment, or intervention A ameliorates (mitigates or reduces severity of) disease or condition B without necessarily curing it — weaker than TREATS.",
         "example": "Metformin ameliorates insulin resistance in type 2 diabetes.",
         "not_this": "Use TREATS if the intervention provides established therapeutic benefit or cure. Use PREVENTS if A stops B from occurring. AMELIORATES implies partial improvement in existing condition.",
+        "range": _CONDITIONS,
     },
 
     RelationType.EXACERBATES: {
         "definition": "Gene, compound, or condition A exacerbates (worsens or accelerates) disease or condition B.",
         "example": "High dietary fat intake exacerbates non-alcoholic fatty liver disease.",
         "not_this": "Use CAUSES if A is the initial cause of B. Use PROMOTES for broader positive regulatory effects. EXACERBATES specifically means A makes an already-existing condition B worse.",
+        "range": _CONDITIONS,
     },
 
     RelationType.IN_TAXON: {
@@ -985,6 +1013,7 @@ TAXONOMY: Dict[RelationType, dict] = {
         "not_this": "Use RESEMBLES if the finding is phenotypic similarity without formal use as a research model. Use CAUSES/HAS_PHENOTYPE if describing what the model itself causes or exhibits, not its status as a model.",
     },
     RelationType.IMPLICATED_IN: {
+        "range": _PROCESSES_AND_OUTCOMES,
         "definition": "Gene, variant, or molecule A is suspected or shown to play a mechanistic role in disease or condition B, based on evidence such as genetic association, expression change, or pathway involvement — weaker than an established causal claim.",
         "example": "Mutations in GBA are implicated in the pathogenesis of Parkinson's disease.",
         "not_this": "Use CAUSES if causality is experimentally or epidemiologically established. Use ASSOCIATES_WITH for a purely statistical co-occurrence with no suggested mechanism. Use PREDISPOSES if A is framed as a risk factor rather than a mechanistic contributor.",
@@ -1589,8 +1618,8 @@ CROSS_SCHEMA_MAP: Dict[RelationType, dict] = {
     RelationType.GENETICALLY_INTERACTS_WITH:      {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:genetically_interacts_with"},
     RelationType.PHARMACOLOGICALLY_INTERACTS_WITH:{"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:pharmacologically_interacts_with"},
     RelationType.PRECEDES:                        {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:precedes (RO:0002566)"},
-    RelationType.AMELIORATES:                     {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:ameliorates_condition"},
-    RelationType.EXACERBATES:                     {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:exacerbates_condition"},
+    RelationType.AMELIORATES:                     {"bionlp": "Negative_regulation", "hetionet": None, "openbiolink": None, "biolink": "biolink:ameliorates_condition"},
+    RelationType.EXACERBATES:                     {"bionlp": "Positive_regulation", "hetionet": None, "openbiolink": None, "biolink": "biolink:exacerbates_condition"},
     RelationType.IN_TAXON:                        {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:in_taxon (RO:0002162)"},
     # Category 23: Clinical outcome / risk (Biolink v4)
     RelationType.PREDISPOSES:                     {"bionlp": None, "hetionet": None, "openbiolink": None, "biolink": "biolink:predisposes (RO:0003302)"},

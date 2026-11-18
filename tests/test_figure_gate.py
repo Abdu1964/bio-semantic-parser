@@ -62,3 +62,20 @@ def test_same_name_other_species_is_not_a_contradiction():
     fig = _figure_fact("upregulates", obj_id="ENSEMBL:ENSG00000108688", species="Homo sapiens", object_name="CCL7")
     auto, review = route([text, fig])
     assert not review
+
+
+def test_figure_evidence_includes_the_papers_sentences():
+    from types import SimpleNamespace
+    from src.figures.vision.relations import _chunk
+    rel = SimpleNamespace(subject_name="Schizophrenia", object_name="Microglia", reasoning="dot plot",
+                          relation=SimpleNamespace(value="associates_with"))
+    sentences = ["Schizophrenia was not enriched in microglia.", "Microglia expressed SPI1."]
+    chunk = _chunk({"fig_id": "f1", "label": "Figure 7", "path": "x.png"}, {"summary": "", "kind": "chart"},
+                   [rel], {"document_id": "d"}, 0, sentences)
+    assert "Schizophrenia was not enriched in microglia." in chunk["text"]
+    assert "Microglia expressed SPI1." not in chunk["text"]
+
+
+def test_vision_rules_forbid_pairing_by_position():
+    from src.figures.vision.reader import _RULES
+    assert "never related by their position" in _RULES and "never a relation" in _RULES

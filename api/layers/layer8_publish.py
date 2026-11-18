@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 from api.pipeline_utils import _emit, _log, _pre, _post, _ckpt, _rtext, _count_run_edges
+from src.postextraction import staging
 
 
 def run_layer8(emit, doc_id, _safe_id, processed, tagged_chunks, staging_db,
@@ -36,7 +37,7 @@ def run_layer8(emit, doc_id, _safe_id, processed, tagged_chunks, staging_db,
         pub     = pub_process(processed, verbose=False, text_by_doc=text_by_doc,
                               formats=output_format, paper_name=title, doc_id=doc_id,
                               species=species, entity_id=source_entity)
-        os.environ.pop("TRIPLE_STORE_PATH", None)
+        staging.use("")
         run_dir = Path(pub.get("run_dir", ""))
 
         # Tag source entity (e.g. FBgn0000022) on run metadata if provided
@@ -290,5 +291,5 @@ def run_layer8(emit, doc_id, _safe_id, processed, tagged_chunks, staging_db,
             "source_entity":   source_entity,
         })
     except Exception as e:
-        os.environ.pop("TRIPLE_STORE_PATH", None)
+        staging.use("")
         _emit(emit, 8, "error", str(e))

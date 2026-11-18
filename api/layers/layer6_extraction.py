@@ -54,6 +54,13 @@ def run_layer6(emit, doc_id, _safe_id, tagged_chunks, _completed_layers):
         total      = len(tagged_chunks)
         workers    = int(os.getenv("LLM_CHUNK_CONCURRENCY", "4"))
         _emit(emit, 6, "running", "Extracting biological relations with LLM…")
+        _l6_figures_path.unlink(missing_ok=True)            # never pair new results with old figure chunks
+        try:                                                # figures are read while the text is extracted
+            from src.figures.vision import start_figure_relations
+            _finish_figures = start_figure_relations(doc_id, tagged_chunks, log=lambda m: _log(emit, 6, m))
+        except Exception as e:
+            _finish_figures = lambda results, save_path=None: 0
+            _log(emit, 6, f"Figure relations skipped: {e}")
         _log(emit, 6, f"Processing {total} chunks with LLM — up to {min(workers, total)} in parallel…")
 
         _buf        = [None] * total
@@ -74,7 +81,7 @@ def run_layer6(emit, doc_id, _safe_id, tagged_chunks, _completed_layers):
                     _log(emit, 6, f"  Chunk {i+1} [{chunk.get('section', '?')}]: REJECTED after 3 retries")
                 elif viable_rels:
                     for rel in viable_rels:
-                        _log(emit, 6, f"  Chunk {i+1} [{chunk.get('section', '?')}]: {rel.subject_name} →{rel.relation}→ {rel.object_name} (conf: {rel.confidence:.2f})")
+                        _log(emit, 6, f"  Chunk {i+1} [{chunk.get('section', '?')}]: {rel.subject_name} →{getattr(rel.relation, 'value', rel.relation)}→ {rel.object_name} (conf: {rel.confidence:.2f})")
                 else:
                     _log(emit, 6, f"  Chunk {i+1} [{chunk.get('section', '?')}]: no viable relation")
             return i, batch
@@ -107,14 +114,7 @@ def run_layer6(emit, doc_id, _safe_id, tagged_chunks, _completed_layers):
             if b:
                 results.extend(b)
 
-        _l6_figures_path.unlink(missing_ok=True)            # never pair new results with old figure chunks
-        try:                                                # Phase 3: relations read from figures
-            from src.figures.vision import add_figure_relations
-            n_figure = add_figure_relations(doc_id, tagged_chunks, results, _l6_figures_path,
-                                            log=lambda m: _log(emit, 6, m))
-        except Exception as e:
-            n_figure = 0
-            _log(emit, 6, f"Figure relations skipped: {e}")
+        n_figure = _finish_figures(results, _l6_figures_path)
 
         viable   = sum(1 for r in results for rel in r.relations if rel.extraction_viable)
         rejected = sum(1 for r in results if r.rejected)
@@ -124,7 +124,7 @@ def run_layer6(emit, doc_id, _safe_id, tagged_chunks, _completed_layers):
         })
         _post(emit, 6, [
             f"{viable} relation(s) extracted from {total} chunk(s)"
-            + (f" — {n_figure} of them read from figures (sent to human review)" if n_figure else ""),
+            + (f" — {n_figure} of them read from figures" if n_figure else ""),
             f"LLM: {model} — local, no data leaves, no API cost",
             "Every relation has a mandatory reasoning trace explaining why that type was chosen",
             f"{rejected} chunk(s) rejected after 3 Pydantic retries → human review queue",

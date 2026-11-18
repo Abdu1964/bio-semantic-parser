@@ -18,6 +18,7 @@ function stopPipeline() {
     fetch('/api/stop', { method: 'POST', body: fd }).catch(() => {});
   }
   _activeRunId = null;
+  runTimerStop('stopped');
   setStatus('done', 'Stopped by user');
   setBtn(false);
   _disableStop();
@@ -60,6 +61,7 @@ function _disableStop() {
 async function startTest() {
   resetUI();
   _startTime = Date.now(); _totalChunks = 6;
+  runTimerStart();
   setBtn(true);
   _enableStop();
   const tb = document.getElementById('test-btn');
@@ -115,6 +117,7 @@ async function startRun() {
   if (banner) banner.remove();
   resetUI();
   _startTime = Date.now(); _totalChunks = 0;
+  runTimerStart();
   setBtn(true);
   setStatus('running','Running…');
   // Immediately show "Starting…" in simple view before first layer event arrives
