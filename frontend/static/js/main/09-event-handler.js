@@ -12,6 +12,7 @@ function _handle(ev) {
     const _se = _simpleEls();
     if (status === 'complete' || status === 'fatal') {
       _pipelineComplete = true;  // stop reconnect attempts
+      runTimerStop(status === 'complete' ? 'done' : 'failed');
     }
     if (status === 'complete') {
       setStatus('done','Complete ✓'); exitFullscreen();

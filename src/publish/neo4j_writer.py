@@ -166,8 +166,8 @@ def write(records: list, run_dir: Path = None) -> dict:
                         "tissue":              r.get("tissue",       ""),
                         "condition":           r.get("condition",    ""),
                         "effect_size":         r.get("effect_size",  ""),
-                        "evidence_source":     r.get("source",       "study"),   # this study or cited work
-                        "evidence_kind":       r.get("evidence",     "measured"),
+                        "evidence_source":     r.get("source") or "study",   # this study or cited work
+                        "evidence_kind":       r.get("evidence") or "measured",
                         "source_paper":        (r.get("document_id", "") or
                                                (json.loads(r.get("source_papers", "[]") or "[]") or [""])[0]),
                         "section":             r.get("section",      ""),

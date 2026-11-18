@@ -39,9 +39,13 @@ _SLOW_HOSTS = {"rest.ensembl.org": int(os.getenv("ENSEMBL_READ_TIMEOUT", "50"))}
 
 
 def _http_request(send, url, *args, **kwargs):
+    from src import local_sources
     from src.api_cache import lookup, remember
     method = "POST" if send is requests.post else "GET"
-    stored = lookup(method, url, **kwargs)          # the local copy first; online only the first time
+    copy = local_sources.answer(method, url, **kwargs)  # a full local copy of the source answers first
+    if copy is not None:
+        return copy
+    stored = lookup(method, url, **kwargs)          # then a stored answer; online only the first time
     if stored is not None:
         return stored
     resp = _http_request_online(send, url, *args, **kwargs)
@@ -1139,6 +1143,10 @@ def _ensembl_local_gene(candidates: list, species: str) -> Optional[tuple]:
         hits = ensembl_local.symbol(form, slug)
         if len(hits) == 1:                         # one gene with this symbol; several = ambiguous → REST
             return (f"ENSEMBL:{hits[0][0]}", hits[0][1], "")
+    for form in dict.fromkeys(forms):              # an alias ('TNF-alpha'): NCBI Gene's synonyms, Ensembl link
+        hit = _ncbi_gene_local(form, slug.replace("_", " "))
+        if hit and hit["canonical_id"].startswith("ENSEMBL:") and ensembl_local.gene(hit["canonical_id"][8:]):
+            return (hit["canonical_id"], hit["canonical_name"], "")
     return None
 
 
@@ -1205,8 +1213,10 @@ def _hgnc_gene(symbol: str, timeout=_TIMEOUT) -> Optional[tuple]:
         except Exception as e:
             logger.warning("HGNC lookup failed for %r: %s", symbol, e)
             return None
-        if len(docs) == 1 and docs[0].get("ensembl_gene_id"):      # an alias shared by genes is ambiguous
-            return (f"ENSEMBL:{docs[0]['ensembl_gene_id']}", docs[0].get("symbol") or symbol, "")
+        if docs:                                                    # the first field that knows the symbol decides
+            if len(docs) == 1 and docs[0].get("ensembl_gene_id"):  # several genes: ambiguous, no ID
+                return (f"ENSEMBL:{docs[0]['ensembl_gene_id']}", docs[0].get("symbol") or symbol, "")
+            return None
     return None
 
 
@@ -1475,6 +1485,11 @@ _ABBREV_BINOMIAL_RE = re.compile(r"^([A-Z])\.\s*([a-z][a-z-]+)$")
 
 def _ncbi_taxon_candidates(term: str, retmax: int = 5, timeout: int = _TIMEOUT) -> list:
     """NCBI Taxonomy eSearch + eSummary → [(taxid, scientific_name, common_name, rank)]."""
+    if "[" not in term:                                   # plain names: the local copy knows every exact name
+        from src.local_sources import ontology
+        local = ontology.taxon_candidates(term, retmax)
+        if local:
+            return local
     try:
         r = _http_get(f"{_NCBI_BASE}/esearch.fcgi",
                          params={"db": "taxonomy", "term": term, "retmax": retmax, "retmode": "json"},
@@ -1838,8 +1853,35 @@ def _expand_abbreviated_binomial(text: str) -> Optional[str]:
     return None
 
 
+def _taxid(species: str) -> str:
+    """NCBI Taxonomy ID of an organism name, from the local copy or the common-organism table ('' if unknown)."""
+    from src.local_sources import ontology
+    hits = ontology.taxon_candidates(species or "Homo sapiens") or []
+    return hits[0][0] if hits else (_local_taxon(species or "Homo sapiens") or "")
+
+
+def _ncbi_gene_local(text: str, species: str) -> Optional[dict]:
+    """NCBI Gene from its local copy: the gene whose symbol, else synonym, is the text in this organism."""
+    from src.local_sources import ncbi_gene
+    tax = _taxid(species)
+    if not (ncbi_gene.available() and ncbi_gene.has_taxon(tax)):
+        return None
+    hit = ncbi_gene.find(text, tax)
+    if not hit:
+        return None
+    risk = text.strip().lower() not in {hit["symbol"].lower()} | {s.strip().lower() for s in hit["synonyms"].split("; ")}
+    if hit["ensembl"]:
+        return {"canonical_id": f"ENSEMBL:{hit['ensembl']}", "canonical_name": hit["symbol"], "id_source": "ensembl",
+                "ontology_prefix": "", "needs_review": risk, "synonyms": hit["synonyms"]}
+    return {"canonical_id": f"NCBI_GENE:{hit['gene_id']}", "canonical_name": hit["symbol"], "id_source": "ncbi_gene",
+            "ontology_prefix": "", "needs_review": risk, "synonyms": hit["synonyms"]}
+
+
 def _ncbi_gene(text: str, species: str = "") -> Optional[dict]:
     """NCBI Gene lookup in the stated species (any organism); Ensembl ID when NCBI links one."""
+    local = _ncbi_gene_local(text, species)
+    if local:
+        return local
     gid = _ncbi_search(text, "gene", "NCBI_GENE:", f"{species or 'Homo sapiens'}[Organism]",
                        fields=("sym", "Gene Name"))
     if not gid:
@@ -1862,7 +1904,7 @@ def _concept_key(text: str, entity_type: str, species: str = "") -> Optional[tup
         return None
     family = _TYPE_FAMILY.get(entity_type, "concept")
     # Rat IL6 and human IL6 are different genes: molecular concepts are remembered per species
-    return (family, key, _genus(species)) if family in _MOLECULAR and species else (family, key)
+    return (family, key, normalize_species(species).lower()) if family in _MOLECULAR and species else (family, key)
 
 
 # Organism encoded in gene/protein IDs → genus.
@@ -1892,11 +1934,15 @@ def _kind_conflict(entity_type: str, cid: str) -> bool:
     return group(t) != group(p)
 
 
+def _id_genus(cid: str) -> str:
+    """Genus a gene/protein ID belongs to, when the ID encodes it."""
+    return next((g for prefix, g in _ID_GENUS if (cid or "").startswith(prefix)), "")
+
+
 def _organism_conflict(cid: str, species: str) -> bool:
     """An ID made for another organism than the one the relation names: a gene/protein ID system tied to
     one organism, or an anatomy ontology whose organism scope does not contain this organism."""
-    genus = _genus(species)
-    id_genus = next((g for prefix, g in _ID_GENUS if (cid or "").startswith(prefix)), "")
+    genus, id_genus = _genus(species), _id_genus(cid)
     if genus and id_genus:
         return genus != id_genus
     return _outside_ontology_scope(cid, species)
@@ -2701,16 +2747,27 @@ def merge_synonym_concepts(records: list) -> list:
 
 
 def _symbol_key(name: str) -> str:
-    """Comparable form of a gene/protein symbol ('IL-6', 'IL6 mRNA' → 'il6'; 'IL-1β' → 'il1b'); '' if not symbol-shaped."""
-    import unicodedata
+    """Comparable form of a gene/protein symbol ('IL-6', 'IL6 mRNA', 'Il6' → 'il6'; 'IL-1β' → 'il1b'); '' if not
+    symbol-shaped. Rodent symbols are capitalised ('Tnf', 'Rara': MGI/RGD nomenclature)."""
     base = (_strip_gene_suffix(name or "") or name or "").strip()
     last = base.split()[-1] if base else ""
     if " " in base and len(last) >= 3 and sum(c.isupper() for c in last) >= 2:
         base = last                                   # 'liver X receptors NR1H2' names NR1H2
-    if not base or " " in base or not _symbol_like(base):
+    if not base or " " in base or not (_symbol_like(base) or re.fullmatch(r"[A-Z][a-z0-9]+", base)):
         return ""
-    latin = "".join(unicodedata.name(c, "X").split()[-1][0] if ord(c) > 127 and c.isalpha() else c for c in base)
-    return re.sub(r"[^a-z0-9]", "", latin.lower())
+    return re.sub(r"[^a-z0-9]", "", "".join(_greek(c)[:1] or c for c in base).lower())
+
+
+def _greek(c: str) -> str:
+    """Name of a Greek letter ('β' → 'beta'); '' for other characters."""
+    import unicodedata
+    name = unicodedata.name(c, "") if ord(c) > 127 else ""
+    return name.split()[-1].lower() if name.startswith("GREEK") else ""
+
+
+def _greek_letters(name: str) -> tuple:
+    """The Greek letters a name is written with: 'PKCε' and 'PKCη' share a key but are different proteins."""
+    return tuple(g for g in map(_greek, name or "") if g)
 
 
 # Gene and protein ID systems, most preferred first (gene IDs must be Ensembl)
@@ -2725,35 +2782,44 @@ def merge_same_molecule(records: list) -> list:
     unplaced = []
     for r in records:
         named = normalize_species(r.get("species") or "")
-        known = "," not in named and (_local_taxon(named) or named.split(" ")[0] in _doc().genera)
-        genus = _genus(named) if known else ""                     # one recognised organism, else unplaced
+        known = "," not in named and " " in named and (_local_taxon(named) or named.split(" ")[0] in _doc().genera)
+        organism = named.lower() if known else ""                  # one recognised species, else unplaced
         for side in ("subject", "object"):
             cid = r.get(f"{side}_id", "")
             fam = _PREFIX_FAMILY.get(_ontology_prefix_of(cid)) or _TYPE_FAMILY.get(r.get(f"{side}_type"))
-            key = _symbol_key(r.get(f"{side}_name", ""))
-            if key and _resolved(cid) and fam in ("gene", "protein"):
-                (groups[(key, genus)] if genus else unplaced).append((key, r, side))
-    for key, r, side in unplaced:                      # no organism stated: join the symbol's only organism, if one
-        known = [g for (k, g) in groups if k == key and g]
+            name = r.get(f"{side}_name", "")
+            key = (_symbol_key(name), _greek_letters(name))
+            if key[0] and _resolved(cid) and fam in ("gene", "protein"):
+                (groups[(key, organism)] if organism else unplaced).append((key, r, side))
+    for key, r, side in unplaced:                      # no species stated: join the symbol's only species, if one
+        known = [o for (k, o) in groups if k == key and o]
         groups[(key, known[0] if len(known) == 1 else "")].append((key, r, side))
     groups = {k: [(r, side) for _, r, side in v] for k, v in groups.items()}
-    fields = ("id", "canonical_name", "id_source", "source_url", "synonyms")
+    for (key, organism), members in list(groups.items()):     # 'IL1B' joins 'IL-1β' only if no other letter is used
+        if not key[1] and sum(1 for (k, o) in groups if k[0] == key[0] and k[1] and o == organism) == 1:
+            other = next(k for k in groups if k[0][0] == key[0] and k[0][1] and k[1] == organism)
+            groups[other] += groups.pop((key, organism))
+    fields = ("id", "canonical_name", "id_source", "source_url", "synonyms", "needs_review")
     merged = 0
-    for (key, genus), members in groups.items():
-        ids = collections.Counter(r[f"{side}_id"] for r, side in members)
-        if len(ids) < 2:
+    for ((key, _), organism), members in groups.items():
+        ids = collections.Counter(r[f"{side}_id"] for r, side in members
+                                  if not r.get(f"{side}_needs_review"))      # uncertain IDs are never adopted
+        if not ids or len({r[f"{side}_id"] for r, side in members}) < 2:
             continue
-        rank = lambda c: (bool(genus) and _organism_conflict(c, genus),
+        rank = lambda c: (bool(organism) and _organism_conflict(c, organism),
                           next((i for i, p in enumerate(_MOLECULE_ID_ORDER) if c.startswith(p)), len(_MOLECULE_ID_ORDER)),
                           -ids[c])
         best = min(ids, key=rank)
         src = next((r, side) for r, side in members if r[f"{side}_id"] == best)
         values = {f: src[0].get(f"{src[1]}_{f}") for f in fields}
         for r, side in members:
+            own = _id_genus(r[f"{side}_id"])
+            if own and _id_genus(best) and own != _id_genus(best):
+                continue                                           # another organism's gene: not the same molecule
             for f, v in values.items():
                 r[f"{side}_{f}"] = v
         merged += 1
-        logger.info("One ID for %r (%s): %s from %s", key, genus or "any organism", best, sorted(ids))
+        logger.info("One ID for %r (%s): %s from %s", key, organism or "any organism", best, sorted(ids))
     if merged:
         logger.info("Merged %d molecule(s) named differently across the paper", merged)
     return records
@@ -2776,7 +2842,9 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
     out: list = [None] * len(records)
     done = [0]
     from src.api_cache import reset_stats
+    from src import local_sources
     reset_stats()
+    local_sources.reset_stats()
     _failed_requests.clear()
     named = collections.Counter(r.get("species") for r in records if r.get("species"))
     if named:
@@ -2833,8 +2901,9 @@ def normalize_records_parallel(records: list, chunk_for, workers: int = 8, progr
         still = sum(1 for i in retry if out[i].get("subject_network_degraded") or out[i].get("object_network_degraded"))
         say(f"{'✓' if not still else '⚠'} Retry {rnd}/{_NETWORK_RETRY_ROUNDS}: {len(retry) - still} resolved, {still} still failing")
     from src.api_cache import stats
-    st = stats()
-    if st["local"] or st["online"]:
-        say(f"Lookups: {st['local']:,} answered from the local store, {st['online']:,} online"
-            f" ({st['stored']:,} stored for next time)")
+    from src import local_sources
+    st, copies = stats(), local_sources.stats()["answered"]
+    if st["local"] or st["online"] or copies:
+        say(f"Lookups: {copies:,} answered from local copies, {st['local']:,} from stored answers, "
+            f"{st['online']:,} online ({st['stored']:,} stored for next time)")
     return merge_same_molecule(merge_synonym_concepts(out))

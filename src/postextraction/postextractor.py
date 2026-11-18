@@ -32,7 +32,7 @@ def _swap_sides(r: dict) -> None:
 
 def fit_relation_targets(records: list) -> tuple:
     """A target outside its relation's range (taxonomy): swap the sides if the subject fits, else take the
-    relation with the same direction whose range fits; with none, the fact is discarded. Returns (moved, discarded)."""
+    relation with the same direction whose range fits most narrowly; with none, the fact is discarded. Returns (moved, discarded)."""
     moved = discarded = 0
     for r in records:
         rel = r.get("relation")
@@ -45,13 +45,15 @@ def fit_relation_targets(records: list) -> tuple:
             _swap_sides(r)
             moved += 1
             continue
-        fit = next((x for x, rng in _RANGE.items()
-                    if obj_type in rng and _EVENT.get(x) and _EVENT.get(x) == _EVENT.get(rel_val)), None)
+        fit = min((x for x, rng in _RANGE.items()                # same direction; the narrowest range that fits
+                   if obj_type in rng and _EVENT.get(x) and _EVENT.get(x) == _EVENT.get(rel_val)),
+                  key=lambda x: len(_RANGE[x]), default=None)
         if fit:
             r["relation"] = fit
             moved += 1
         else:
             r["invalid_reason"] = f"'{rel_val}' does not take a {obj_type.lower()} as its target (taxonomy range)"
+            r["invalid_for"] = [rel_val, obj_type]          # a later correction of either clears it
             discarded += 1
     return moved, discarded
 

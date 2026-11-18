@@ -107,7 +107,8 @@ Return ONLY this JSON:
       "negated": false,
       "confidence": 0.0,
       "reasoning": "<min 50 chars — what in the figure shows this (arrow, link, highlighted cell, significant bar)>",
-      "species": "", "tissue": "", "condition": "", "effect_size": ""
+      "species": "", "tissue": "", "condition": "", "effect_size": "",
+      "evidence": "measured"
     }
   ]
 }"""
@@ -141,7 +142,9 @@ RULES:
    value describes the row's subject (its first column); two values from other columns of that row
    (e.g. a process and a motif) are not related to each other.
 13. A colour, cluster, box or legend group shows only that its items share the group — never a relation
-   between an item and the group."""
+   between an item and the group.
+14. evidence: predicted for activity an analysis infers (upstream regulator or pathway analysis,
+   z-scores, enrichment); measured for observed results."""
 
 
 def _compact(title: str, taxonomy: dict) -> str:
@@ -228,11 +231,14 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
     kind = kind if kind in KINDS else "other"
     # Names must exist in the figure, its caption or the paper. Only without Tesseract and paper text is nothing checkable.
     from src.figures.ocr import available
-    known = (tokens(ocr + " " + user) | (context or set())) if (available() or context) else None
+    checkable = available() or context or (caption or "").strip()          # OCR, paper text or a caption
+    known = (tokens(ocr + " " + user) | (context or set())) if checkable else None
     relations, invalid, ungrounded, not_entities = [], 0, 0, 0
     figure_species = _organism(str(data.get("species") or ""))
     if kind in ("diagram", "chart", "table"):
         for r in data.get("relations") or []:
+            if len(relations) >= _MAX_RELATIONS:                       # the per-figure cap, enforced
+                break
             if not isinstance(r, dict) or r.get("extraction_viable") is False:
                 continue
             panel = str(r.pop("panel", "") or "").strip()
@@ -255,7 +261,8 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
                 logger.info("Figure relation dropped (name not in figure or paper): %s -> %s",
                             rel.subject_name, rel.object_name)
                 continue
-            why = ("self-loop" if tokens(rel.subject_name) == tokens(rel.object_name)
+            same = lambda a, b: re.sub(r"\s+", "", a.lower()) == re.sub(r"\s+", "", b.lower())   # keeps CD4+ vs CD4-
+            why = ("self-loop" if same(rel.subject_name, rel.object_name)
                    else _not_an_entity(rel.subject_name) or _not_an_entity(rel.object_name))
             if why:
                 not_entities += 1
