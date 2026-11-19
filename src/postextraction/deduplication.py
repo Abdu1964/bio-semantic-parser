@@ -213,8 +213,8 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
     """
     import os as _os
     main_path = Path(staging.path(str(_DB_PATH)))
-    staging = Path(staging_path)
-    if not staging.exists() or staging.resolve() == main_path.resolve():
+    stg = Path(staging_path)
+    if not stg.exists() or stg.resolve() == main_path.resolve():
         return {"new": 0, "updated": 0, "total": 0}
 
     main_path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,7 +222,7 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
     main_conn.row_factory = sqlite3.Row
     _ensure_schema(main_conn)
 
-    stg_conn = sqlite3.connect(str(staging))
+    stg_conn = sqlite3.connect(str(stg))
     stg_conn.row_factory = sqlite3.Row
     _ensure_schema(stg_conn)
 
@@ -299,7 +299,7 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
 
     import os as _os
     legacy = Path(staging.path(str(_DB_PATH)))
-    if legacy != _DB_NEO4J and legacy != _DB_METTA and str(legacy) != str(staging):
+    if legacy != _DB_NEO4J and legacy != _DB_METTA and str(legacy) != str(stg):
         legacy.parent.mkdir(parents=True, exist_ok=True)
         lc = sqlite3.connect(str(legacy))
         lc.row_factory = sqlite3.Row
