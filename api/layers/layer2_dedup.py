@@ -60,7 +60,9 @@ def run_layer2(emit, doc_id, _safe_id, _completed_layers, output_format, schedul
                     _emit(emit, layer, "done", "Loaded from existing run ✓", {})
                 _graph_html = _run / "graph.html"
                 _ver_html   = _run / "verification_report.html"
-                _pln_html   = _run / "pln" / "pln_graph.html"
+                _pln_html   = _run / "pln_graph.html"                    # pln_visualizer output
+                if not _pln_html.exists():
+                    _pln_html = _run / "pln" / "pln_graph.html"          # legacy Layer 9 output
                 _existing_data = {
                     "graph_html":       str(_graph_html) if _graph_html.exists() else "",
                     "pln_html":         str(_pln_html)   if _pln_html.exists()   else "",

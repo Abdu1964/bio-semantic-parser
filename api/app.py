@@ -1,4 +1,5 @@
 """Bio Semantic Parser — FastAPI backend server (REST API + WebSocket)."""
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,6 +27,13 @@ from api.routes.source_grounding import router as _sg_router
 from api.routes.misc             import router as _misc_router
 from api.routes.export           import router as _export_router
 
+_pln_router = None
+if os.getenv("ENABLE_PLN", "false").lower() == "true":     # PLN routes only when enabled
+    try:
+        from pln.integration.api_routes import router as _pln_router
+    except Exception:
+        pass
+
 
 @asynccontextmanager
 async def _lifespan(application):
@@ -48,6 +56,8 @@ app.include_router(_kg_editor_router)
 app.include_router(_sg_router)
 app.include_router(_misc_router)
 app.include_router(_export_router)
+if _pln_router:
+    app.include_router(_pln_router)
 
 _STATIC = _ROOT / "frontend" / "static"
 if _STATIC.exists():

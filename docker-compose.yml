@@ -38,6 +38,7 @@ services:
       - ./tools:/app/tools
       - ./tests:/app/tests
       - ./optional_modules:/app/optional_modules
+      - ./pln:/app/pln
       - ./data:/app/data
       - ./config:/app/config
       - ${HF_CACHE_DIR:-~/.cache/huggingface}:/root/.cache/huggingface
