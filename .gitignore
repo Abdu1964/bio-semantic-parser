@@ -8,12 +8,11 @@ data/
 src/schema/taxonomy-backup.py
 src/schema/layer5_schema.svg
 
-# Optional modules: only the loader and PLN are tracked
+# Optional modules: the loader, accuracy and PLN are tracked
 optional_modules/*
 !optional_modules/__init__.py
+!optional_modules/accuracy.py
 src/pln/
-tools/verify_kg.py
-tools/visualize_pln.py
 
 # Runtime outputs
 uvicorn.log
