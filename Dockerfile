@@ -15,9 +15,9 @@ RUN pip uninstall petta -y 2>/dev/null || true && \
     pip install --no-cache-dir \
     "petta @ git+https://github.com/trueagi-io/PeTTa@e038e4dbb587e48fdb9d14990966108d38fde0b3"
 
-# PeTTaChainer — skip PeTTa dep (already pinned above)
+# PeTTaChainer pinned to a commit that works with the PeTTa above (newer ones need a newer PeTTa)
 RUN pip install --no-cache-dir --no-deps \
-    "git+https://github.com/rTreutlein/PeTTaChainer.git"
+    "git+https://github.com/rTreutlein/PeTTaChainer.git@b0e24f9b9d7106ccabf51917f1703abf3ab8c570"
 
 ARG SCISPACY_BASE=https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4
 RUN pip install --quiet \
