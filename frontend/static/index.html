@@ -72,14 +72,34 @@ function switchTab(tab) {
   if (tab === 'unified') loadUnifiedKG();
 }
 
+// Hide PLN option in unified dropdown when PLN is disabled
+fetch('/api/config').then(r=>r.json()).then(cfg=>{
+  const opt = document.getElementById('unified-pln-option');
+  if (opt && !cfg.enable_pln) opt.style.display = 'none';
+}).catch(()=>{});
+
 async function loadUnifiedKG(fmt) {
   const sel = document.getElementById('unified-db-sel');
   if (!fmt) fmt = sel ? sel.value : 'neo4j';
   if (sel && sel.value !== fmt) sel.value = fmt;
-  const frame = document.getElementById('unified-frame');
+
+  const frame     = document.getElementById('unified-frame');
+  const plnPanel  = document.getElementById('unified-pln-panel');
   if (!frame) return;
 
-  // A species is selected — load that species' pre-built graph
+  // PLN AtomSpace tab — show inline panel instead of iframe
+  if (fmt === 'pln') {
+    frame.style.display = 'none';
+    if (plnPanel) { plnPanel.style.display = 'flex'; _loadUnifiedPLNInline(); }
+    return;
+  }
+
+  // Regular KG graphs
+  frame.style.display = '';
+  if (plnPanel) plnPanel.style.display = 'none';
+
+  // A species is selected — load that species' pre-built graph directly
+  // (already scoped to just its own papers, including its own paper-filter).
   const speciesSel = document.getElementById('unified-species-sel');
   const species = speciesSel ? speciesSel.value : '';
   if (species) {
@@ -166,6 +186,146 @@ function onUnifiedFrameLoad(frame) {
       }, 600);
     }, 800);
   } catch (e) { }
+}
+
+async function _loadUnifiedPLNInline(selectedPaper) {
+  const wrap = document.getElementById('unified-pln-inner');
+  if (!wrap) return;
+  wrap.innerHTML = '<span style="color:#8b949e;font-size:13px">Checking PLN atomspace…</span>';
+  try {
+    const [st, papersResp] = await Promise.all([
+      fetch('/api/pln-unified-status').then(r=>r.json()),
+      fetch('/api/pln-papers').then(r=>r.json()),
+    ]);
+    const papers = (papersResp.papers || []);
+    // Build paper dropdown — values are run_dir names (paper_ids), not file paths
+    const paperOpts = papers.map(p =>
+      `<option value="${p.id}">${p.id.replace(/^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_/,'')}</option>`
+    ).join('');
+    const ddHtml = papers.length
+      ? `<select id="upln-paper-sel" onchange="_filterPLNByPaper(this.value)"
+           style="padding:4px 8px;background:#161b22;border:1px solid #30363d;border-radius:6px;
+                  color:#c084fc;font-size:11px;cursor:pointer;max-width:220px">
+           <option value="">All Papers (${papers.length})</option>
+           ${paperOpts}
+         </select>`
+      : '';
+
+    if (st.exists && st.path) {
+      // Always use the unified pln_atomspace.html — paper filtering happens via JS inside the iframe
+      const src = '/api/file?path=' + encodeURIComponent(st.path) + '&t=' + Date.now();
+      wrap.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+          <span style="color:#a855f7;font-size:13px;font-weight:600">🔮 PLN AtomSpace</span>
+          ${ddHtml}
+          <button onclick="_regenerateUnifiedPLN(this)"
+            style="padding:4px 12px;background:transparent;border:1px solid #6e40c9;border-radius:6px;color:#a855f7;font-size:12px;cursor:pointer">↺ Regenerate</button>
+          <a href="${src}" target="_blank"
+            style="padding:4px 12px;background:transparent;border:1px solid #30363d;border-radius:6px;color:#8b949e;font-size:12px;cursor:pointer;text-decoration:none">↗ Full screen</a>
+        </div>
+        <div style="display:flex;gap:12px;flex:1;min-height:0">
+          <iframe id="upln-iframe" src="${src}"
+            style="flex:1;border:1px solid #30363d;border-radius:8px;min-height:0;background:#0d1117"
+            onload="try{const w=this.contentWindow;const pid=document.getElementById('upln-paper-sel')?.value||'';setTimeout(()=>{try{if(pid&&typeof w.filterByPaper==='function')w.filterByPaper(pid);else if(w.net&&typeof w.net.fit==='function')w.net.fit();}catch(e){}},600);}catch(e){}"></iframe>
+          <div id="upln-query-panel" style="width:320px;flex-shrink:0;display:flex;flex-direction:column;gap:8px">
+            <div style="color:#a855f7;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em">PLN Query${selectedPaper?' — Paper':' — Unified'}</div>
+            <div style="display:flex;gap:6px">
+              <input id="upln-q" type="text" placeholder="e.g. What does hypertension cause?"
+                style="flex:1;padding:7px 10px;background:#161b22;border:1px solid #30363d;border-radius:6px;
+                       color:#e6edf3;font-size:12px;outline:none"
+                onkeydown="if(event.key==='Enter')_runUnifiedPLNQuery()"
+                onfocus="this.style.borderColor='#6e40c9'" onblur="this.style.borderColor='#30363d'" />
+              <button onclick="_runUnifiedPLNQuery()"
+                style="padding:7px 14px;background:#1a0f2e;border:1px solid #a855f7;border-radius:6px;
+                       color:#a855f7;font-size:12px;cursor:pointer;white-space:nowrap;font-weight:600">Ask</button>
+            </div>
+            <div id="upln-result" style="flex:1;overflow-y:auto;font-size:12px;color:#8b949e;
+              border:1px solid #21262d;border-radius:6px;padding:10px;background:#0d1117;min-height:120px">
+              Ask a question about any of the ${Math.round((st.size_bytes||0)/1024)}k atoms across all papers.
+            </div>
+          </div>
+        </div>`;
+    } else {
+      wrap.innerHTML = `
+        <div style="text-align:center;padding:48px 0;display:flex;flex-direction:column;align-items:center;gap:16px">
+          <div style="color:#8b949e;font-size:14px">No unified PLN graph yet.<br>Load all committed papers into PeTTaChainer atomspace.</div>
+          <button onclick="_regenerateUnifiedPLN(this)"
+            style="padding:8px 24px;background:#1a0f2e;border:1px solid #a855f7;border-radius:8px;color:#a855f7;font-size:13px;cursor:pointer;font-weight:600">
+            🔮 Generate Unified PLN
+          </button>
+        </div>`;
+    }
+  } catch(e) {
+    wrap.innerHTML = `<span style="color:#f85149;font-size:12px">Error: ${e.message}</span>`;
+  }
+}
+
+function _filterPLNByPaper(paperId) {
+  // Call filterByPaper() directly inside the unified iframe — no reload needed
+  try {
+    const iframe = document.getElementById('upln-iframe');
+    if (iframe && iframe.contentWindow && typeof iframe.contentWindow.filterByPaper === 'function') {
+      iframe.contentWindow.filterByPaper(paperId);
+    }
+  } catch(e) { console.warn('filterByPaper:', e); }
+}
+
+async function _runUnifiedPLNQuery() {
+  const q   = (document.getElementById('upln-q')?.value || '').trim();
+  const res = document.getElementById('upln-result');
+  if (!q || !res) return;
+  res.innerHTML = '<span style="color:#a855f7">⟳ Querying unified atomspace…</span>';
+  try {
+    const d = await (await fetch('/api/pln-unified-query', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question: q}),
+    })).json();
+    if (!d.ok) { res.innerHTML = `<span style="color:#f85149">${d.error||'Error'}</span>`; return; }
+    const count = d.answer_count || 0;
+    if (!count) {
+      res.innerHTML = `<div style="color:#8b949e">No results found.<br><span style="font-size:10px;color:#484f58">Query: ${d.pln_query||''}</span></div>`;
+      return;
+    }
+    const rows = (d.answers||[]).map(a => `
+      <div style="padding:8px 0;border-bottom:1px solid #21262d">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px">
+          <span style="color:#79c0ff;font-family:monospace;font-size:11px">${a.subject||''}</span>
+          <span style="color:#a855f7;font-size:10px;background:#1a0f2e;padding:1px 6px;border-radius:4px">${(a.predicate||'').replace(/_/g,' ')}</span>
+          <span style="color:#79c0ff;font-family:monospace;font-size:11px">${a.object||''}</span>
+        </div>
+        <div style="display:flex;gap:8px;font-size:10px;color:#484f58">
+          <span style="color:#a855f7;font-family:monospace">(stv ${(a.strength||0).toFixed(2)} ${(a.confidence||0).toFixed(2)})</span>
+          ${a.inferred?'<span style="color:#6e40c9">⛓ inferred</span>':''}
+        </div>
+      </div>`).join('');
+    res.innerHTML = `
+      <div style="color:#a855f7;font-size:11px;font-weight:600;margin-bottom:8px">${count} result${count!==1?'s':''}</div>
+      ${rows}
+      <div style="color:#484f58;font-size:10px;margin-top:8px;border-top:1px solid #21262d;padding-top:6px">
+        Query: <code style="color:#6e40c9">${d.pln_query||''}</code>
+      </div>`;
+  } catch(e) {
+    res.innerHTML = `<span style="color:#f85149">Network error: ${e.message}</span>`;
+  }
+}
+
+async function _regenerateUnifiedPLN(btn) {
+  const wrap = document.getElementById('unified-pln-inner');
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ Running…'; }
+  if (wrap) wrap.innerHTML = '<span style="color:#a855f7;font-size:13px">🔮 Loading all papers into PeTTaChainer… this may take a moment.</span>';
+  try {
+    const d = await (await fetch('/api/pln-unified-run', {method:'POST'})).json();
+    if (d.ok && d.pln_html) {
+      await _loadUnifiedPLNInline();
+    } else {
+      if (wrap) wrap.innerHTML = `<span style="color:#f85149;font-size:12px">PLN error: ${d.error||'Unknown'}</span>`;
+      if (btn) { btn.disabled = false; btn.textContent = '↺ Regenerate'; }
+    }
+  } catch(e) {
+    if (wrap) wrap.innerHTML = `<span style="color:#f85149;font-size:12px">Network error: ${e.message}</span>`;
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Regenerate'; }
+  }
 }
 </script>
 
@@ -437,7 +597,7 @@ function onUnifiedFrameLoad(frame) {
           <!-- Populated by JS after Layer 8 completes -->
         </div>
         <!-- PLN card — same row, purple style kept -->
-        <div id="pln-cards" style="display:contents">
+        <div id="pln-cards" data-pln-feature style="display:none">
           <!-- PLN card populated by JS -->
         </div>
       </div>
@@ -468,11 +628,11 @@ function onUnifiedFrameLoad(frame) {
     <!-- Step 1: Without PLN -->
     <div class="commit-step">
       <div class="commit-step-title">
-        <span style="background:var(--green2);color:#fff;padding:1px 8px;border-radius:20px;font-size:10px">Step 1</span>
+        <span id="commit-step1-badge" style="background:var(--green2);color:#fff;padding:1px 8px;border-radius:20px;font-size:10px">Step 1</span>
         Commit to Unified Knowledge Graph
       </div>
       <div class="commit-step-sub">
-        Commits extracted triples to the unified Neo4j and/or MeTTa atomspace (without PLN reasoning).
+        Commits extracted triples to the unified Neo4j and/or MeTTa atomspace<span id="commit-step1-pln-suffix"> (without PLN reasoning)</span>.
         Format follows your selection above.
       </div>
       <div id="staging-breakdown" style="display:none;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:14px;font-size:12px;line-height:1.8"></div>
@@ -493,22 +653,26 @@ function onUnifiedFrameLoad(frame) {
       <div id="commit-result" style="margin-top:14px;display:none"></div>
     </div>
 
-    <!-- Step 2: With PLN (shown after step 1 commit) — hidden when ENABLE_PLN=false -->
+    <!-- Step 2: PLN Inference (shown when ENABLE_PLN=true) -->
     <div class="commit-step pln-step" id="pln-commit-step" data-pln-feature style="display:none">
       <div class="commit-step-title" style="color:var(--pln)">
         <span style="background:var(--pln2);color:#fff;padding:1px 8px;border-radius:20px;font-size:10px">Step 2</span>
-        🔮 Commit to Unified PLN AtomSpace
+        🔮 PLN Inference &amp; AtomSpace
       </div>
       <div class="commit-step-sub">
-        Updates the MeTTa PLN atomspace with SimpleTruthValues (stv), inferred triples, and contradiction resolutions.
-        stv confidence grows as more papers are added.
+        Run PLN forward chaining over this paper's triples to infer new relations.
+        Opens an interactive graph showing original triples + inferred triples (purple dashed edges).
       </div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <button class="run-btn" id="pln-commit-btn" onclick="commitPLN()"
+        <button class="run-btn" id="pln-inference-btn" onclick="commitPLNInference()"
           style="background:linear-gradient(135deg,var(--pln2),var(--pln));padding:10px 24px;font-size:13px;margin-top:0;width:auto">
-          🔮 &nbsp;Commit to Unified PLN
+          🔮 Run PLN Inference
         </button>
-        <span style="font-size:11px;color:var(--text3)">MeTTa only · stv updates automatically with each paper</span>
+        <button id="pln-query-btn" onclick="commitPLNQuery()"
+          style="background:none;border:1px solid var(--pln2);border-radius:8px;padding:10px 16px;color:var(--pln);font-size:12px;cursor:pointer;font-family:var(--font)">
+          🔮 PLN Query
+        </button>
+        <span style="font-size:11px;color:var(--text3)">MeTTa only · PeTTaChainer forward chaining</span>
       </div>
       <div id="pln-commit-result" style="margin-top:14px;display:none"></div>
     </div>
@@ -600,6 +764,7 @@ function onUnifiedFrameLoad(frame) {
     <select id="unified-db-sel" onchange="loadUnifiedKG()" style="background:var(--surface1,#161b22);border:1px solid var(--border,#30363d);color:var(--text1,#e6edf3);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer">
       <option value="neo4j">Neo4j</option>
       <option value="metta">MeTTa</option>
+      <option value="pln" id="unified-pln-option" data-pln-feature style="color:#a855f7">🔮 PLN AtomSpace</option>
     </select>
     <span style="font-size:13px;font-weight:600;color:var(--text2,#8b949e)">Species:</span>
     <select id="unified-species-sel" onchange="loadUnifiedKG()" style="background:var(--surface1,#161b22);border:1px solid var(--border,#30363d);color:var(--text1,#e6edf3);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;max-width:220px">
@@ -621,6 +786,12 @@ function onUnifiedFrameLoad(frame) {
   <iframe id="unified-frame" src="about:blank"
     style="flex:1;width:100%;border:none;height:calc(100vh - 160px);min-height:500px"
     onload="onUnifiedFrameLoad(this)"></iframe>
+  <!-- PLN AtomSpace panel — shown when PLN option is selected -->
+  <div id="unified-pln-panel" style="display:none;flex:1;flex-direction:column;padding:16px 20px;overflow:hidden">
+    <div id="unified-pln-inner" style="flex:1;display:flex;flex-direction:column;min-height:0">
+      <span style="color:#8b949e;font-size:13px">Loading…</span>
+    </div>
+  </div>
 </div>
 
 <!-- ── Sources slide-over ── -->

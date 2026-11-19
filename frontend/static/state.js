@@ -142,9 +142,7 @@ function _restoreCommit(commit) {
       ✓ ${newN} new triple(s) committed${updN > 0 ? ` · ${updN} updated` : ''} — unified ${commit.format||''} atomspace
     </div>`;
     if (commit.runDirButtons) res.innerHTML += commit.runDirButtons;
-    // Show PLN step
-    const plnStep = document.getElementById('pln-commit-step');
-    if (plnStep) plnStep.style.display = 'block';
+    // PLN step visibility is controlled by _applyPlnVisibility() after restore
   }
 }
 
