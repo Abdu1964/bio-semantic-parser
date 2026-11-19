@@ -61,9 +61,10 @@ class PLNModule:
 
         atoms: list[str] = []
 
-        # MeTTa edge files first, with label and audit maps
+        # MeTTa edge files are the facts; the staging DB gives their truth values
+        truth = self._adapter.db_truth(staging_db) if staging_db and Path(staging_db).exists() else {}
         if run_dir:
-            atoms.extend(self._adapter.load_run_dir(run_dir))
+            atoms.extend(self._adapter.load_run_dir(run_dir, truth))
             self._label_map.update(self._adapter.load_labels(run_dir))
             prev_keys = set(self._atom_meta.keys())
             self._atom_meta.update(self._adapter.load_atom_meta(run_dir))
@@ -72,8 +73,7 @@ class PLNModule:
                 if k not in prev_keys:
                     self._atom_meta[k]['paper_id'] = paper_key
 
-        # Fallback / supplement: staging DB
-        if staging_db and Path(staging_db).exists():
+        if not atoms and staging_db and Path(staging_db).exists():      # no MeTTa files: the DB's facts
             atoms.extend(self._adapter.db_to_atoms(staging_db))
 
         if not atoms:
@@ -115,6 +115,10 @@ class PLNModule:
             metta_path=Path(run_dir) / "pln_inferred.metta",
             json_path=Path(run_dir) / "pln_inferred.json",
         ) and (Path(run_dir) / "pln_inferred.metta")
+
+    def inferred(self) -> list[str]:
+        """Atoms derived by the rules."""
+        return [] if self._forward is None else self._forward.run()
 
     def all_facts(self) -> list[str]:
         """Return all atoms in the atomspace (facts + inferred)."""

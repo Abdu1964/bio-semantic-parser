@@ -83,6 +83,12 @@ def _extract_type(expr: str) -> str:
     return parts[0] if len(parts) > 1 else ''
 
 
+def _id_key(cid: str) -> str:
+    """Comparable form of an entity ID in MeTTa ('GO_0006955') and in the DB ('GO:0006955')."""
+    import re as _re
+    return _re.sub(r'[^a-z0-9]+', '_', (cid or '').lower()).strip('_')
+
+
 def _name_slug(text: str) -> str:
     """Lowercase underscore slug safe as a MeTTa identifier (max 40 chars)."""
     import re as _re
@@ -96,8 +102,8 @@ class MeTTaAdapter:
         self.confidence       = confidence        # default STV confidence
         self.default_strength = default_strength  # default STV strength
 
-    def load_run_dir(self, run_dir: str | Path) -> list[str]:
-        """Load all MeTTa edge files from a run_dir and return atom strings."""
+    def load_run_dir(self, run_dir: str | Path, truth: dict | None = None) -> list[str]:
+        """Atoms from a run_dir's MeTTa edge files; truth maps (relation, subject, object) to (s, c)."""
         run_dir = Path(run_dir)
         metta_root = run_dir / "metta"
         if not metta_root.exists():
@@ -110,7 +116,7 @@ class MeTTaAdapter:
                     id_to_name[eid] = label
         atoms = []
         for metta_file in sorted(metta_root.rglob("edges_*.metta")):
-            atoms.extend(self._parse_file(metta_file, id_to_name))
+            atoms.extend(self._parse_file(metta_file, id_to_name, truth))
         return atoms
 
     def load_atom_meta(self, run_dir: str | Path) -> dict[str, dict]:
@@ -179,7 +185,7 @@ class MeTTaAdapter:
         return self._parse_file(Path(path))
 
     def _parse_file(self, path: Path,
-                    id_to_name: dict[str, str] | None = None) -> list[str]:
+                    id_to_name: dict[str, str] | None = None, truth: dict | None = None) -> list[str]:
         """Parse one .metta file, extracting triples and their metadata."""
         lines = path.read_text(encoding="utf-8").splitlines()
 
@@ -210,6 +216,9 @@ class MeTTaAdapter:
 
             strength   = float(m.get('strength',   str(self.default_strength)))
             confidence = float(m.get('confidence', str(self.confidence)))
+            key = (pred.lower(), _id_key(_extract_id(subj)), _id_key(_extract_id(obj)))
+            if truth and key in truth:
+                strength, confidence = truth[key]
 
             atom = self._make_atom(pred, subj, obj, strength, confidence, id_to_name)
             if atom:
@@ -251,27 +260,42 @@ class MeTTaAdapter:
         name      = _make_atom_name(relation, subject, object_)
         return f"(: {name} ({pascal} {subj_expr} {obj_expr}) (STV {confidence:.3f} {confidence:.3f}))"
 
-    def db_to_atoms(self, staging_db: str | Path) -> list[str]:
-        """Load atoms directly from a staging SQLite DB (alternative to MeTTa files)."""
+    def _db_rows(self, staging_db: str | Path) -> list:
+        """Published, non-negated triples of a staging DB."""
         import sqlite3
-        atoms = []
         try:
             conn = sqlite3.connect(str(staging_db), timeout=10)
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT subject_name, subject_type, relation, object_name, object_type, confidence "
-                "FROM triples WHERE flagged_for_review=0"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM triples WHERE flagged_for_review=0 AND negated=0").fetchall()
             conn.close()
-            for r in rows:
-                atom = self.triple_to_atom(
-                    r["subject_name"], r["relation"], r["object_name"],
-                    r["subject_type"], r["object_type"],
-                    float(r["confidence"] or 0.85),
-                )
-                atoms.append(atom)
+            return rows
         except Exception:
-            pass
+            return []
+
+    @staticmethod
+    def _db_stv(row) -> tuple[float, float]:
+        """Strength = the fact's confidence score; confidence = N/(N+1) over its source papers."""
+        import json
+        try:
+            n = max(1, len(json.loads(row["source_papers"] or "[]")))
+        except (ValueError, TypeError):
+            n = 1
+        return float(row["confidence"] or 0.5), round(n / (n + 1), 4)
+
+    def db_truth(self, staging_db: str | Path) -> dict:
+        """(relation, subject ID, object ID) → (strength, confidence) from the staging DB."""
+        return {(str(r["relation"]).lower(), _id_key(r["subject_id"]), _id_key(r["object_id"])): self._db_stv(r)
+                for r in self._db_rows(staging_db)}
+
+    def db_to_atoms(self, staging_db: str | Path) -> list[str]:
+        """Atoms from a staging DB, for runs without MeTTa files."""
+        atoms = []
+        for r in self._db_rows(staging_db):
+            s, c = self._db_stv(r)
+            subj = f"({str(r['subject_type']).lower()} {_name_slug(r['subject_name'])})"
+            obj  = f"({str(r['object_type']).lower()} {_name_slug(r['object_name'])})"
+            name = _make_atom_name(r["relation"], _name_slug(r["subject_name"]), _name_slug(r["object_name"]))
+            atoms.append(f"(: {name} ({_pascal(r['relation'])} {subj} {obj}) (STV {s:.3f} {c:.3f}))")
         return atoms
 
 
