@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 RUN apt-get update -o Acquire::Retries=3 && \
-    apt-get install -y --no-install-recommends gcc g++ curl tesseract-ocr tesseract-ocr-eng && \
+    apt-get install -y --no-install-recommends gcc g++ curl git swi-prolog tesseract-ocr tesseract-ocr-eng && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -9,6 +9,15 @@ WORKDIR /app
 COPY requirements-docker.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements-docker.txt
+
+# PeTTa pinned to exact commit PeTTaChainer requires (uninstall any cached wrong version first)
+RUN pip uninstall petta -y 2>/dev/null || true && \
+    pip install --no-cache-dir \
+    "petta @ git+https://github.com/trueagi-io/PeTTa@e038e4dbb587e48fdb9d14990966108d38fde0b3"
+
+# PeTTaChainer — skip PeTTa dep (already pinned above)
+RUN pip install --no-cache-dir --no-deps \
+    "git+https://github.com/rTreutlein/PeTTaChainer.git"
 
 ARG SCISPACY_BASE=https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4
 RUN pip install --quiet \
