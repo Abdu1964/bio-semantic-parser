@@ -1006,7 +1006,7 @@ def _write_metta_files(folder: Path, paper_id: str, original: list, inferred: li
         encoding='utf-8',
     )
 
-    # metta/ subfolders mirror unified_metta/metta/: edges_*.metta extracted, inferred_*.metta inferred
+    # pln_metta/ mirrors unified_metta/metta/: edges_*.metta extracted, inferred_*.metta inferred
     from collections import defaultdict
 
     def _rel_key(t: dict) -> tuple[str, str, str]:
@@ -1025,10 +1025,10 @@ def _write_metta_files(folder: Path, paper_id: str, original: list, inferred: li
     for t in inferred:
         inferred_by_rel[_rel_key(t)].append(_atom_line(t, 'pln_inferred_'))
 
-    metta_dir = folder / 'metta'
+    metta_dir = folder / 'pln_metta'           # never the run's own metta/, which PLN reads as input
     metta_dir.mkdir(exist_ok=True)
 
-    # metta/<subject_type>/edges_*.metta and inferred_*.metta
+    # pln_metta/<subject_type>/edges_*.metta and inferred_*.metta
     all_rel_keys = set(extracted_by_rel) | set(inferred_by_rel)
     cat_manifest: dict[str, list[str]] = {}
 
@@ -1074,6 +1074,7 @@ def _write_metta_files(folder: Path, paper_id: str, original: list, inferred: li
             'inferred_only':  'pln_inferred.metta',
             'visualization':  'pln_atomspace.html',
         },
+        'metta_dir':        'pln_metta',
         'metta_categories': cat_manifest,
         'stv_schema': {
             'strength':   'LLM extraction confidence (0–1)',

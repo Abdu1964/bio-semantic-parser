@@ -21,6 +21,14 @@ def _get_pln():
     return _pln_module
 
 
+def _paper_pln():
+    """A fresh atomspace for one paper, so papers never mix; later queries use it."""
+    global _pln_module
+    from pln import PLNModule
+    _pln_module = PLNModule.from_env()
+    return _pln_module
+
+
 _TS_PREFIX_RE = __import__('re').compile(r'^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_')
 
 
@@ -74,7 +82,7 @@ class PLNQueryRequest(BaseModel):
 async def pln_run(req: PLNRunRequest):
     """Load a paper into PLN, run forward chaining, generate vis.js graph HTML."""
     try:
-        pln = _get_pln()
+        pln = _paper_pln()
         if not pln.enabled:
             return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
 
@@ -101,7 +109,7 @@ async def pln_run(req: PLNRunRequest):
 async def pln_query(req: PLNQueryRequest):
     """Answer a NL question over the KG using PLN forward+backward chaining."""
     try:
-        pln = _get_pln()
+        pln = _paper_pln() if (req.run_dir or req.staging_db) else _get_pln()
         if not pln.enabled:
             return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
 
