@@ -97,7 +97,7 @@ async def pln_run(req: PLNRunRequest):
         return {
             "ok":          True,
             "atoms_loaded": n_atoms,
-            "inferred":    len(pln.all_facts()) - n_atoms,
+            "inferred":    len(pln.inferred()),
             "pln_html":    str(html_path) if html_path else "",
         }
     except Exception as exc:
@@ -154,8 +154,7 @@ async def pln_inferred(
             data = json.loads(p.read_text())
             atoms = data.get("atoms", [])[:limit]
             return {"ok": True, "count": len(atoms), "atoms": atoms, "source": "file"}
-        # fallback: return from live atomspace (unfiltered)
-        facts = pln.all_facts()[:limit]
+        facts = pln.inferred()[:limit]                         # from the live atomspace
         return {"ok": True, "count": len(facts), "atoms": facts, "source": "live"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -238,8 +237,7 @@ async def pln_unified_run():
             import shutil
             shutil.move(str(default_html), str(pln_html))
 
-        all_facts = pln.all_facts()
-        inferred  = max(0, len(all_facts) - total_atoms)
+        inferred  = len(pln.inferred())
         metta     = _UNIFIED_PLN_DIR / "pln_atomspace.metta"
         return {
             "ok":           True,

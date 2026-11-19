@@ -1,5 +1,4 @@
 """PLN reasoner: orchestrates forward materialization + backward query for a question."""
-import re
 from typing import TYPE_CHECKING
 
 from pln.query.nl_to_pln import nl_to_pln_query
@@ -10,8 +9,6 @@ if TYPE_CHECKING:
     from pln.chaining.backward_chainer import BackwardChainer
 
 
-_STV_RE  = re.compile(r'\(STV\s+([\d.]+)\s+([\d.]+)\)')
-_ATOM_RE = re.compile(r'\(:\s+\S+\s+\((\w+)\s+(.*?)\)\s+\(STV', re.S)
 
 
 class ReasoningResult:
@@ -66,50 +63,25 @@ class PLNReasoner:
         self.ensure_materialized()
         proofs = self._backward.query(pln_query)
         result.proofs = proofs
-        result.answers = [self._parse_proof(p) for p in proofs if p]
-        result.answers = [a for a in result.answers if a]
+        answers = [a for a in (self._parse_proof(p) for p in proofs if p) if a]
+        result.answers = sorted(answers, key=lambda a: -a['confidence'])   # rule-derived ones keep their low confidence
 
-        # Inferred atoms not among the original facts
-        result.inferred_atoms = self._forward.all_facts()
+        result.inferred_atoms = self._forward.run()          # atoms the rules derived
         return result
 
     def _parse_proof(self, proof: str) -> dict | None:
-        """Extract subject, predicate, object, strength, confidence from a proof trace."""
-        stv = _STV_RE.search(proof)
-        m   = _ATOM_RE.search(proof)
-        if not m:
+        """Subject, predicate, object and STV of a query result; rule-derived ones are marked inferred."""
+        from pln.chaining.forward_chainer import _parse_result
+        parsed = _parse_result(proof)
+        if not parsed:
             return None
-        predicate = m.group(1)
-        args_str  = m.group(2).strip()
-        args      = _split_top(args_str)
-        strength   = float(stv.group(1)) if stv else 0.0
-        confidence = float(stv.group(2)) if stv else 0.0
-        if confidence < self._cfg.min_confidence:
-            return None
+        prf, predicate, subject, obj, strength, confidence = parsed
         return {
             'predicate':  predicate,
-            'subject':    args[0] if args else '',
-            'object':     args[1] if len(args) > 1 else '',
+            'subject':    subject,
+            'object':     obj,
             'strength':   round(strength,   3),
             'confidence': round(confidence, 3),
+            'inferred':   prf.startswith('(by '),
             'proof':      proof,
         }
-
-
-def _split_top(s: str) -> list[str]:
-    """Split on top-level spaces only (ignore nested parens)."""
-    parts, depth, buf = [], 0, []
-    for ch in s:
-        if ch == '(':
-            depth += 1; buf.append(ch)
-        elif ch == ')':
-            depth -= 1; buf.append(ch)
-        elif ch == ' ' and depth == 0:
-            t = ''.join(buf).strip()
-            if t: parts.append(t)
-            buf = []
-        else:
-            buf.append(ch)
-    t = ''.join(buf).strip()
-    if t: parts.append(t)
-    return parts

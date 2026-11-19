@@ -49,7 +49,8 @@ def generate_answer(result: ReasoningResult, max_answers: int = 10) -> str:
         seen.add(key)
         tmpl = _PRED_TEMPLATES.get(pred, '{subject} — {predicate} — {object}')
         sentence = tmpl.format(subject=subj, object=obj, predicate=pred)
-        lines.append(f"• {sentence}  (strength={s:.2f}, confidence={c:.2f})")
+        how = "inferred" if ans.get('inferred') else "fact"
+        lines.append(f"• {sentence}  ({how}; strength={s:.2f}, confidence={c:.2f})")
 
     if len(result.answers) > max_answers:
         lines.append(f"  … and {len(result.answers) - max_answers} more results")
@@ -73,6 +74,8 @@ def generate_json(result: ReasoningResult) -> dict:
                 'object':     _clean(a['object']),
                 'strength':   a['strength'],
                 'confidence': a['confidence'],
+                'inferred':   a.get('inferred', False),
+                'proof':      a.get('proof', ''),
             }
             for a in result.answers
         ],

@@ -14,7 +14,7 @@ class BackwardChainer:
         self._handler = handler  # shared with ForwardChainer
 
     def query(self, pln_query: str, timeout: int | None = None) -> list[str]:
-        """Backward-chain a query '(: $prf (Predicate subj $target) $tv)'; proof traces above min_confidence."""
+        """Backward-chain a query '(: $prf (Predicate subj $target) $tv)'; PeTTaChainer applies the rules."""
         t = timeout if timeout is not None else self._cfg.backward_timeout
         try:
             results = self._handler.query(pln_query, timeout_sec=t)

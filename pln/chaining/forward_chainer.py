@@ -1,6 +1,6 @@
-"""Forward chaining over facts and bio_rules.metta. PeTTaChainer's own forward chain covers only
-Inheritance/Subset, so two-premise relation rules (Inhibits + Causes → Treats) run here and
-derived atoms go back into its KB for backward queries."""
+"""Forward chaining over facts and bio_rules.metta. PeTTaChainer derives each rule's conclusions
+(PLN truth formulas, multi-step chains, proofs); derived atoms are kept apart from the KB so
+later queries do not count them twice."""
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -8,15 +8,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pln.config import PLNConfig
 
-_PC_FACT_RE = re.compile(
-    r'^\(\((\w+)\s+(.*?)\)\s+\([a-zA-Z0-9]+\s+MAIN\s+Nil\)\s+(\S+)\s+\(STV\s+([\d.]+)\s+([\d.]+)\)\)\s*$'
-)
-_ENTITY_RE = re.compile(r'^\((\w+)\s+(.+?)\)$')
-
-
-def _extract_id(expr: str) -> str:
-    m = _ENTITY_RE.match(expr.strip())
-    return m.group(2).strip() if m else expr.strip()
+_CONCLUSION_RE = re.compile(r'\(Implication\s+\(And\s.*\)\s+\((\w+)\s+\$\w+\s+\$\w+\)\s*\)\s*\(STV', re.S)
+_STATEMENT_RE = re.compile(r'^\(:\s+(\S+)\s+\((\w+)\s+(.*?)\)\s+\(STV\s+([\d.]+)\s+([\d.]+)\)\)$')
 
 
 def _collect_exprs(lines: list[str]):
@@ -40,54 +33,64 @@ def _collect_exprs(lines: list[str]):
         yield ' '.join(buf).strip()
 
 
-def _parse_bio_rules(rules_path: Path) -> list[dict]:
-    """Parse bio_rules.metta and return list of rule dicts with premises and conclusion."""
-    rules = []
-    top_re = re.compile(r'^\(:')
-    split_re = re.compile(r'\((\w+)\s+(\$\w+)\s+(\$\w+)\)')
+def _split_top(s: str) -> list[str]:
+    """Top-level parts of an expression body."""
+    parts, depth, buf = [], 0, []
+    for ch in s:
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+        if ch == ' ' and depth == 0:
+            if buf:
+                parts.append(''.join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        parts.append(''.join(buf))
+    return parts
 
-    for expr in _collect_exprs(rules_path.read_text(encoding='utf-8').splitlines()):
-        if not expr.startswith('(:'):
-            continue
-        # Extract name and STV from outer atom
-        name_m = re.match(r'^\(:\s+(\S+)\s+', expr)
-        stv_m = re.search(r'\(STV\s+([\d.]+)\s+([\d.]+)\)\s*\)\s*$', expr)
-        if not name_m or not stv_m:
-            continue
-        name = name_m.group(1)
-        rule_s = float(stv_m.group(1))
-        rule_c = float(stv_m.group(2))
 
-        # Find Premises block
-        prem_m = re.search(r'\(Premises\s+(.*?)\)\s+\(Conclusions', expr)
-        conc_m = re.search(r'\(Conclusions\s+(.*?)\)\s*\)\s*\(STV', expr)
-        if not prem_m or not conc_m:
-            continue
+def _parse_result(result: str):
+    """(proof, predicate, subject, object, s, c) of a query result '(: proof (P s o) (STV s c))'."""
+    body = result.strip()
+    if not body.startswith('(:') or not body.endswith(')'):
+        return None
+    parts = _split_top(body[1:-1].strip())
+    if len(parts) != 4:
+        return None
+    _, proof, statement, stv = parts
+    st = _split_top(statement[1:-1]) if statement.startswith('(') else []
+    tv = re.match(r'\(STV\s+([\d.eE-]+)\s+([\d.eE-]+)\)', stv)
+    if len(st) != 3 or not tv:
+        return None
+    return proof, st[0], st[1], st[2], float(tv.group(1)), float(tv.group(2))
 
-        prem_str = prem_m.group(1).strip()
-        conc_str = conc_m.group(1).strip()
 
-        premises = split_re.findall(prem_str)    # [(pred, $var1, $var2), ...]
-        conclusions = split_re.findall(conc_str)
-        if not premises or not conclusions:
-            continue
-
-        rules.append({
-            'name': name, 'rule_s': rule_s, 'rule_c': rule_c,
-            'premises': premises, 'conclusions': conclusions,
-        })
-    return rules
+def _proof_parts(proof: str):
+    """(rule name, premise proofs) of '(by rule (conjunction p1 p2 ...))'; None for a plain fact."""
+    if not proof.startswith('(by '):
+        return None
+    parts = _split_top(proof[1:-1])
+    rule = parts[1] if len(parts) > 1 else ''
+    premises = []
+    if len(parts) > 2:
+        inner = parts[2]
+        premises = _split_top(inner[1:-1])[1:] if inner.startswith('(conjunction') else [inner]
+    return rule, premises
 
 
 class ForwardChainer:
-    """Wraps PeTTaChainer for KB + backward chaining; adds Python-level forward chain for bio rules."""
+    """PeTTaChainer KB with rule-based derivation of every rule conclusion."""
 
     def __init__(self, cfg: "PLNConfig"):
         self._cfg = cfg
         self._handler = None
-        self._bio_rules: list[dict] = []
+        self._rules: dict[str, tuple[float, float]] = {}      # rule name → (s, c)
+        self._conclusions: set[str] = set()                   # predicates rules conclude
+        self._facts: dict[str, str] = {}                      # fact name → statement atom
         self._derived_atoms: list[str] = []
-        # Maps atom_name → proof trace dict for each derived atom
         self._derivations: dict[str, dict] = {}
 
     def _ensure_handler(self):
@@ -103,131 +106,95 @@ class ForwardChainer:
             try:
                 self._handler.add_atom(atom)
             except Exception:
-                pass
+                continue
+            m = _STATEMENT_RE.match(atom.strip())
+            if m:
+                self._facts[m.group(1)] = atom
 
     def load_rules_file(self, rules_path: Path | None = None) -> None:
-        """Load rule file: adds atoms to PeTTaChainer (for backward chain) and parses rules
-        for Python-level forward chaining."""
+        """Add the file's rules to PeTTaChainer and note each rule's conclusion predicate."""
         path = rules_path or self._cfg.rules_path
         if not path or not path.exists():
             return
         self._ensure_handler()
         for expr in _collect_exprs(path.read_text(encoding='utf-8').splitlines()):
-            if expr.startswith('(:'):
-                try:
-                    self._handler.add_atom(expr)
-                except Exception:
-                    pass
-        # Parse bio_rules.metta specifically for Python-level forward chaining
-        if path.name == 'bio_rules.metta':
-            self._bio_rules = _parse_bio_rules(path)
+            if not expr.startswith('(:'):
+                continue
+            try:
+                self._handler.add_atom(expr)
+            except Exception:
+                continue
+            name = re.match(r'^\(:\s+(\S+)', expr).group(1)
+            stv = re.search(r'\(STV\s+([\d.]+)\s+([\d.]+)\)\s*\)\s*$', expr)
+            if stv:
+                self._rules[name] = (float(stv.group(1)), float(stv.group(2)))
+            m = _CONCLUSION_RE.search(expr)
+            if m:
+                self._conclusions.add(m.group(1))
+
+    def _label(self, proof: str) -> tuple[str, str]:
+        """'subject —[P]→ object' and its STV for a premise proof."""
+        atom = self._facts.get(proof)
+        if atom:
+            m = _STATEMENT_RE.match(atom.strip())
+            s, o = _split_top(m.group(3))[:2]
+            return f"{_entity_id(s)} —[{m.group(2)}]→ {_entity_id(o)}", f"(stv {float(m.group(4)):.2f} {float(m.group(5)):.2f})"
+        return "derived relation", ""
 
     def materialize(self, steps: int | None = None) -> None:
-        """Apply the two-premise rules for up to `steps` rounds, adding derived atoms to the KB."""
-        if not self._bio_rules:
+        """Derive every rule conclusion with PeTTaChainer, keeping the best proof per relation."""
+        if not self._conclusions or self._derived_atoms:
             return
         n = steps if steps is not None else self._cfg.forward_steps
-
-        for _step in range(n):
-            # Snapshot current facts in PeTTaChainer output format
-            raw_facts = [str(a) for a in (self._handler.all_facts() or [])]
-            # Index facts by predicate → list of (subj_id, obj_id, s, c)
-            by_pred: dict[str, list[tuple[str, str, float, float]]] = {}
-            for a in raw_facts:
-                m = _PC_FACT_RE.match(a.strip())
-                if not m:
+        known = set()
+        for atom in self._facts.values():
+            m = _STATEMENT_RE.match(atom.strip())
+            s, o = _split_top(m.group(3))[:2]
+            known.add((m.group(2), s, o))
+        best: dict[tuple, tuple] = {}
+        for pred in sorted(self._conclusions):
+            try:
+                results = self._handler.query(f"(: $prf ({pred} $x $y) $tv)", steps=n * 20,
+                                              timeout_sec=self._cfg.backward_timeout)
+            except Exception:
+                continue
+            for r in results or []:
+                parsed = _parse_result(str(r))
+                if not parsed:
                     continue
-                pred, args_str, _name, s, c = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
-                # Extract subj/obj IDs from args_str
-                args = re.findall(r'\([^()]+\)', args_str)
-                if len(args) < 2:
+                proof, p, s, o, sv, cv = parsed
+                parts = _proof_parts(proof)
+                if not parts or (p, s, o) in known or s == o:
                     continue
-                sid = _extract_id(args[0])
-                oid = _extract_id(args[1])
-                by_pred.setdefault(pred, []).append((sid, oid, float(s), float(c)))
-
-            new_atoms = []
-            for rule in self._bio_rules:
-                if len(rule['premises']) < 2:
-                    continue
-                p1_pred, p1_var1, p1_var2 = rule['premises'][0]  # e.g. Inhibits $dr $a
-                p2_pred, p2_var1, p2_var2 = rule['premises'][1]  # e.g. Causes $a $d
-                c_pred, c_var1, c_var2   = rule['conclusions'][0]
-
-                # We expect pattern: ($dr → $a) then ($a → $d) → ($dr → $d)
-                # The shared variable is p1_var2 == p2_var1 (bridge entity)
-                if p1_var2 != p2_var1:
-                    continue
-
-                facts1 = by_pred.get(p1_pred, [])
-                facts2 = by_pred.get(p2_pred, [])
-                if not facts1 or not facts2:
-                    continue
-
-                # Index p2 by subject for fast lookup
-                p2_by_subj: dict[str, list[tuple[str, float, float]]] = {}
-                for sid2, oid2, s2, c2 in facts2:
-                    p2_by_subj.setdefault(sid2, []).append((oid2, s2, c2))
-
-                # Existing fact key set to avoid duplicates
-                existing = {(p, sid, oid) for p, entries in by_pred.items() for sid, oid, _, _ in entries}
-
-                for sid1, oid1, s1, c1 in facts1:
-                    for oid2, s2, c2 in p2_by_subj.get(oid1, []):
-                        key = (c_pred, sid1, oid2)
-                        if key in existing:
-                            continue
-                        existing.add(key)
-                        ds = min(s1, s2) * rule['rule_s']
-                        dc = min(c1, c2, rule['rule_c'])
-                        safe = lambda s: re.sub(r'[^a-zA-Z0-9_]', '_', s).strip('_')[:28]
-                        atom_name = f"inferred_{safe(c_pred)}_{safe(sid1)}_{safe(oid2)}"
-                        subj_type = _get_entity_type(sid1, raw_facts)
-                        obj_type  = _get_entity_type(oid2, raw_facts)
-                        subj_expr = f"({subj_type} {sid1})" if subj_type else sid1
-                        obj_expr  = f"({obj_type} {oid2})"  if obj_type  else oid2
-                        atom = f"(: {atom_name} ({c_pred} {subj_expr} {obj_expr}) (STV {ds:.3f} {dc:.3f}))"
-                        new_atoms.append(atom)
-                        # Record proof trace for the visualizer
-                        self._derivations[atom_name] = {
-                            'rule':      rule['name'],
-                            'rule_s':    rule['rule_s'],
-                            'rule_c':    rule['rule_c'],
-                            'premise1':  f"{sid1} —[{p1_pred}]→ {oid1}",
-                            'premise1_stv': f"(stv {s1:.2f} {c1:.2f})",
-                            'premise2':  f"{oid1} —[{p2_pred}]→ {oid2}",
-                            'premise2_stv': f"(stv {s2:.2f} {c2:.2f})",
-                            'conclusion': f"{sid1} —[{c_pred}]→ {oid2}",
-                            'derived_s': ds,
-                            'derived_c': dc,
-                        }
-
-            if not new_atoms:
-                break
-            for atom in new_atoms:
-                try:
-                    self._handler.add_atom(atom)
-                    self._derived_atoms.append(atom)
-                except Exception:
-                    pass
+                key = (p, s, o)
+                if key not in best or cv > best[key][4]:
+                    best[key] = (proof, parts, s, o, cv, sv)
+        safe = lambda x: re.sub(r'[^a-zA-Z0-9_]', '_', _entity_id(x)).strip('_')[:28]
+        for (p, s, o), (proof, (rule, premises), _, _, cv, sv) in best.items():
+            name = f"inferred_{safe(p)}_{safe(s)}_{safe(o)}"
+            self._derived_atoms.append(f"(: {name} ({p} {s} {o}) (STV {sv:.3f} {cv:.3f}))")
+            labels = [self._label(x) for x in premises[:2]] + [("", "")] * 2
+            rs, rc = self._rules.get(rule, (0.0, 0.0))
+            self._derivations[name] = {
+                'rule': rule, 'rule_s': rs, 'rule_c': rc,
+                'premise1': labels[0][0], 'premise1_stv': labels[0][1],
+                'premise2': labels[1][0], 'premise2_stv': labels[1][1],
+                'conclusion': f"{_entity_id(s)} —[{p}]→ {_entity_id(o)}",
+                'derived_s': sv, 'derived_c': cv, 'proof': proof,
+            }
 
     def derivations(self) -> dict[str, dict]:
-        """Return {atom_name: proof_trace} for all Python-derived atoms."""
+        """Return {atom_name: proof_trace} for all derived atoms."""
         return dict(self._derivations)
 
     def run(self, steps: int | None = None) -> list[str]:
-        """Run Python-level forward chaining and return derived atoms."""
+        """Derive and return the inferred atoms."""
         self.materialize(steps)
         return list(self._derived_atoms)
 
     def all_facts(self) -> list[str]:
-        """Return all current atoms in the atomspace (original + derived)."""
-        if self._handler is None:
-            return []
-        try:
-            return [str(a) for a in (self._handler.all_facts() or [])]
-        except Exception:
-            return []
+        """Original facts plus derived atoms."""
+        return list(self._facts.values()) + list(self._derived_atoms)
 
     def handler(self):
         """Direct access to the underlying PeTTaChainer handler (for query reuse)."""
@@ -235,15 +202,6 @@ class ForwardChainer:
         return self._handler
 
 
-def _get_entity_type(entity_id: str, raw_facts: list[str]) -> str:
-    """Infer entity type from facts in the KB (e.g. HP_0000822 → disease)."""
-    for a in raw_facts:
-        m = _PC_FACT_RE.match(a.strip())
-        if not m:
-            continue
-        args_str = m.group(2)
-        args = re.findall(r'\((\w+)\s+([^()]+)\)', args_str)
-        for etype, eid in args:
-            if eid.strip() == entity_id:
-                return etype
-    return ''
+def _entity_id(expr: str) -> str:
+    m = re.match(r'^\((\w+)\s+(.+?)\)$', expr.strip())
+    return m.group(2).strip() if m else expr.strip()
