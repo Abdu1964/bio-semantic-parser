@@ -236,17 +236,11 @@ def run_layer8(emit, doc_id, _safe_id, processed, tagged_chunks, staging_db,
         if _body3:
             emit({"layer": 8, "status": "log", "message": _body3.group(1), "data": {"kind": "html"}})
 
-        _paper_metrics = {"precision": 0.0, "recall": 0.0, "f1": 0.0,
-                          "tp": 0, "fp": 0, "fn": 0}
+        # Precision / recall / F1 from the verification run above — not a second, costly run
+        _paper_metrics = {"precision": None, "recall": None, "f1": None, "tp": None, "fp": None, "fn": None}
         try:
-            from optional_modules.accuracy import run as _acc_run
-            _acc = _acc_run(
-                db_path    = staging_db,
-                out_dir    = run_dir,
-                fetch_text = True,
-                formats    = output_format,
-            )
-            if _acc:
+            _acc = deep_vdata
+            if _acc and _acc.get("precision") is not None:
                 _paper_metrics = {
                     "precision": _acc.get("precision", 0.0),
                     "recall":    _acc.get("recall",    0.0),
