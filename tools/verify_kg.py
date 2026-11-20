@@ -679,6 +679,8 @@ def _accuracy(kg_facts: list) -> dict | None:
     total_key = found = n_kg = 0
     supported: set = set()
     missed: list = []
+    trail_findings: list = []                           # every paper finding: found or missed, and how
+    trail_kg: list = []                                 # every KG fact: stated by the paper or not, and how
     for doc_id, text in _TEXT_CACHE.items():
         if not text:
             continue
@@ -689,6 +691,8 @@ def _accuracy(kg_facts: list) -> dict | None:
 
         # Recall: each key finding the KG contains — same names and relation, else judged on candidates
         hit = [False] * len(key)
+        how: dict = {}                                  # key index → (KG fact, how it matched)
+        support_how: dict = {}                          # KG fact id → how the paper states it
         candidates: list = []
         for i, k in enumerate(key):
             subs, objs = _members(k["subject"]), _members(k["object"])
@@ -701,6 +705,8 @@ def _accuracy(kg_facts: list) -> dict | None:
                 if s_ok and o_ok and str(k["relation"]).lower() == str(f.get("relation", "")).lower():
                     hit[i] = True
                     supported.add(f.get("id"))
+                    how[i] = (_fact_text(f), "same entities and relation")
+                    support_how.setdefault(f.get("id"), ("matches a paper finding", k.get("sentence", "")))
                     break
                 if s_ok or o_ok:
                     ranked.append((s_ok and o_ok, f))
@@ -711,9 +717,11 @@ def _accuracy(kg_facts: list) -> dict | None:
                           "For each item, does the KG fact express the paper's finding (the same entities, or a "
                           "listed member of them, in the same direction of effect)? Different wording counts.")
         for (i, f), same in zip(candidates, verdicts):
-            if same:
+            if same and not hit[i]:
                 hit[i] = True
                 supported.add(f.get("id"))
+                how[i] = (_fact_text(f), "judged the same finding (LLM)")
+                support_how.setdefault(f.get("id"), ("matches a paper finding", key[i].get("sentence", "")))
 
         # Precision: each KG fact the paper states or directly implies
         rest = [f for f in kg if f.get("id") not in supported]
@@ -724,8 +732,19 @@ def _accuracy(kg_facts: list) -> dict | None:
                         "For each item, does the text state or directly imply the fact? Judge the text, not the "
                         "reasoning; the reasoning only shows where the fact came from.")
         supported |= {f.get("id") for f, ok in zip(rest, stated) if ok}
+        for f, e, ok in zip(rest, evid, stated):
+            support_how[f.get("id")] = (("stated by the text (LLM judged)" if ok else "not stated by the text"), e)
+        for f in kg:
+            way, ev = support_how.get(f.get("id"), ("not stated by the text", ""))
+            trail_kg.append({"fact": _fact_text(f), "stated": f.get("id") in supported, "how": way,
+                             "evidence": ev, "paper": doc_id})
 
         groups = _findings(key)
+        for g in groups:
+            m = next((how[i] for i in g if i in how), None)
+            trail_findings.append({
+                "facts": [{"fact": _fact_text(key[i]), "sentence": key[i].get("sentence", "")} for i in g],
+                "found": m is not None, "kg_fact": m[0] if m else "", "how": m[1] if m else "", "paper": doc_id})
         total_key += len(groups)
         found += sum(any(hit[i] for i in g) for g in groups)
         n_kg += len(kg)
@@ -746,10 +765,90 @@ def _accuracy(kg_facts: list) -> dict | None:
         "kg_facts":    n_kg,
         "key_facts":   total_key,
         "fn_examples": missed[:10],
+        "details":     {"findings": trail_findings, "kg_facts": trail_kg},
     }
 
 
 # ── HTML report ───────────────────────────────────────────────────────────────
+
+def _edge_item(v: dict) -> dict:
+    src = next((x for x in v.get("sources", []) if x.get("sentence") or x.get("note")), {})
+    tag = {"CONFIRMED": "ok", "PARTIAL": "warn", "MISMATCH": "bad"}.get(v["overall_status"], "info")
+    return {"title": _fact_text({**v, "subject": v.get("subject"), "object": v.get("object")}),
+            "tag": tag, "label": v["overall_status"].lower(),
+            "lines": [x for x in (src.get("note", ""), f"Sentence: {src['sentence']}" if src.get("sentence") else "") if x]}
+
+
+def _details(verifications: list, em: dict, nodes: dict) -> dict:
+    """What each number on the report counts, item by item; the metrics with their formula and inputs."""
+    pct = lambda x: f"{x * 100:.1f}%"
+    by = lambda st: [_edge_item(v) for v in verifications if v["overall_status"] == st]
+    d = em.get("details") or {}
+    findings, kg = d.get("findings", []), d.get("kg_facts", [])
+    f_item = lambda f: {"title": " / ".join(x["fact"] for x in f["facts"]),
+                        "tag": "ok" if f["found"] else "bad", "label": "found" if f["found"] else "missed",
+                        "lines": ([f"KG fact: {f['kg_fact']}  ({f['how']})"] if f["found"] else ["No KG fact expresses it"])
+                                 + [f"Paper: {x['sentence']}" for x in f["facts"][:1] if x.get("sentence")]}
+    k_item = lambda k: {"title": k["fact"], "tag": "ok" if k["stated"] else "bad",
+                        "label": "stated" if k["stated"] else "not stated",
+                        "lines": [k["how"]] + ([f"Evidence: {k['evidence']}"] if k.get("evidence") else [])}
+    out = {
+        "e_confirmed": {"title": "Confirmed edges", "explain": "Both entity names were found in the paper text.",
+                        "items": by("CONFIRMED")},
+        "e_partial": {"title": "Partial edges", "explain": "Only one of the two entity names was found in the paper.",
+                      "items": by("PARTIAL")},
+        "e_unver": {"title": "Unverifiable edges", "explain": "The paper text could not be fetched for these facts.",
+                    "items": by("UNVERIFIABLE")},
+        "e_mismatch": {"title": "Mismatch / human review", "explain": "Neither name was found, or the pipeline "
+                       "flagged the fact (semantic rejection or review).", "items": by("MISMATCH")},
+        "e_total": {"title": "All edges", "explain": "Every fact in the knowledge graph for this report.",
+                    "items": [_edge_item(v) for v in verifications]},
+        "n_confirmed": {"title": "Confirmed nodes", "explain": "Entities in at least one confirmed edge.",
+                        "items": [{"title": n, "tag": "ok", "label": i, "lines": []} for i, n in nodes["confirmed"]]},
+        "n_unconfirmed": {"title": "Unconfirmed nodes", "explain": "Entities in no confirmed edge.",
+                          "items": [{"title": n, "tag": "info", "label": i, "lines": []} for i, n in nodes["unconfirmed"]]},
+        "n_total": {"title": "All nodes", "explain": "Every entity in the report's edges.",
+                    "items": [{"title": n, "tag": "ok", "label": i, "lines": []}
+                              for i, n in nodes["confirmed"] + nodes["unconfirmed"]]},
+    }
+    if "supported" not in em:
+        return out
+    P, R, F = em["precision"], em["recall"], em["f1"]
+    out.update({
+        "precision": {"title": "Precision", "formula": "Precision = TP ÷ (TP + FP)",
+                      "inputs": [f"TP = {em['supported']} KG facts the paper states",
+                                 f"FP = {em['fp']} KG facts the paper does not state"],
+                      "calc": f"{em['supported']} ÷ ({em['supported']} + {em['fp']}) = {pct(P)}",
+                      "explain": "Unit: KG facts. TP = a KG fact the paper states or directly implies, judged on the "
+                                 "paper's sentences that name both entities (a fact matching a paper finding counts); "
+                                 "FP = a KG fact the paper does not state.",
+                      "items": [k_item(k) for k in sorted(kg, key=lambda k: not k["stated"])]},
+        "recall": {"title": "Recall", "formula": "Recall = TP ÷ (TP + FN)",
+                   "inputs": [f"TP = {em['tp']} paper findings found in the KG",
+                              f"FN = {em['fn']} paper findings the KG misses"],
+                   "calc": f"{em['tp']} ÷ ({em['tp']} + {em['fn']}) = {pct(R)}",
+                   "explain": "Unit: paper findings (the answer key: every finding the whole paper states, each "
+                              "with its sentence). TP = a finding a KG fact expresses (same entities and relation, or "
+                              "judged the same finding in other words); FN = a finding no KG fact expresses.",
+                   "items": [f_item(f) for f in sorted(findings, key=lambda f: not f["found"])]},
+        "f1": {"title": "F1 score", "formula": "F1 = 2 × Precision × Recall ÷ (Precision + Recall)",
+               "inputs": [f"Precision = {P:.4f}", f"Recall = {R:.4f}"],
+               "calc": f"2 × {P:.4f} × {R:.4f} ÷ ({P:.4f} + {R:.4f}) = {pct(F)}",
+               "explain": "The harmonic mean of precision and recall: high only when both are high.", "items": []},
+        "found": {"title": "Found — paper findings in the KG", "explain": "Recall's numerator.",
+                  "items": [f_item(f) for f in findings if f["found"]]},
+        "notstated": {"title": "Not stated — KG facts the paper does not state", "explain": "These lower precision.",
+                      "items": [k_item(k) for k in kg if not k["stated"]]},
+        "missed": {"title": "Missed — paper findings not in the KG", "explain": "These lower recall.",
+                   "items": [f_item(f) for f in findings if not f["found"]]},
+        "key": {"title": "Paper findings (answer key)", "explain": "Recall's denominator: every finding the paper "
+                "states, entries from one sentence about the same thing counted once.",
+                "items": [f_item(f) for f in findings]},
+        "kg_all": {"title": "All KG facts", "explain": "Precision's denominator.", "items": [k_item(k) for k in kg]},
+    })
+    return out
+
+
 
 def render_html(verifications: list, output: Path, node_stats: dict = None,
                 eval_metrics: dict = None) -> None:
@@ -850,7 +949,7 @@ def render_html(verifications: list, output: Path, node_stats: dict = None,
     tp_display  = em.get("tp", confirm) if new_metrics else confirm
     fp_display  = em.get("fp", mismatch) if new_metrics else mismatch
     key_display = em.get("key_facts", "—")
-    prec_basis  = ("facts the paper states / all KG facts" if new_metrics else "entity names found in the paper")
+    prec_basis  = ("TP / (TP + FP) — KG facts" if new_metrics else "entity names found in the paper")
 
     recall_hint = (
         "" if recall_val is not None
@@ -877,17 +976,17 @@ def render_html(verifications: list, output: Path, node_stats: dict = None,
   </div>
 
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:16px">
-    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px 16px;text-align:center">
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px 16px;text-align:center" class="clk" onclick="showDetail('precision')">
       <div style="font-size:26px;font-weight:700;color:{prec_color}">{prec_pct}</div>
       <div style="font-size:11px;color:#8b949e;margin-top:2px">PRECISION</div>
       <div style="font-size:10px;color:#8b949e">{prec_basis}</div>
     </div>
-    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px 16px;text-align:center">
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px 16px;text-align:center" class="clk" onclick="showDetail('recall')">
       <div style="font-size:26px;font-weight:700;color:{rec_color}">{rec_pct}</div>
       <div style="font-size:11px;color:#8b949e;margin-top:2px">RECALL</div>
-      <div style="font-size:10px;color:#8b949e">paper facts found in the KG / all paper facts</div>
+      <div style="font-size:10px;color:#8b949e">TP / (TP + FN) — paper findings</div>
     </div>
-    <div style="background:#0d1117;border:2px solid {f1_color}44;border-radius:8px;padding:12px 16px;text-align:center">
+    <div style="background:#0d1117;border:2px solid {f1_color}44;border-radius:8px;padding:12px 16px;text-align:center" class="clk" onclick="showDetail('f1')">
       <div style="font-size:26px;font-weight:700;color:{f1_color}">{f1_pct}</div>
       <div style="font-size:11px;color:#8b949e;margin-top:2px">F1 SCORE</div>
       <div style="font-size:10px;color:#8b949e">{f1_verdict}</div>
@@ -895,33 +994,45 @@ def render_html(verifications: list, output: Path, node_stats: dict = None,
   </div>
 
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">
-    <div style="background:#23863622;border:1px solid #23863644;border-radius:6px;padding:8px 12px;text-align:center">
+    <div style="background:#23863622;border:1px solid #23863644;border-radius:6px;padding:8px 12px;text-align:center" class="clk" onclick="showDetail('found')">
       <div style="font-size:20px;font-weight:700;color:#238636">{tp_display}</div>
       <div style="font-size:10px;color:#8b949e">✓ Found — paper facts in the KG</div>
     </div>
-    <div style="background:#f8514922;border:1px solid #f8514944;border-radius:6px;padding:8px 12px;text-align:center">
+    <div style="background:#f8514922;border:1px solid #f8514944;border-radius:6px;padding:8px 12px;text-align:center" class="clk" onclick="showDetail('notstated')">
       <div style="font-size:20px;font-weight:700;color:#f85149">{fp_display}</div>
       <div style="font-size:10px;color:#8b949e">✗ Not stated — KG facts the paper does not state</div>
     </div>
-    <div style="background:#d2992222;border:1px solid #d2992244;border-radius:6px;padding:8px 12px;text-align:center">
+    <div style="background:#d2992222;border:1px solid #d2992244;border-radius:6px;padding:8px 12px;text-align:center" class="clk" onclick="showDetail('missed')">
       <div style="font-size:20px;font-weight:700;color:#d29922">{fn_display}</div>
       <div style="font-size:10px;color:#8b949e">✗ Missed — paper facts not in the KG</div>
     </div>
-    <div style="background:#a371f722;border:1px solid #a371f744;border-radius:6px;padding:8px 12px;text-align:center">
+    <div style="background:#a371f722;border:1px solid #a371f744;border-radius:6px;padding:8px 12px;text-align:center" class="clk" onclick="showDetail('key')">
       <div style="font-size:20px;font-weight:700;color:#a371f7">{key_display}</div>
       <div style="font-size:10px;color:#8b949e">PAPER FACTS (answer key)</div>
     </div>
-    <div style="background:#8b949e22;border:1px solid #8b949e44;border-radius:6px;padding:8px 12px;text-align:center">
+    <div style="background:#8b949e22;border:1px solid #8b949e44;border-radius:6px;padding:8px 12px;text-align:center" class="clk" onclick="showDetail('e_unver')">
       <div style="font-size:20px;font-weight:700;color:#8b949e">{unver}</div>
       <div style="font-size:10px;color:#8b949e">~ UNVERIFIABLE</div>
     </div>
-    <div style="background:#58a6ff22;border:1px solid #58a6ff44;border-radius:6px;padding:8px 12px;text-align:center">
+    <div style="background:#58a6ff22;border:1px solid #58a6ff44;border-radius:6px;padding:8px 12px;text-align:center" class="clk" onclick="showDetail('kg_all')">
       <div style="font-size:20px;font-weight:700;color:#58a6ff">{total}</div>
       <div style="font-size:10px;color:#8b949e">TOTAL in KG</div>
     </div>
   </div>
   {recall_hint}
 </div>"""
+
+    names, conf_ids = {}, set()
+    for v in verifications:
+        for side in ("subject", "object"):
+            nid = v.get(f"{side}_id", "")                # the same node count as run_verification
+            if nid:
+                names.setdefault(nid, v.get(side) or nid)
+                if v["overall_status"] == "CONFIRMED":
+                    conf_ids.add(nid)
+    nodes = {"confirmed": sorted(((i, names[i]) for i in conf_ids), key=lambda x: str(x[1]).lower()),
+             "unconfirmed": sorted(((i, n) for i, n in names.items() if i not in conf_ids), key=lambda x: str(x[1]).lower())}
+    detail_json = json.dumps(_details(verifications, eval_metrics or {}, nodes), default=str).replace("</", "<\\/")
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -939,6 +1050,32 @@ def render_html(verifications: list, output: Path, node_stats: dict = None,
   .filter-btn {{ background:#21262d; border:1px solid #30363d; color:#c9d1d9; padding:4px 12px; border-radius:6px; cursor:pointer; font-size:12px; }}
   .filter-btn.active {{ background:#1f6feb; border-color:#388bfd; color:#fff; }}
   summary::-webkit-details-marker {{ display:none; }}
+  .clk {{ cursor:pointer; transition:transform .12s, box-shadow .12s; }}
+  .clk:hover {{ transform:translateY(-2px); box-shadow:0 0 0 1px #58a6ff88, 0 6px 18px #0008; }}
+  #md {{ display:none; position:fixed; inset:0; background:#010409cc; z-index:50; align-items:flex-start;
+         justify-content:center; padding:5vh 16px; }}
+  #md.open {{ display:flex; }}
+  .md-box {{ background:#161b22; border:1px solid #30363d; border-radius:12px; width:100%; max-width:860px;
+             max-height:88vh; display:flex; flex-direction:column; box-shadow:0 16px 48px #000a; }}
+  .md-head {{ display:flex; align-items:center; gap:12px; padding:16px 20px; border-bottom:1px solid #30363d;
+              font-size:16px; font-weight:700; }}
+  .md-count {{ font-size:12px; font-weight:500; color:#8b949e; background:#21262d; padding:2px 10px; border-radius:20px; }}
+  .md-head button {{ margin-left:auto; background:none; border:none; color:#8b949e; font-size:20px; cursor:pointer; }}
+  .md-body {{ overflow-y:auto; padding:16px 20px 20px; }}
+  .md-formula {{ background:#0d1117; border:1px solid #1f6feb66; border-radius:8px; padding:14px 16px; margin-bottom:12px; }}
+  .md-f {{ font-family:ui-monospace,Menlo,monospace; font-size:15px; color:#79c0ff; margin-bottom:8px; }}
+  .md-in {{ font-size:13px; color:#c9d1d9; padding:2px 0; }}
+  .md-calc {{ font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:700; color:#e6edf3;
+              margin-top:10px; padding-top:10px; border-top:1px dashed #30363d; }}
+  .md-ex {{ color:#8b949e; font-size:13px; line-height:1.5; margin:0 0 14px; }}
+  .md-item {{ background:#0d1117; border:1px solid #30363d; border-left:4px solid #8b949e; border-radius:6px;
+              padding:10px 12px; margin-bottom:8px; }}
+  .md-item.ok {{ border-left-color:#238636; }} .md-item.bad {{ border-left-color:#f85149; }}
+  .md-item.warn {{ border-left-color:#d29922; }}
+  .md-t {{ font-size:13px; font-weight:600; color:#e6edf3; }}
+  .md-tag {{ float:right; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:#8b949e; }}
+  .md-l {{ font-size:12px; color:#8b949e; margin-top:4px; line-height:1.45; }}
+  .md-empty {{ color:#8b949e; font-size:13px; font-style:italic; }}
 </style>
 </head>
 <body>
@@ -951,20 +1088,20 @@ def render_html(verifications: list, output: Path, node_stats: dict = None,
   Edges / Relations
 </div>
 <div class="stats">
-  <div class="stat"><div class="stat-n" style="color:#238636">{confirm}</div><div class="stat-l">CONFIRMED</div></div>
-  <div class="stat"><div class="stat-n" style="color:#d29922">{partial}</div><div class="stat-l">PARTIAL</div></div>
-  <div class="stat"><div class="stat-n" style="color:#8b949e">{unver}</div><div class="stat-l">UNVERIFIABLE<br><span style="font-size:9px">(run --fetch)</span></div></div>
-  <div class="stat"><div class="stat-n" style="color:#f85149">{mismatch}</div><div class="stat-l">MISMATCH</div></div>
-  <div class="stat"><div class="stat-n" style="color:#58a6ff">{total}</div><div class="stat-l">TOTAL EDGES</div></div>
+  <div class="stat clk" onclick="showDetail('e_confirmed')"><div class="stat-n" style="color:#238636">{confirm}</div><div class="stat-l">CONFIRMED</div></div>
+  <div class="stat clk" onclick="showDetail('e_partial')"><div class="stat-n" style="color:#d29922">{partial}</div><div class="stat-l">PARTIAL</div></div>
+  <div class="stat clk" onclick="showDetail('e_unver')"><div class="stat-n" style="color:#8b949e">{unver}</div><div class="stat-l">UNVERIFIABLE<br><span style="font-size:9px">(run --fetch)</span></div></div>
+  <div class="stat clk" onclick="showDetail('e_mismatch')"><div class="stat-n" style="color:#f85149">{mismatch}</div><div class="stat-l">MISMATCH</div></div>
+  <div class="stat clk" onclick="showDetail('e_total')"><div class="stat-n" style="color:#58a6ff">{total}</div><div class="stat-l">TOTAL EDGES</div></div>
 </div>
 
 <div style="color:#8b949e;font-size:12px;margin:16px 0 8px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">
   Nodes / Entities  <span style="font-size:10px;font-weight:400">(an entity is confirmed if it appears in at least one confirmed triple)</span>
 </div>
 <div class="stats" style="margin-bottom:24px">
-  <div class="stat"><div class="stat-n" style="color:#238636">{node_stats["confirmed"]}</div><div class="stat-l">CONFIRMED</div></div>
-  <div class="stat"><div class="stat-n" style="color:#8b949e">{node_stats["total"] - node_stats["confirmed"]}</div><div class="stat-l">UNCONFIRMED</div></div>
-  <div class="stat"><div class="stat-n" style="color:#58a6ff">{node_stats["total"]}</div><div class="stat-l">TOTAL NODES</div></div>
+  <div class="stat clk" onclick="showDetail('n_confirmed')"><div class="stat-n" style="color:#238636">{node_stats["confirmed"]}</div><div class="stat-l">CONFIRMED</div></div>
+  <div class="stat clk" onclick="showDetail('n_unconfirmed')"><div class="stat-n" style="color:#8b949e">{node_stats["total"] - node_stats["confirmed"]}</div><div class="stat-l">UNCONFIRMED</div></div>
+  <div class="stat clk" onclick="showDetail('n_total')"><div class="stat-n" style="color:#58a6ff">{node_stats["total"]}</div><div class="stat-l">TOTAL NODES</div></div>
 </div>
 
 <div class="filter-row">
@@ -977,7 +1114,33 @@ def render_html(verifications: list, output: Path, node_stats: dict = None,
 
 <div id="rows">{rows}</div>
 
+<div id="md" onclick="if(event.target.id==='md')hideDetail()"><div class="md-box" id="md-box"></div></div>
+
 <script>
+const DETAIL = {detail_json};
+function esc(s) {{ return String(s ?? '').replace(/[&<>"]/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}}[c])); }}
+function showDetail(key) {{
+  const d = DETAIL[key];
+  if (!d) return;
+  const items = d.items || [];
+  let h = `<div class="md-head"><span>${{esc(d.title)}}</span>`
+        + (d.formula && !items.length ? '' : `<span class="md-count">${{items.length}} item${{items.length === 1 ? '' : 's'}}</span>`)
+        + `<button onclick="hideDetail()" aria-label="Close">✕</button></div><div class="md-body">`;
+  if (d.formula) {{
+    h += `<div class="md-formula"><div class="md-f">${{esc(d.formula)}}</div>`
+       + (d.inputs || []).map(x => `<div class="md-in">• ${{esc(x)}}</div>`).join('')
+       + `<div class="md-calc">= ${{esc(d.calc)}}</div></div>`;
+  }}
+  if (d.explain) h += `<p class="md-ex">${{esc(d.explain)}}</p>`;
+  if (!items.length && !d.formula) h += `<div class="md-empty">Nothing to show — this number is 0.</div>`;
+  h += items.map(it => `<div class="md-item ${{it.tag}}"><span class="md-tag">${{esc(it.label)}}</span>`
+       + `<div class="md-t">${{esc(it.title)}}</div>`
+       + (it.lines || []).map(l => `<div class="md-l">${{esc(l)}}</div>`).join('') + `</div>`).join('');
+  document.getElementById('md-box').innerHTML = h + '</div>';
+  document.getElementById('md').classList.add('open');
+}}
+function hideDetail() {{ document.getElementById('md').classList.remove('open'); }}
+document.addEventListener('keydown', e => {{ if (e.key === 'Escape') hideDetail(); }});
 function filterAll() {{
   document.querySelectorAll('#rows details').forEach(d => d.style.display='');
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
