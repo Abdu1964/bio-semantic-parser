@@ -195,7 +195,7 @@ async function openTriplesPanel(dbPath, runDir, label) {
     <div id="triples-pager" style="margin-top:10px;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text3)"></div>
   `;
 
-  document.getElementById('triples-search').addEventListener('input', () => {
+  panel.querySelector('#triples-search').addEventListener('input', () => {        // panel not in the page yet
     clearTimeout(_tripleSearchTimer);
     _tripleSearchTimer = setTimeout(() => {
       const p = document.getElementById('triples-panel');

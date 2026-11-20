@@ -55,7 +55,34 @@ def _find_entity_spans(text: str, entity_name: str) -> list[dict]:
     return spans
 
 
+_RUN_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_")
+
+
+def _paper_ids(doc_id: str) -> list:
+    """The ID as given; for a run folder, also its name without the timestamp and the paper IDs its report records."""
+    ids = [doc_id, _RUN_PREFIX.sub("", doc_id)]
+    report = _ROOT / "data" / "kg_output" / doc_id / "verification_report.json"
+    if report.exists():
+        try:
+            for v in json.loads(report.read_text(encoding="utf-8"))[:20]:
+                ids += [s.get("doc_id", "") for s in v.get("sources", [])]
+        except Exception:
+            pass
+    return [i for i in dict.fromkeys(ids) if i and i != "none"]
+
+
 def _find_checkpoint_dir(doc_id: str) -> Optional[Path]:
+    """Checkpoint folder of a paper ID or of a run folder's paper."""
+    if not doc_id or ".." in doc_id or "/" in doc_id or "\\" in doc_id:
+        return None
+    for pid in _paper_ids(doc_id):
+        found = _find_paper_checkpoint(pid)
+        if found:
+            return found
+    return None
+
+
+def _find_paper_checkpoint(doc_id: str) -> Optional[Path]:
     """Find the checkpoint directory for a document ID, checking direct name, case-insensitive name, and chunk metadata."""
     if not doc_id or ".." in doc_id or "/" in doc_id or "\\" in doc_id:
         return None
