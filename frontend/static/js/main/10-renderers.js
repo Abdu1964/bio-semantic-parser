@@ -517,7 +517,8 @@ function verifyReviewSource(i) {
   btn.disabled = true;
   btn.innerHTML = '🔍 Searching…';
 
-  const docId = window._outputData && window._outputData.run_dir ? window._outputData.run_dir.split('/').pop() : '';
+  const out = (typeof _outputData !== 'undefined' && _outputData.run_dir) ? _outputData : (window._outputData || {});
+  const docId = out.run_dir ? String(out.run_dir).split('/').pop() : '';   // the run folder; the API finds its paper
 
   fetch('/api/source-grounding', {
     method: 'POST',
