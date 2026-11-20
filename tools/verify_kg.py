@@ -502,172 +502,250 @@ def verify_triple(triple: dict, fetch_text: bool = False) -> dict:
     }
 
 
-# ── Automatic recall computation ──────────────────────────────────────────────
+# ── Accuracy: the paper's answer key, precision and recall ───────────────────
+# Answer key: the distinct findings the whole paper states, in the pipeline's scope, each with the sentence
+# that states it. Recall: key findings the KG contains. Precision: KG facts the paper states or directly
+# implies, judged on the paper's sentences that name both entities. Names match through the paper's own
+# abbreviations and the KG's canonical names and synonyms; an LLM judges wording differences.
 
-def _build_recall_system() -> str:
-    """Short prompt for recall ground truth: relation names only, so it fits the LLM context."""
+_KEY_WINDOW = int(os.getenv("ACCURACY_WINDOW_CHARS", "10000"))
+_JUDGE_BATCH = 25
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z(\[])")
+
+
+def _key_system() -> str:
     try:
         from src.schema.taxonomy import RelationType
-        valid = sorted(r.value for r in RelationType)
-        types_str = " | ".join(valid)
+        types_str = " | ".join(sorted(r.value for r in RelationType))
     except Exception:
-        types_str = "causes | promotes | inhibits | treats | prevents | associates_with | contributes_to | diagnoses | ameliorates"
-
+        types_str = ""
     return (
-        "You are a biomedical relation extraction expert.\n"
-        "Extract ALL biological, clinical, and epidemiological relations from the paper text.\n\n"
-        f"VALID relation values (use ONLY these): {types_str}\n\n"
-        "RULES:\n"
-        "1. Only use relation values from the list above — never invent new ones.\n"
-        "2. These relation types cover molecular, clinical, outcomes, and intervention domains.\n"
-        "3. Be exhaustive — extract every relation that fits.\n"
-        "4. subject and object must be exact verbatim text from the paper.\n\n"
-        "Return a JSON array only — no markdown, no commentary.\n"
-        "Each item: {\"subject\": \"...\", \"relation\": \"...\", \"object\": \"...\"}\n"
-        "Example: [{\"subject\":\"hypertension\",\"relation\":\"causes\",\"object\":\"stroke\"}]"
+        "You list the distinct findings a scientific paper states, to check a knowledge graph built from it.\n"
+        f"Relation values (use only these): {types_str}\n\n"
+        "A finding links two named biological or clinical entities (gene, protein, chemical, drug, disease,\n"
+        "phenotype, biological process, pathway, cell type, tissue, organism, intervention, health outcome).\n"
+        "- Include the paper's own results and findings it reports from earlier research; negative findings\n"
+        "  with negated=true.\n"
+        "- One entry per finding: when a sentence states the same finding for several entities (A, B and C\n"
+        "  inhibit X), give one entry with the entities as written.\n"
+        "- Leave out definitions and classifications (X is a type of Y), methods and study design, statistics\n"
+        "  that are not a relation, software, apps, ratings or usage counts, and anything the text does not state.\n"
+        "Return JSON: {\"relations\": [{\"subject\": \"...\", \"relation\": \"...\", \"object\": \"...\",\n"
+        "\"negated\": false, \"sentence\": \"the exact sentence from the text\"}]}"
     )
 
-_RECALL_SYSTEM = _build_recall_system()
+
+def _windows(text: str, size: int) -> list:
+    """The text in consecutive windows of about `size` characters, cut at sentence ends."""
+    out, start = [], 0
+    while start < len(text):
+        end = min(len(text), start + size)
+        if end < len(text):
+            cut = text.rfind(". ", start + size // 2, end)
+            end = cut + 1 if cut > 0 else end
+        out.append(text[start:end])
+        start = end
+    return [w for w in out if w.strip()]
 
 
-# Common biomedical abbreviations expanded before matching
-_ABBREV_MAP = {
-    r"\bhbpm\b":  "home blood pressure monitoring",
-    r"\bbp\b":    "blood pressure",
-    r"\bhtn\b":   "hypertension",
-    r"\bcvd\b":   "cardiovascular disease",
-    r"\bcv\b":    "cardiovascular",
-    r"\bchd\b":   "coronary heart disease",
-    r"\bsbp\b":   "systolic blood pressure",
-    r"\bdbp\b":   "diastolic blood pressure",
-    r"\bami\b":   "acute myocardial infarction",
-    r"\bt2d\b":   "type 2 diabetes",
-    r"\bt2dm\b":  "type 2 diabetes mellitus",
-}
-
-def _normalize(s: str) -> str:
-    s = s.lower()
-    # Strip parenthetical annotations FIRST — e.g. "home BP monitoring (HBPM)"
-    # → "home BP monitoring" — prevents double-expansion of abbreviations
-    s = re.sub(r"\([^)]*\)", " ", s)
-    # Replace underscores AND hyphens with spaces
-    s = s.replace("_", " ").replace("-", " ")
-    # Expand abbreviations on the cleaned string (no risk of double-expansion now)
-    for pattern, expansion in _ABBREV_MAP.items():
-        s = re.sub(pattern, expansion, s)
-    # Strip remaining non-alphanumeric (except spaces)
-    s = re.sub(r"[^a-z0-9 ]", "", s)
-    # Collapse multiple spaces
-    return re.sub(r" +", " ", s).strip()
+def _squash(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").lower()).strip()
 
 
-def _llm_extract_triples(text: str) -> list:
-    """All relations in a paper's text by the LLM, for recall; [] on failure."""
-    try:
-        from src.llm_client import call_llm, parse_json
-        messages = [
-            {"role": "system", "content": _RECALL_SYSTEM},
-            {"role": "user",   "content": f"Paper text:\n\n{text[:12000]}"},
-        ]
-        raw  = call_llm(messages, json_mode=False, max_tokens=4096)
-        raw  = raw.strip()
-        raw  = re.sub(r"^```[a-z]*\n?", "", raw)
-        raw  = re.sub(r"\n?```$",        "", raw)
-        data = json.loads(raw)
-        if isinstance(data, list):
-            return [t for t in data
-                    if isinstance(t, dict)
-                    and all(k in t for k in ("subject", "relation", "object"))]
-        if isinstance(data, dict):
-            triples = data.get("triples") or data.get("relations") or data.get("entities") or []
-            return [t for t in triples
-                    if isinstance(t, dict)
-                    and all(k in t for k in ("subject", "relation", "object"))]
-    except Exception:
-        pass
-    return []
+def _key_facts(text: str) -> list:
+    """The paper's distinct findings, each kept only if its sentence is in the text."""
+    from src.llm_client import call_llm, parse_json
+    from src.postextraction.name_matching import term_key
+    system, plain, facts, seen = _key_system(), _squash(text), [], set()
+    for window in _windows(text, _KEY_WINDOW):
+        try:
+            raw = call_llm([{"role": "system", "content": system},
+                            {"role": "user", "content": f"TEXT:\n{window}"}], max_tokens=4096)
+            found = parse_json(raw).get("relations", [])
+        except Exception:
+            continue
+        for f in found if isinstance(found, list) else []:
+            if not isinstance(f, dict) or not all(f.get(k) for k in ("subject", "relation", "object")):
+                continue
+            sentence = _squash(f.get("sentence", ""))
+            if not sentence or sentence[:60] not in plain:           # not stated in the text
+                continue
+            key = (term_key(f["subject"]), str(f["relation"]).lower(), term_key(f["object"]), bool(f.get("negated")))
+            if key not in seen:
+                seen.add(key)
+                facts.append(f)
+    return facts
 
 
-def _compute_recall_from_cache(results: list, confirmed: int, mismatch: int):
-    """Recall from LLM re-extraction of the cached paper texts; None without the LLM or text."""
-    if not _TEXT_CACHE:
-        return None
+def _findings(key: list) -> list:
+    """Key entries from one sentence with the same relation and a shared subject or object are one finding."""
+    from src.postextraction.name_matching import term_key
+    parent = list(range(len(key)))
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    first: dict = {}
+    for i, k in enumerate(key):
+        sent, rel = _squash(k.get("sentence", "")), str(k["relation"]).lower()
+        for side in ("subject", "object"):
+            j = first.setdefault((sent, rel, side, term_key(k[side])), i)
+            parent[root(i)] = root(j)
+    groups: dict = {}
+    for i in range(len(key)):
+        groups.setdefault(root(i), []).append(i)
+    return list(groups.values())
 
-    kg_keys: set = set()
-    for v in results:
-        s = _normalize(v.get("subject", ""))
-        r = _normalize(v.get("relation", ""))   # underscore→space normalised
-        o = _normalize(v.get("object", ""))
-        if s and r and o:
-            kg_keys.add((s, r, o))
 
-    total_gt = total_tp = total_fn = 0
-    all_fn_triples: list = []
+def _members(name: str) -> list:
+    """The entities of a listed name ('A, B and C' → [A, B, C]); [name] otherwise."""
+    parts = [p.strip() for p in re.split(r",\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+", name or "") if p.strip()]
+    return parts if len(parts) > 1 else [name]
 
+
+def _forms(name: str, abbrevs: dict) -> set:
+    """A name, its expansion if the paper abbreviates it, and the abbreviation the paper gives it."""
+    return {f for f in {name, abbrevs.get((name or "").strip(), "")} |
+            {s for s, long in abbrevs.items() if _squash(long) == _squash(name)} if f}
+
+
+def _same_entity(a: str, names: list, abbrevs: dict) -> bool:
+    """A name matches an entity: exact or close name, one name contained in the other, or an abbreviation."""
+    from src.postextraction.name_matching import match_quality, tokens, NONE
+    for f in _forms(a, abbrevs):
+        ft = set(tokens(f))
+        for n in filter(None, names):
+            nt = set(tokens(n))
+            if match_quality(f, n) != NONE or (ft and nt and (ft <= nt or nt <= ft)):
+                return True
+    return False
+
+
+def _in_sentence(names: list, sentence_tokens: set, sentence: str, abbrevs: dict) -> bool:
+    """Whether a sentence names an entity (any of its names or forms)."""
+    from src.postextraction.name_matching import tokens
+    for n in filter(None, names):
+        for f in _forms(n, abbrevs):
+            ft = set(tokens(f))
+            if (ft and ft <= sentence_tokens) or (len(f) <= 6 and re.search(rf"\b{re.escape(f)}\b", sentence)):
+                return True
+    return False
+
+
+def _kg_names(fact: dict, side: str) -> list:
+    syns = fact.get(f"{side}_synonyms") or ""
+    syns = syns.split(";") if isinstance(syns, str) else list(syns)
+    return [fact.get(f"{side}_name", ""), fact.get(f"{side}_canonical_name", "")] + [s.strip() for s in syns]
+
+
+def _evidence(fact: dict, sentences: list, abbrevs: dict) -> str:
+    """The paper's sentences that name both entities of a KG fact (up to 3)."""
+    s_names, o_names = _kg_names(fact, "subject"), _kg_names(fact, "object")
+    hits = [s for s, toks in sentences
+            if _in_sentence(s_names, toks, s, abbrevs) and _in_sentence(o_names, toks, s, abbrevs)]
+    return " … ".join(hits[:3])[:1500]
+
+
+def _judge(items: list, prompt: str) -> list:
+    """LLM yes/no for each item, in batches; False when the LLM is unavailable."""
+    from src.llm_client import call_llm, parse_json
+    out = []
+    for b in range(0, len(items), _JUDGE_BATCH):
+        batch = items[b:b + _JUDGE_BATCH]
+        listing = "\n".join(f"{i}. {x}" for i, x in enumerate(batch, 1))
+        try:
+            raw = call_llm([{"role": "user", "content":
+                             f"{prompt}\n\n{listing}\n\nReturn JSON: {{\"yes\": [numbers of the items that are yes]}}"}],
+                           max_tokens=1024)
+            yes = {int(x) for x in parse_json(raw).get("yes", [])}
+        except Exception:
+            yes = set()
+        out += [i in yes for i in range(1, len(batch) + 1)]
+    return out
+
+
+def _fact_text(f: dict) -> str:
+    neg = "NOT " if f.get("negated") else ""
+    s = f.get("subject") or f.get("subject_name", "")
+    o = f.get("object") or f.get("object_name", "")
+    return f"{s} {neg}{str(f.get('relation', '')).replace('_', ' ')} {o}"
+
+
+def _accuracy(kg_facts: list) -> dict | None:
+    """Precision and recall of the KG facts against each paper in _TEXT_CACHE."""
+    from src.postextraction.entity_normalization import find_abbreviations
+    from src.postextraction.name_matching import tokens
+    total_key = found = n_kg = 0
+    supported: set = set()
+    missed: list = []
     for doc_id, text in _TEXT_CACHE.items():
         if not text:
             continue
-        gt_triples = _llm_extract_triples(text)
-        if not gt_triples:
-            continue
+        kg = [f for f in kg_facts if doc_id in (f.get("source_papers") or "")]
+        key = _key_facts(text)
+        abbrevs = find_abbreviations(text)
+        sentences = [(s, set(tokens(s))) for s in _SENTENCE_END.split(text) if len(s) > 20]
 
-        gt_keys: set = set()
-        for t in gt_triples:
-            s = _normalize(str(t.get("subject", "")))
-            r = _normalize(str(t.get("relation", "")))   # underscore→space normalised
-            o = _normalize(str(t.get("object",  "")))
-            if s and r and o:
-                gt_keys.add((s, r, o))
-
-        # Exact match, then fuzzy: subject and object share a significant substring
-        def _fuzzy_match(gt_key, kg_set):
-            if gt_key in kg_set:
-                return True
-            gs, gr, go = gt_key
-            for ks, kr, ko in kg_set:
-                if kr != gr:        # relation must match exactly
+        # Recall: each key finding the KG contains — same names and relation, else judged on candidates
+        hit = [False] * len(key)
+        candidates: list = []
+        for i, k in enumerate(key):
+            subs, objs = _members(k["subject"]), _members(k["object"])
+            ranked = []
+            for f in kg:
+                if bool(k.get("negated")) != bool(f.get("negated")):
                     continue
-                # Subject and object match if one contains the other (substring)
-                s_match = gs in ks or ks in gs
-                o_match = go in ko or ko in go
-                if s_match and o_match:
-                    return True
-            return False
+                s_ok = any(_same_entity(m, _kg_names(f, "subject"), abbrevs) for m in subs)
+                o_ok = any(_same_entity(m, _kg_names(f, "object"), abbrevs) for m in objs)
+                if s_ok and o_ok and str(k["relation"]).lower() == str(f.get("relation", "")).lower():
+                    hit[i] = True
+                    supported.add(f.get("id"))
+                    break
+                if s_ok or o_ok:
+                    ranked.append((s_ok and o_ok, f))
+            if not hit[i]:
+                ranked.sort(key=lambda x: not x[0])
+                candidates += [(i, f) for _, f in ranked[:3]]
+        verdicts = _judge([f"Paper finding: {_fact_text(key[i])}  |  KG fact: {_fact_text(f)}" for i, f in candidates],
+                          "For each item, does the KG fact express the paper's finding (the same entities, or a "
+                          "listed member of them, in the same direction of effect)? Different wording counts.")
+        for (i, f), same in zip(candidates, verdicts):
+            if same:
+                hit[i] = True
+                supported.add(f.get("id"))
 
-        tp_keys = {k for k in gt_keys if _fuzzy_match(k, kg_keys)}
-        fn_keys = gt_keys - tp_keys
+        # Precision: each KG fact the paper states or directly implies
+        rest = [f for f in kg if f.get("id") not in supported]
+        evid = [_evidence(f, sentences, abbrevs) for f in rest]
+        stated = _judge([f"Text: \"{e or '(no sentence names both entities)'}\"  |  "
+                         f"Reasoning given: \"{(f.get('reasoning') or '')[:300]}\"  |  Fact: {_fact_text(f)}"
+                         for f, e in zip(rest, evid)],
+                        "For each item, does the text state or directly imply the fact? Judge the text, not the "
+                        "reasoning; the reasoning only shows where the fact came from.")
+        supported |= {f.get("id") for f, ok in zip(rest, stated) if ok}
 
-        total_gt += len(gt_keys)
-        total_tp += len(tp_keys)
-        total_fn += len(fn_keys)
-
-        for t in gt_triples:
-            key = (
-                _normalize(str(t.get("subject", ""))),
-                str(t.get("relation", "")).lower().strip(),
-                _normalize(str(t.get("object",  ""))),
-            )
-            if key in fn_keys:
-                all_fn_triples.append(t)
-
-    if total_gt == 0:
+        groups = _findings(key)
+        total_key += len(groups)
+        found += sum(any(hit[i] for i in g) for g in groups)
+        n_kg += len(kg)
+        missed += [key[g[0]] for g in groups if not any(hit[i] for i in g)]
+    if not total_key or not n_kg:
         return None
-
-    recall    = total_tp / total_gt
-    decidable = confirmed + mismatch
-    precision = confirmed / decidable if decidable > 0 else 0.0
-    f1        = (2 * precision * recall / (precision + recall)
-                 if (precision + recall) > 0 else 0.0)
-
+    precision = len(supported) / n_kg
+    recall = found / total_key
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     return {
-        "precision": round(precision, 4),
-        "recall":    round(recall,    4),
-        "f1":        round(f1,        4),
-        "tp":        total_tp,    # matched by recall LLM re-extraction
-        "tp_verified": confirmed, # confirmed by source text verification
-        "fp":        mismatch,
-        "fn":        total_fn,
-        "fn_examples": all_fn_triples[:10],
+        "precision":   round(precision, 4),
+        "recall":      round(recall, 4),
+        "f1":          round(f1, 4),
+        "tp":          found,                 # paper findings the KG contains
+        "fp":          n_kg - len(supported), # KG facts the paper does not state
+        "fn":          total_key - found,     # key findings the KG misses
+        "supported":   len(supported),
+        "kg_facts":    n_kg,
+        "key_facts":   total_key,
+        "fn_examples": missed[:10],
     }
 
 
@@ -749,8 +827,9 @@ def render_html(verifications: list, output: Path, node_stats: dict = None,
         </details>"""
 
     # ── Accuracy metrics (Precision always available; Recall/F1 from eval_metrics) ──
+    em          = eval_metrics or {}
     decidable   = confirm + mismatch
-    precision   = confirm / decidable if decidable > 0 else 0.0
+    precision   = em["precision"] if "supported" in em else (confirm / decidable if decidable > 0 else 0.0)
     prec_pct    = f"{precision*100:.1f}%"
     prec_color  = "#238636" if precision >= 0.90 else ("#d29922" if precision >= 0.70 else "#f85149")
 
@@ -767,12 +846,16 @@ def render_html(verifications: list, output: Path, node_stats: dict = None,
                    "#d29922" if (f1_val or 0) >= 0.70 else
                    "#f85149") if f1_val is not None else "#8b949e"
     fn_display  = str(fn_count) if fn_count is not None else "—"
+    new_metrics = "supported" in em                     # answer-key metrics; older reports have names only
+    tp_display  = em.get("tp", confirm) if new_metrics else confirm
+    fp_display  = em.get("fp", mismatch) if new_metrics else mismatch
+    key_display = em.get("key_facts", "—")
+    prec_basis  = ("facts the paper states / all KG facts" if new_metrics else "entity names found in the paper")
 
     recall_hint = (
         "" if recall_val is not None
         else "<div style='color:#8b949e;font-size:11px;margin-top:16px'>"
-             "Recall &amp; F1 require ground-truth extraction — "
-             "run <code>python tools/evaluate_kg.py --recall</code></div>"
+             "Recall &amp; F1 need the paper text — run verification with <code>--fetch</code></div>"
     )
 
     # F1 verdict label
@@ -790,19 +873,19 @@ def render_html(verifications: list, output: Path, node_stats: dict = None,
 <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px 24px;margin:20px 0 28px">
   <div style="font-size:13px;font-weight:700;color:#e6edf3;margin-bottom:16px;letter-spacing:.03em">
     📊 KG ACCURACY METRICS
-    <span style="font-weight:400;color:#8b949e;font-size:11px;margin-left:8px">Precision always available · Recall requires --recall flag</span>
+    <span style="font-weight:400;color:#8b949e;font-size:11px;margin-left:8px">Against an answer key of every finding the whole paper states, matched by meaning</span>
   </div>
 
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:16px">
     <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px 16px;text-align:center">
       <div style="font-size:26px;font-weight:700;color:{prec_color}">{prec_pct}</div>
       <div style="font-size:11px;color:#8b949e;margin-top:2px">PRECISION</div>
-      <div style="font-size:10px;color:#8b949e">TP / (TP + FP)</div>
+      <div style="font-size:10px;color:#8b949e">{prec_basis}</div>
     </div>
     <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px 16px;text-align:center">
       <div style="font-size:26px;font-weight:700;color:{rec_color}">{rec_pct}</div>
       <div style="font-size:11px;color:#8b949e;margin-top:2px">RECALL</div>
-      <div style="font-size:10px;color:#8b949e">TP / ground truth</div>
+      <div style="font-size:10px;color:#8b949e">paper facts found in the KG / all paper facts</div>
     </div>
     <div style="background:#0d1117;border:2px solid {f1_color}44;border-radius:8px;padding:12px 16px;text-align:center">
       <div style="font-size:26px;font-weight:700;color:{f1_color}">{f1_pct}</div>
@@ -813,16 +896,20 @@ def render_html(verifications: list, output: Path, node_stats: dict = None,
 
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">
     <div style="background:#23863622;border:1px solid #23863644;border-radius:6px;padding:8px 12px;text-align:center">
-      <div style="font-size:20px;font-weight:700;color:#238636">{confirm}</div>
-      <div style="font-size:10px;color:#8b949e">✓ TP — in both</div>
+      <div style="font-size:20px;font-weight:700;color:#238636">{tp_display}</div>
+      <div style="font-size:10px;color:#8b949e">✓ Found — paper facts in the KG</div>
     </div>
     <div style="background:#f8514922;border:1px solid #f8514944;border-radius:6px;padding:8px 12px;text-align:center">
-      <div style="font-size:20px;font-weight:700;color:#f85149">{mismatch}</div>
-      <div style="font-size:10px;color:#8b949e">✗ FP — KG only</div>
+      <div style="font-size:20px;font-weight:700;color:#f85149">{fp_display}</div>
+      <div style="font-size:10px;color:#8b949e">✗ Not stated — KG facts the paper does not state</div>
     </div>
     <div style="background:#d2992222;border:1px solid #d2992244;border-radius:6px;padding:8px 12px;text-align:center">
       <div style="font-size:20px;font-weight:700;color:#d29922">{fn_display}</div>
-      <div style="font-size:10px;color:#8b949e">✗ FN — paper only</div>
+      <div style="font-size:10px;color:#8b949e">✗ Missed — paper facts not in the KG</div>
+    </div>
+    <div style="background:#a371f722;border:1px solid #a371f744;border-radius:6px;padding:8px 12px;text-align:center">
+      <div style="font-size:20px;font-weight:700;color:#a371f7">{key_display}</div>
+      <div style="font-size:10px;color:#8b949e">PAPER FACTS (answer key)</div>
     </div>
     <div style="background:#8b949e22;border:1px solid #8b949e44;border-radius:6px;padding:8px 12px;text-align:center">
       <div style="font-size:20px;font-weight:700;color:#8b949e">{unver}</div>
@@ -1145,7 +1232,7 @@ def run_verification(
     _eval_path    = out_json.parent / "eval_report.json"
 
     if fetch_text and _TEXT_CACHE:
-        _eval_metrics = _compute_recall_from_cache(results, confirmed, mismatch)
+        _eval_metrics = _accuracy(triples)
         if _eval_metrics:
             try:
                 _eval_path.write_text(json.dumps(_eval_metrics, indent=2))
