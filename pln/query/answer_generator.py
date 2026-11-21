@@ -28,6 +28,12 @@ def _clean(expr: str) -> str:
     return e
 
 
+def _kind(expr: str) -> str:
+    """Type prefix of an entity expression: '(disease stroke)' → 'disease'."""
+    parts = expr.strip().strip('()').split(None, 1)
+    return parts[0] if len(parts) == 2 and parts[0].islower() else ''
+
+
 def generate_answer(result: ReasoningResult, max_answers: int = 10) -> str:
     """A short readable answer from a ReasoningResult; '' when there is none."""
     if not result.answers:
@@ -72,6 +78,8 @@ def generate_json(result: ReasoningResult) -> dict:
                 'predicate':  a['predicate'],
                 'subject':    _clean(a['subject']),
                 'object':     _clean(a['object']),
+                'subject_type': _kind(a['subject']),
+                'object_type':  _kind(a['object']),
                 'strength':   a['strength'],
                 'confidence': a['confidence'],
                 'inferred':   a.get('inferred', False),

@@ -63,6 +63,9 @@ class PLNModule:
 
         # MeTTa edge files are the facts; the staging DB gives their truth values
         truth = self._adapter.db_truth(staging_db) if staging_db and Path(staging_db).exists() else {}
+        files = sorted(str(f.relative_to(run_dir)) for f in (Path(run_dir) / "metta").rglob("edges_*.metta")) if run_dir else []
+        self._sources = {'run_dir': str(run_dir or ''), 'files': files,
+                         'staging_db': str(staging_db or ''), 'truth_values_from_db': len(truth)}
         if run_dir:
             atoms.extend(self._adapter.load_run_dir(run_dir, truth))
             self._label_map.update(self._adapter.load_labels(run_dir))
@@ -105,8 +108,15 @@ class PLNModule:
         self._ensure_components()
         terms = self._entity_terms()
         result = self._reasoner.ask(question, raw_pln_query, entity_map=self._label_map, terms=terms)
-        result.trace.insert(0, {'step': 'Knowledge', 'ms': None,
-                                'detail': f"{len(self._original_atoms)} fact(s) about {len(terms)} entities loaded into the atomspace"})
+        src = getattr(self, '_sources', {})
+        result.trace.insert(0, {
+            'step': 'Knowledge', 'ms': None,
+            'detail': f"{len(self._original_atoms)} fact(s) about {len(terms)} entities loaded into the atomspace",
+            'explain': ("Each fact the pipeline extracted is read from this run's MeTTa edge files and becomes one atom "
+                        "(: name (Predicate subject object) (STV strength confidence)). Strength and confidence come from "
+                        "the paper's staging database when it is given (the fact's score after Layer 7); repeated facts are "
+                        "merged by truth-value revision. These atoms are the only knowledge PLN reasons over."),
+            'data': {'sources': src, 'atoms': list(self._original_atoms)}})
         return result
 
     def _entity_terms(self) -> list[str]:
