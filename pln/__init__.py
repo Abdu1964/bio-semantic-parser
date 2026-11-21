@@ -103,7 +103,21 @@ class PLNModule:
             r.query = question
             return r
         self._ensure_components()
-        return self._reasoner.ask(question, raw_pln_query, entity_map=self._label_map)
+        terms = self._entity_terms()
+        result = self._reasoner.ask(question, raw_pln_query, entity_map=self._label_map, terms=terms)
+        result.trace.insert(0, {'step': 'Knowledge', 'ms': None,
+                                'detail': f"{len(self._original_atoms)} fact(s) about {len(terms)} entities loaded into the atomspace"})
+        return result
+
+    def _entity_terms(self) -> list[str]:
+        """Subject and object terms of the loaded facts, e.g. '(small_molecule sodium_intake)'."""
+        from pln.chaining.forward_chainer import _parse_result
+        terms = []
+        for atom in self._original_atoms:
+            parsed = _parse_result(atom)
+            if parsed:
+                terms.extend(t for t in parsed[2:4] if t.startswith('(') and t not in terms)
+        return terms
 
     def save_inferred(self, run_dir: str | Path) -> Path | None:
         """Write inferred-only atoms to run_dir/pln_inferred.metta."""

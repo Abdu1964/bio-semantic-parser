@@ -183,6 +183,15 @@ class ForwardChainer:
                 'derived_s': sv, 'derived_c': cv, 'proof': proof,
             }
 
+    def rules(self) -> dict[str, tuple[float, float]]:
+        """Loaded rule names → (s, c)."""
+        return dict(self._rules)
+
+    def premise_label(self, proof: str) -> str:
+        """'subject —[P]→ object (stv s c)' for a premise proof."""
+        text, stv = self._label(proof)
+        return f"{text} {stv}".strip()
+
     def derivations(self) -> dict[str, dict]:
         """Return {atom_name: proof_trace} for all derived atoms."""
         return dict(self._derivations)

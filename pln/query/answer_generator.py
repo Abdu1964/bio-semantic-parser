@@ -80,4 +80,5 @@ def generate_json(result: ReasoningResult) -> dict:
             for a in result.answers
         ],
         'inferred_count': len(result.inferred_atoms),
+        'trace':          result.trace,
     }
