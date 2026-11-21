@@ -172,6 +172,9 @@ def write(records: list, run_dir: Path = None) -> dict:
                     f.write(f"{triple}\n")
 
                     f.write(f"(negated {triple} {str(r.get('negated', False))})\n")
+                    # truth value: strength = the 5-channel score, confidence = N/(N+1) over its sources
+                    f.write(f"(strength {triple} {float(r.get('confidence') or 0.0):.4f})\n")
+                    f.write(f"(confidence {triple} {float(r.get('evidence_confidence') or 0.5):.4f})\n")
 
                     doc_id = _metta_val(r.get("document_id", "") or "")
                     if doc_id:
