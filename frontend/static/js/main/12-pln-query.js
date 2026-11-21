@@ -47,6 +47,28 @@ function openPLNPanel(stagingDb, runDir, label) {
   setTimeout(() => document.getElementById('pln-q-input').focus(), 60);
 }
 
+// What PLN did for this question, step by step (from the API's trace)
+function _plnTraceHtml(trace) {
+  if (!trace || !trace.length) return '';
+  const color = { 'Knowledge':'var(--blue)', 'Question':'var(--text2)', 'Name':'var(--yellow)', 'PeTTa query':'var(--pln)',
+                  'Forward chaining':'var(--pln)', 'Backward chaining':'var(--pln)', 'Filter':'var(--text2)', 'Answer':'var(--green)' };
+  const rows = trace.map((t, i) => `
+    <div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
+      <div style="flex-shrink:0;width:20px;height:20px;border-radius:50%;background:var(--bg3);color:var(--text3);
+        font-size:10px;display:flex;align-items:center;justify-content:center">${i + 1}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:11px;font-weight:700;color:${color[t.step] || 'var(--text2)'}">
+          ${esc(t.step)}${t.ms != null ? `<span style="font-weight:400;color:var(--text3)"> · ${t.ms} ms</span>` : ''}</div>
+        <div style="font-size:11px;color:var(--text2);font-family:var(--mono, monospace);word-break:break-word;margin-top:2px">${esc(t.detail)}</div>
+      </div>
+    </div>`).join('');
+  return `<details open style="margin-top:16px">
+      <summary style="cursor:pointer;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">
+        Reasoning trace · ${trace.length} steps</summary>
+      <div style="margin-top:8px">${rows}</div>
+    </details>`;
+}
+
 async function _runPLNQuery() {
   const input = document.getElementById('pln-q-input');
   const q = (input && input.value || '').trim();
@@ -68,7 +90,8 @@ async function _runPLNQuery() {
     if (!d.answers || !d.answers.length) {
       res.innerHTML = `
         <div style="color:var(--text3);font-size:13px">No PLN proof found for this question.</div>
-        <div style="color:var(--text3);font-size:11px;margin-top:6px">Query: <code>${esc(d.pln_query||'')}</code></div>`;
+        <div style="color:var(--text3);font-size:11px;margin-top:6px">Query: <code>${esc(d.pln_query||'')}</code></div>
+        ${_plnTraceHtml(d.trace)}`;
       return;
     }
     const rows = d.answers.slice(0,20).map(a => `
@@ -100,6 +123,7 @@ async function _runPLNQuery() {
       ${d.inferred_count > 0 ? `<div style="font-size:11px;color:var(--text3);margin-top:12px">
         ${d.inferred_count} atoms in atomspace (original + inferred by rules)
       </div>` : ''}
+      ${_plnTraceHtml(d.trace)}
     `;
   } catch(e) {
     res.innerHTML = `<div style="color:var(--red);font-size:12px">Error: ${esc(e.message)}</div>`;
