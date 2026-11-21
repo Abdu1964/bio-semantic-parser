@@ -84,7 +84,26 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     for col in ("subject_needs_review", "object_needs_review"):
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE triples ADD COLUMN {col} INTEGER DEFAULT 0")
+    # Evidence per triple: N sources that state it and N/(N+1). 'confidence' stays the 5-channel score.
+    if "evidence_count" not in existing_cols:
+        conn.execute("ALTER TABLE triples ADD COLUMN evidence_count INTEGER DEFAULT 1")
+        conn.execute("ALTER TABLE triples ADD COLUMN evidence_confidence REAL DEFAULT 0.5")
+        conn.execute("UPDATE triples SET evidence_count = MAX(1, json_array_length(source_papers))")
+        conn.execute("UPDATE triples SET evidence_confidence = ROUND(evidence_count * 1.0 / (evidence_count + 1), 4)")
     conn.commit()
+
+
+def evidence_confidence(n: int) -> float:
+    """Confidence from N independent sources: N/(N+1) (PLN's count-to-confidence with k = 1)."""
+    return round(n / (n + 1), 4)
+
+
+def revise_strength(old: float, old_n: int, new: float, new_sources: int) -> float:
+    """Strength after a triple arrives again. New sources add evidence: the count-weighted mean of the
+    scores (PLN revision). The same source again keeps its better-supported score."""
+    if new_sources <= 0:
+        return max(old, new)
+    return round((old * old_n + new * new_sources) / (old_n + new_sources), 4)
 
 
 def deduplicate(record: dict) -> dict:
@@ -130,23 +149,23 @@ def deduplicate(record: dict) -> dict:
     ).fetchone()
 
     if existing:
-        # PLN Revision Rule — Truth_Revision from trueagi-io/PeTTa lib_pln.metta
-        # Confidence = N/(N+1) where N = number of INDEPENDENT PAPERS (Truth_w2c).
-        # doc_id is normalized above so the same paper never inflates N.
+        # The triple again: a new source adds evidence (N, N/(N+1)) and revises the score; the same
+        # source (doc_id is normalized above) never raises N.
         sources = json.loads(existing["source_papers"])
-        if doc_id not in sources:
+        new_source = doc_id not in sources
+        if new_source:
             sources.append(doc_id)
         n_total  = len(sources)
-        new_conf = round(n_total / (n_total + 1), 4)   # Truth_w2c(n_total)
+        strength = revise_strength(existing["confidence"], n_total - new_source, confidence, int(new_source))
         # Refresh entity metadata so a resolver fix on re-run replaces stale IDs/names.
         conn.execute("""
             UPDATE triples SET
-                confidence=?, source_papers=?, updated_at=?,
+                confidence=?, evidence_count=?, evidence_confidence=?, source_papers=?, updated_at=?,
                 subject_canonical_name=?, subject_source_url=?, subject_synonyms=?, subject_id_source=?, subject_evidence=?, subject_needs_review=?,
                 object_canonical_name=?,  object_source_url=?,  object_synonyms=?,  object_id_source=?,  object_evidence=?,  object_needs_review=?
             WHERE id=?
         """, (
-            new_conf, json.dumps(sources), now,
+            strength, n_total, evidence_confidence(n_total), json.dumps(sources), now,
             record.get("subject_canonical_name",""), record.get("subject_source_url",""),
             record.get("subject_synonyms",""), record.get("subject_id_source",""), record.get("subject_evidence",""),
             1 if record.get("subject_needs_review") else 0,
@@ -164,11 +183,11 @@ def deduplicate(record: dict) -> dict:
             (subject_id, subject_name, subject_canonical_name, subject_source_url, subject_synonyms, subject_id_source, subject_evidence, subject_needs_review, subject_type,
              relation,
              object_id, object_name, object_canonical_name, object_source_url, object_synonyms, object_id_source, object_evidence, object_needs_review, object_type,
-             negated, confidence, source_papers,
+             negated, confidence, evidence_count, evidence_confidence, source_papers,
              species, tissue, condition, effect_size, reasoning, source, evidence,
              is_contradiction, flagged_for_review, review_reason,
              created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         subject_id, record.get("subject_name",""), record.get("subject_canonical_name",""),
         record.get("subject_source_url",""), record.get("subject_synonyms",""), record.get("subject_id_source",""),
@@ -181,7 +200,7 @@ def deduplicate(record: dict) -> dict:
         record.get("object_evidence",""),
         1 if record.get("object_needs_review") else 0,
         record.get("object_type",""),
-        negated, confidence, json.dumps([doc_id]),
+        negated, confidence, 1, evidence_confidence(1), json.dumps([doc_id]),
         record.get("species",""), record.get("tissue",""),
         record.get("condition",""), record.get("effect_size",""),
         record.get("reasoning",""), record.get("source") or "study", record.get("evidence") or "measured",
@@ -264,16 +283,17 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
                         seen_keys.add(k); deduped.append(s)
                 merged   = deduped
                 n_total  = len(merged)
-                new_conf = round(n_total / (n_total + 1), 4)
-                # Refresh entity metadata alongside confidence (same fix as deduplicate's duplicate path).
+                n_old    = len({_ckey(s) for s in old_srcs})
+                strength = revise_strength(existing["confidence"], n_old, float(r.get("confidence") or 0.0), n_total - n_old)
+                # Refresh entity metadata alongside the evidence (same fix as deduplicate's duplicate path).
                 tgt.execute("""
                     UPDATE triples SET
-                        confidence=?, source_papers=?, updated_at=?,
+                        confidence=?, evidence_count=?, evidence_confidence=?, source_papers=?, updated_at=?,
                         subject_canonical_name=?, subject_source_url=?, subject_synonyms=?, subject_id_source=?, subject_evidence=?, subject_needs_review=?,
                         object_canonical_name=?,  object_source_url=?,  object_synonyms=?,  object_id_source=?,  object_evidence=?,  object_needs_review=?
                     WHERE id=?
                 """, (
-                    new_conf, json.dumps(merged), r.get("updated_at", ""),
+                    strength, n_total, evidence_confidence(n_total), json.dumps(merged), r.get("updated_at", ""),
                     r.get("subject_canonical_name",""), r.get("subject_source_url",""),
                     r.get("subject_synonyms",""), r.get("subject_id_source",""), r.get("subject_evidence",""),
                     1 if r.get("subject_needs_review") else 0,
@@ -283,6 +303,8 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
                     existing["id"],
                 ))
             else:
+                n = max(1, len(json.loads(r.get("source_papers") or "[]")))
+                r["evidence_count"], r["evidence_confidence"] = n, evidence_confidence(n)
                 cols = [k for k in r if k != "id"]
                 tgt.execute(
                     "INSERT INTO triples (" + ",".join(cols) + ") VALUES ("
