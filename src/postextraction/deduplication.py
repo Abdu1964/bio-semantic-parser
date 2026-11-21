@@ -235,15 +235,13 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
     if formats in ("neo4j", "both"): target_fmts.append("neo4j")
     if formats in ("metta", "both"): target_fmts.append("metta")
 
-    committed = 0
-    updated   = 0
+    new_keys: set = set()                      # a fact counts once, however many stores it went into
     for fmt in target_fmts:
         tgt_path = db_path_for_format(fmt)
         tgt_path.parent.mkdir(parents=True, exist_ok=True)
         tgt = sqlite3.connect(str(tgt_path))
         tgt.row_factory = sqlite3.Row
         _ensure_schema(tgt)
-        fmt_committed = 0
         for row in rows:
             r = dict(row)
             existing = tgt.execute(
@@ -291,11 +289,9 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
                     + ",".join("?" * len(cols)) + ")",
                     [r[c] for c in cols],
                 )
-                fmt_committed += 1
+                new_keys.add((r["subject_id"], r["relation"], r["object_id"], r["negated"]))
         tgt.commit()
         tgt.close()
-        committed  += fmt_committed
-        updated    += (len(rows) - fmt_committed)
 
     import os as _os
     legacy = Path(staging.path(str(_DB_PATH)))
@@ -319,7 +315,7 @@ def commit_staging_to_main(staging_path: str, formats: str = "both") -> dict:
         lc.commit()
         lc.close()
 
-    return {"new": committed, "updated": updated, "total": len(rows)}
+    return {"new": len(new_keys), "updated": len(rows) - len(new_keys), "total": len(rows)}
 
 
 def rollback_paper(doc_id: str, formats: str = "both") -> int:
