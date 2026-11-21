@@ -21,12 +21,30 @@ def _get_pln():
     return _pln_module
 
 
-def _paper_pln():
-    """A fresh atomspace for one paper, so papers never mix; later queries use it."""
-    global _pln_module
+_paper_key = None
+
+
+def _paper_state(run_dir: str | None, staging_db: str | None) -> tuple:
+    """A paper and the last change to its facts; a new value means its atomspace must be rebuilt."""
+    stamps = []
+    for p in (staging_db, Path(run_dir) / "metta" if run_dir else None):
+        try:
+            stamps.append(os.path.getmtime(p) if p else 0)
+        except OSError:
+            stamps.append(0)
+    return (run_dir or "", staging_db or "", *stamps)
+
+
+def _paper_pln(run_dir: str | None = None, staging_db: str | None = None):
+    """(atomspace, fresh) for one paper, so papers never mix. Asking about the same unchanged
+    paper again reuses it, so forward chaining runs once per paper."""
+    global _pln_module, _paper_key
+    key = _paper_state(run_dir, staging_db)
+    if _pln_module is not None and key == _paper_key:
+        return _pln_module, False
     from pln import PLNModule
-    _pln_module = PLNModule.from_env()
-    return _pln_module
+    _pln_module, _paper_key = PLNModule.from_env(), key
+    return _pln_module, True
 
 
 _TS_PREFIX_RE = __import__('re').compile(r'^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_')
@@ -82,7 +100,9 @@ class PLNQueryRequest(BaseModel):
 async def pln_run(req: PLNRunRequest):
     """Load a paper into PLN, run forward chaining, generate vis.js graph HTML."""
     try:
-        pln = _paper_pln()
+        global _paper_key
+        _paper_key = None                                         # a run always reloads the paper
+        pln, _ = _paper_pln(req.run_dir, req.staging_db)
         if not pln.enabled:
             return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
 
@@ -109,11 +129,12 @@ async def pln_run(req: PLNRunRequest):
 async def pln_query(req: PLNQueryRequest):
     """Answer a NL question over the KG using PLN forward+backward chaining."""
     try:
-        pln = _paper_pln() if (req.run_dir or req.staging_db) else _get_pln()
+        paper = bool(req.run_dir or req.staging_db)
+        pln, fresh = _paper_pln(req.run_dir, req.staging_db) if paper else (_get_pln(), False)
         if not pln.enabled:
             return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
 
-        if req.run_dir or req.staging_db:
+        if paper and fresh:
             pln.load_paper(run_dir=req.run_dir or "", staging_db=req.staging_db)
 
         result = pln.ask(req.question)

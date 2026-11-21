@@ -88,10 +88,12 @@ class ForwardChainer:
         self._cfg = cfg
         self._handler = None
         self._rules: dict[str, tuple[float, float]] = {}      # rule name → (s, c)
+        self._rule_info: dict[str, dict] = {}                # rule name → {'text', 'meaning'}
         self._conclusions: set[str] = set()                   # predicates rules conclude
         self._facts: dict[str, str] = {}                      # fact name → statement atom
         self._derived_atoms: list[str] = []
         self._derivations: dict[str, dict] = {}
+        self.materialized = False                             # derived once; also when nothing follows
 
     def _ensure_handler(self):
         if self._handler is not None:
@@ -117,7 +119,15 @@ class ForwardChainer:
         if not path or not path.exists():
             return
         self._ensure_handler()
-        for expr in _collect_exprs(path.read_text(encoding='utf-8').splitlines()):
+        lines = path.read_text(encoding='utf-8').splitlines()
+        meaning, meanings = '', {}                           # the comment line right above each rule
+        for line in lines:
+            t = line.strip()
+            if t.startswith(';') and not set(t) <= set('; ─'):
+                meaning = t.lstrip('; ').strip()
+            elif t.startswith('(:'):
+                meanings[t.split()[1]] = meaning
+        for expr in _collect_exprs(lines):
             if not expr.startswith('(:'):
                 continue
             try:
@@ -125,6 +135,7 @@ class ForwardChainer:
             except Exception:
                 continue
             name = re.match(r'^\(:\s+(\S+)', expr).group(1)
+            self._rule_info[name] = {'text': ' '.join(expr.split()), 'meaning': meanings.get(name, '')}
             stv = re.search(r'\(STV\s+([\d.]+)\s+([\d.]+)\)\s*\)\s*$', expr)
             if stv:
                 self._rules[name] = (float(stv.group(1)), float(stv.group(2)))
@@ -143,8 +154,9 @@ class ForwardChainer:
 
     def materialize(self, steps: int | None = None) -> None:
         """Derive every rule conclusion with PeTTaChainer, keeping the best proof per relation."""
-        if not self._conclusions or self._derived_atoms:
+        if not self._conclusions or self.materialized:
             return
+        self.materialized = True
         n = steps if steps is not None else self._cfg.forward_steps
         known = set()
         for atom in self._facts.values():
@@ -186,6 +198,10 @@ class ForwardChainer:
     def rules(self) -> dict[str, tuple[float, float]]:
         """Loaded rule names → (s, c)."""
         return dict(self._rules)
+
+    def rule_info(self) -> list[dict]:
+        """Each rule: name, STV, its MeTTa text and the plain meaning written above it."""
+        return [{'name': n, 'stv': list(self._rules.get(n, (0, 0))), **i} for n, i in self._rule_info.items()]
 
     def premise_label(self, proof: str) -> str:
         """'subject —[P]→ object (stv s c)' for a premise proof."""
