@@ -1,132 +1,219 @@
-// ── PLN Query panel ───────────────────────────────────────────────────────────
+// ── PLN board: ask a question about one paper; answers, a live timer and a step-by-step walkthrough ──
 
 let _plnStagingDb = '', _plnRunDir = '';
+const _plnHistory = [];                       // {q, secs} this page session, newest first
+let _plnLast = null;                          // last API reply, for the walkthrough
+
+// Question forms the translator understands; X is the entity
+const _PLN_FORMS = ['What does X regulate?', 'What regulates X?', 'What does X cause?', 'What causes X?',
+                    'What does X activate?', 'What inhibits X?', 'What treats X?', 'Is X associated with Y?'];
+
+const _plnName = s => String(s || '').replace(/_/g, ' ');
 
 function openPLNPanel(stagingDb, runDir, label) {
   _plnStagingDb = stagingDb;
   _plnRunDir    = runDir;
+  document.getElementById('pln-board')?.remove();
+  const paper = (label || '').replace(/^PLN Query\s*[—-]\s*/, '').trim() || (runDir || '').split('/').pop() || 'this paper';
 
-  const old = document.getElementById('pln-panel');
-  if (old) old.remove();
-
-  const panel = document.createElement('div');
-  panel.id = 'pln-panel';
-  panel.style.cssText = `
-    position:fixed;top:0;right:0;width:580px;max-width:95vw;height:100vh;
-    background:var(--bg);border-left:1px solid var(--border);z-index:9999;
-    display:flex;flex-direction:column;box-shadow:-4px 0 20px rgba(0,0,0,.18);
-  `;
-  panel.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;
-      padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0">
-      <div style="font-size:15px;font-weight:700;color:var(--text)">🔮 ${esc(label)}</div>
-      <button onclick="document.getElementById('pln-panel').remove()"
-        style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--text3)">✕</button>
-    </div>
-    <div style="padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0">
-      <div style="display:flex;gap:8px">
-        <input id="pln-q-input" type="text" placeholder="e.g. What does HGNC_5358 inhibit?"
-          style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:8px;
-            background:var(--bg2);color:var(--text);font-size:13px;outline:none"
-          onkeydown="if(event.key==='Enter')_runPLNQuery()" />
-        <button onclick="_runPLNQuery()"
-          style="padding:8px 16px;background:var(--pln);color:#fff;border:none;border-radius:8px;
-            cursor:pointer;font-size:13px;font-weight:600">Ask</button>
+  const board = document.createElement('div');
+  board.id = 'pln-board';
+  board.innerHTML = `
+    <div class="pb-panel" role="dialog" aria-label="PLN reasoning">
+      <div class="pb-head">
+        <div class="pb-orb"></div>
+        <div><h2>PLN Reasoning</h2><p>${esc(paper)} · forward + backward chaining with PeTTaChainer</p></div>
+        <button class="pb-x" title="Close (Esc)" onclick="closePLNBoard()">✕</button>
       </div>
-      <div style="font-size:11px;color:var(--text3);margin-top:6px">
-        Try: "What activates HGNC_9170?" · "What treats Alzheimer's?" · "What causes MESH_D000544?"
+      <div class="pb-body">
+        <div class="pb-side">
+          <div class="pb-ask">
+            <div class="pb-label">Ask about this paper</div>
+            <textarea id="pln-q-input" placeholder="e.g. What does sodium regulate?"
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();_runPLNQuery()}"></textarea>
+            <button class="pb-go" id="pln-go" onclick="_runPLNQuery()">🔮 Reason</button>
+          </div>
+          <div class="pb-forms"><div class="pb-label">Question forms</div>
+            ${_PLN_FORMS.map(f => `<span onclick="_plnUseForm(this.textContent)">${esc(f)}</span>`).join('')}</div>
+          <div class="pb-hist" id="pln-hist"></div>
+        </div>
+        <div class="pb-main" id="pln-results">${_plnIdleHtml()}</div>
       </div>
-    </div>
-    <div id="pln-results" style="flex:1;overflow-y:auto;padding:16px 20px">
-      <div style="color:var(--text3);font-size:13px">
-        Ask a question to run PLN forward + backward chaining over this paper's triples.
-      </div>
-    </div>
-  `;
-  document.body.appendChild(panel);
-  setTimeout(() => document.getElementById('pln-q-input').focus(), 60);
+    </div>`;
+  board.addEventListener('click', e => { if (e.target === board) closePLNBoard(); });
+  document.body.appendChild(board);
+  document.addEventListener('keydown', _plnEsc);
+  _plnRenderHistory();
+  setTimeout(() => document.getElementById('pln-q-input')?.focus(), 80);
 }
 
-// What PLN did for this question, step by step (from the API's trace)
-function _plnTraceHtml(trace) {
-  if (!trace || !trace.length) return '';
-  const color = { 'Knowledge':'var(--blue)', 'Question':'var(--text2)', 'Name':'var(--yellow)', 'PeTTa query':'var(--pln)',
-                  'Forward chaining':'var(--pln)', 'Backward chaining':'var(--pln)', 'Filter':'var(--text2)', 'Answer':'var(--green)' };
-  const rows = trace.map((t, i) => `
-    <div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
-      <div style="flex-shrink:0;width:20px;height:20px;border-radius:50%;background:var(--bg3);color:var(--text3);
-        font-size:10px;display:flex;align-items:center;justify-content:center">${i + 1}</div>
-      <div style="flex:1;min-width:0">
-        <div style="font-size:11px;font-weight:700;color:${color[t.step] || 'var(--text2)'}">
-          ${esc(t.step)}${t.ms != null ? `<span style="font-weight:400;color:var(--text3)"> · ${t.ms} ms</span>` : ''}</div>
-        <div style="font-size:11px;color:var(--text2);font-family:var(--mono, monospace);word-break:break-word;margin-top:2px">${esc(t.detail)}</div>
-      </div>
-    </div>`).join('');
-  return `<details open style="margin-top:16px">
-      <summary style="cursor:pointer;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">
-        Reasoning trace · ${trace.length} steps</summary>
-      <div style="margin-top:8px">${rows}</div>
-    </details>`;
+function closePLNBoard() {
+  const board = document.getElementById('pln-board');
+  if (!board) return;
+  clearInterval(window._plnTick);
+  document.removeEventListener('keydown', _plnEsc);
+  board.classList.add('closing');
+  setTimeout(() => board.remove(), 240);
 }
+
+function _plnEsc(e) { if (e.key === 'Escape') closePLNBoard(); }
+
+// A question form goes into the box with X selected, ready to type over
+function _plnUseForm(form) {
+  const input = document.getElementById('pln-q-input');
+  input.value = form;
+  input.focus();
+  const i = form.indexOf('X');
+  if (i >= 0) input.setSelectionRange(i, i + 1);
+}
+
+const _PLN_STAGES = ['Facts', 'Question', 'Names', 'Forward chaining', 'Backward chaining', 'Answers'];
+const _plnFlowHtml = () => `<div class="pb-flow">${_PLN_STAGES.map((s, i) => (i ? '<i>→</i>' : '') + `<span>${s}</span>`).join('')}</div>`;
+
+function _plnIdleHtml() {
+  return `<div class="pb-center">
+      <div class="pb-orb" style="width:70px;height:70px"></div>
+      <h3>Ask a question about this paper</h3>
+      <p>PLN reads the paper's facts, matches your question to its entities, applies the biology rules forward and
+         proves the answer backward. Every step can be opened afterwards.</p>
+      ${_plnFlowHtml()}
+    </div>`;
+}
+
+function _plnRenderHistory() {
+  const el = document.getElementById('pln-hist');
+  if (!el) return;
+  el.innerHTML = _plnHistory.length ? `<div class="pb-label">Asked</div>` + _plnHistory.map(h =>
+    `<div onclick="_plnAsk(${JSON.stringify(h.q).replace(/"/g, '&quot;')})">${esc(h.q)}<b>${h.secs}</b></div>`).join('') : '';
+}
+
+function _plnAsk(q) {
+  document.getElementById('pln-q-input').value = q;
+  _runPLNQuery();
+}
+
+const _plnSecs = ms => ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60000)} min ${Math.round(ms % 60000 / 1000)} s`;
 
 async function _runPLNQuery() {
   const input = document.getElementById('pln-q-input');
   const q = (input && input.value || '').trim();
-  if (!q) return;
   const res = document.getElementById('pln-results');
-  if (!res) return;
-  res.innerHTML = '<div style="color:var(--text3);font-size:13px">🔮 Running PLN reasoning…</div>';
+  if (!q || !res) return;
+  const go = document.getElementById('pln-go');
+  go.disabled = true;
+
+  // live timer while PLN reasons
+  const t0 = performance.now();
+  res.innerHTML = `<div class="pb-center pb-running">
+      <div class="pb-ring"></div>
+      <div class="pb-clock" id="pln-clock">0.0 s</div>
+      <h3>PLN is reasoning…</h3>
+      <p>${esc(q)}</p>
+      ${_plnFlowHtml()}
+    </div>`;
+  clearInterval(window._plnTick);
+  window._plnTick = setInterval(() => {
+    const c = document.getElementById('pln-clock');
+    if (c) c.textContent = _plnSecs(performance.now() - t0);
+  }, 100);
+
   try {
     const r = await fetch('/api/pln-query', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ question: q, staging_db: _plnStagingDb, run_dir: _plnRunDir }),
     });
     const d = await r.json();
+    const took = _plnSecs(performance.now() - t0);
+    clearInterval(window._plnTick);
     if (!d.ok) {
-      res.innerHTML = `<div style="color:var(--red);font-size:12px">PLN error: ${esc(d.error||'Unknown')}</div>`;
+      res.innerHTML = `<div class="pb-err">PLN error: ${esc(d.error || 'Unknown')}</div>`;
       return;
     }
-    if (!d.answers || !d.answers.length) {
-      res.innerHTML = `
-        <div style="color:var(--text3);font-size:13px">No PLN proof found for this question.</div>
-        <div style="color:var(--text3);font-size:11px;margin-top:6px">Query: <code>${esc(d.pln_query||'')}</code></div>
-        ${_plnTraceHtml(d.trace)}`;
-      return;
-    }
-    const rows = d.answers.slice(0,20).map(a => `
-      <tr>
-        <td style="padding:7px 10px;font-size:12px;color:var(--text)">${esc(a.predicate||'')}</td>
-        <td style="padding:7px 10px;font-size:12px;color:var(--text2)">${esc(a.subject||'')}</td>
-        <td style="padding:7px 10px;font-size:12px;color:var(--text2)">${esc(a.object||'')}</td>
-        <td style="padding:7px 10px;font-size:11px;color:var(--text3);font-variant-numeric:tabular-nums">
-          ${(a.strength||0).toFixed(2)} / ${(a.confidence||0).toFixed(2)}
-        </td>
-      </tr>`).join('');
-    res.innerHTML = `
-      <div style="font-size:12px;color:var(--text3);margin-bottom:10px">
-        ${d.answer_count} result(s) · PLN query: <code style="color:var(--blue)">${esc(d.pln_query||'')}</code>
-      </div>
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead>
-            <tr style="border-bottom:1px solid var(--border)">
-              <th style="text-align:left;padding:6px 10px;color:var(--text3);font-weight:600;font-size:11px">Relation</th>
-              <th style="text-align:left;padding:6px 10px;color:var(--text3);font-weight:600;font-size:11px">Subject</th>
-              <th style="text-align:left;padding:6px 10px;color:var(--text3);font-weight:600;font-size:11px">Object</th>
-              <th style="text-align:left;padding:6px 10px;color:var(--text3);font-weight:600;font-size:11px">Str / Conf</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-      ${d.inferred_count > 0 ? `<div style="font-size:11px;color:var(--text3);margin-top:12px">
-        ${d.inferred_count} atoms in atomspace (original + inferred by rules)
-      </div>` : ''}
-      ${_plnTraceHtml(d.trace)}
-    `;
-  } catch(e) {
-    res.innerHTML = `<div style="color:var(--red);font-size:12px">Error: ${esc(e.message)}</div>`;
+    _plnLast = { ...d, took };
+    _plnHistory.unshift({ q, secs: took });
+    _plnRenderHistory();
+    _plnShowResult();
+  } catch (e) {
+    clearInterval(window._plnTick);
+    res.innerHTML = `<div class="pb-err">Error: ${esc(e.message)}</div>`;
+  } finally {
+    go.disabled = false;
   }
 }
 
+// The answer, as it is: one card per relation found
+function _plnShowResult() {
+  const d = _plnLast, res = document.getElementById('pln-results');
+  if (!d || !res) return;
+  const answers = d.answers || [];
+  const pct = v => Math.round((v || 0) * 100);
+  const cards = answers.slice(0, 30).map((a, i) => `
+    <div class="pb-answer" style="animation-delay:${i * 70}ms">
+      <div class="pb-ent"><small>${esc(_plnName(a.subject_type))}</small>${esc(_plnName(a.subject))}</div>
+      <div class="pb-rel">${esc(a.predicate)}</div>
+      <div class="pb-ent"><small>${esc(_plnName(a.object_type))}</small>${esc(_plnName(a.object))}</div>
+      <div class="pb-bars">
+        <div>strength <u><i style="width:${pct(a.strength)}%"></i></u> ${(a.strength || 0).toFixed(2)}</div>
+        <div>confidence <u><i style="width:${pct(a.confidence)}%"></i></u> ${(a.confidence || 0).toFixed(2)}</div>
+      </div>
+      <div class="pb-kind">${a.inferred ? '<b class="inf">inferred by a rule</b>' : '<b>stated in the paper</b>'}</div>
+    </div>`).join('');
+  res.innerHTML = `
+    <div class="pb-res-head">
+      <h3>${esc(d.question)}</h3>
+      <span class="pb-chip pb-time">⏱ ${esc(d.took)}</span>
+      <span class="pb-chip" style="color:#c4b5fd;background:rgba(139,92,246,.12)">${answers.length} answer${answers.length === 1 ? '' : 's'}</span>
+      <button class="pb-learn" onclick="_plnShowWalkthrough()">🧠 How PLN answered this</button>
+    </div>
+    <div class="pb-q">${esc(d.pln_query || '')}</div>
+    ${cards || `<div class="pb-none">No PLN proof found for this question. Open “How PLN answered this” to see each step it tried.</div>`}`;
+}
+
+// Every step PLN took for this question, with what it means and the data behind it
+function _plnShowWalkthrough() {
+  const d = _plnLast, res = document.getElementById('pln-results');
+  if (!d || !res) return;
+  const title = { 'Knowledge': 'Facts enter the atomspace', 'Question': 'The question is read', 'Name': 'A name is matched to an entity',
+                  'PeTTa query': 'The question becomes a PeTTa query', 'Forward chaining': 'Forward chaining applies the rules',
+                  'Backward chaining': 'Backward chaining searches for proofs', 'Filter': 'Answers are kept for the matched entities',
+                  'Answer': 'An answer and its proof' };
+  const steps = (d.trace || []).map((t, i) => `
+    <div class="pb-step" style="animation-delay:${i * 90}ms">
+      <div class="num">${i + 1}</div>
+      <h4>${esc(title[t.step] || t.step)}${t.ms != null ? `<span class="pb-chip pb-time">${_plnSecs(t.ms)}</span>` : ''}</h4>
+      <div class="what">${esc(t.detail)}</div>
+      ${t.explain ? `<div class="why">${esc(t.explain)}</div>` : ''}
+      ${_plnDataHtml(t)}
+    </div>`).join('');
+  res.innerHTML = `
+    <button class="pb-back" onclick="_plnShowResult()">← Back to the answer</button>
+    <div class="pb-res-head"><h3>How PLN answered: ${esc(d.question)}</h3><span class="pb-chip pb-time">⏱ ${esc(d.took)} in total</span></div>
+    <div class="pb-steps">${steps}</div>`;
+  res.scrollTop = 0;
+}
+
+function _plnDataHtml(t) {
+  const d = t.data;
+  if (!d) return '';
+  const box = (label, rows) => rows.length
+    ? `<details><summary>${esc(label)}</summary><div class="pb-data">${rows.join('')}</div></details>` : '';
+  if (t.step === 'Knowledge') {
+    const s = d.sources || {};
+    return box(`Where the facts came from (${(s.files || []).length} files)`, [
+        `<div>Run folder: ${esc(s.run_dir || '—')}</div>`,
+        ...(s.files || []).map(f => `<div>📄 ${esc(f)}</div>`),
+        `<div>Truth values: ${s.truth_values_from_db ? `${s.truth_values_from_db} from ${esc(s.staging_db)}` : 'defaults (no staging database)'}</div>`])
+      + box(`The ${(d.atoms || []).length} atoms`, (d.atoms || []).map(a => `<div>${esc(a)}</div>`));
+  }
+  if (t.step === 'Forward chaining') {
+    return box(`The ${(d.rules || []).length} rules`, (d.rules || []).map(r =>
+        `<div class="pb-rule"><b>${esc(r.name)}</b> (STV ${r.stv.map(x => (+x).toFixed(2)).join(' ')})<br>`
+        + `${esc(r.meaning)}<br><em>${esc(r.text)}</em></div>`))
+      + box(`Derived relations (${(d.derived || []).length})`, (d.derived || []).map(x =>
+        `<div>${esc(x.atom)}${x.rule ? `<br><em>by ${esc(x.rule)}: ${esc(x.premise1)} + ${esc(x.premise2)}</em>` : ''}</div>`));
+  }
+  if (t.step === 'Backward chaining') return box(`The ${(d.proofs || []).length} proofs`, (d.proofs || []).map(p => `<div>${esc(p)}</div>`));
+  if (t.step === 'Answer') return box('The proof', [`<div>${esc(d.proof)}</div>`]);
+  return '';
+}
