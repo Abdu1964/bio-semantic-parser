@@ -94,7 +94,7 @@ function _plnAsk(q) {
 
 const _plnSecs = ms => ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60000)} min ${Math.round(ms % 60000 / 1000)} s`;
 
-async function _runPLNQuery() {
+async function _runPLNQuery(fresh = false) {
   const input = document.getElementById('pln-q-input');
   const q = (input && input.value || '').trim();
   const res = document.getElementById('pln-results');
@@ -121,7 +121,7 @@ async function _runPLNQuery() {
     const r = await fetch('/api/pln-query', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ question: q, staging_db: _plnStagingDb, run_dir: _plnRunDir }),
+      body: JSON.stringify({ question: q, staging_db: _plnStagingDb, run_dir: _plnRunDir, fresh }),
     });
     const d = await r.json();
     const took = _plnSecs(performance.now() - t0);
@@ -163,6 +163,8 @@ function _plnShowResult() {
     <div class="pb-res-head">
       <h3>${esc(d.question)}</h3>
       <span class="pb-chip pb-time">⏱ ${esc(d.took)}</span>
+      ${d.cached ? `<span class="pb-chip pb-saved" title="Reasoned on ${esc((d.saved_at || '').replace('T', ' '))}">⚡ saved answer · reasoned in ${_plnSecs(d.reasoned_ms || 0)}</span>
+        <button class="pb-again" onclick="_runPLNQuery(true)">↻ Run again</button>` : ''}
       <span class="pb-chip" style="color:#c4b5fd;background:rgba(139,92,246,.12)">${answers.length} answer${answers.length === 1 ? '' : 's'}</span>
       <button class="pb-learn" onclick="_plnShowWalkthrough()">🧠 How PLN answered this</button>
     </div>

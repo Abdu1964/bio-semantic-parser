@@ -71,6 +71,10 @@
 .pb-res-head h3 { font-size: 15px; color: var(--text); }
 .pb-chip { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 20px; }
 .pb-time { color: #6ee7b7; background: rgba(16, 185, 129, .12); border: 1px solid rgba(16, 185, 129, .35); }
+.pb-saved { color: #fcd34d; background: rgba(251, 191, 36, .1); border: 1px solid rgba(251, 191, 36, .35); }
+.pb-again { padding: 4px 11px; border-radius: 20px; cursor: pointer; font: 600 11px var(--font); color: var(--text2);
+            background: rgba(255, 255, 255, .04); border: 1px solid var(--border); transition: color .2s, border-color .2s; }
+.pb-again:hover { color: var(--text); border-color: #a78bfa; }
 .pb-q { color: var(--text3); font: 11px var(--mono, monospace); background: rgba(255, 255, 255, .04); padding: 8px 10px; border-radius: 8px;
         margin-bottom: 16px; word-break: break-word; }
 .pb-learn { margin-left: auto; padding: 9px 16px; border-radius: 12px; cursor: pointer; font: 700 12px var(--font); color: #06101a; border: 0;

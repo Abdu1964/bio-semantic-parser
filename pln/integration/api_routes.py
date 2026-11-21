@@ -1,5 +1,9 @@
 """PLN API: /api/pln-run, /api/pln-query, /api/pln-facts, /api/pln-inferred, /api/run_pln (legacy)."""
+import json
 import os
+import re
+import time
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Query
@@ -94,6 +98,18 @@ class PLNQueryRequest(BaseModel):
     question:   str
     run_dir:    str | None = None
     staging_db: str | None = None
+    fresh:      bool = False          # reason again instead of returning the saved answer
+
+
+def _saved_answers(run_dir: str | None) -> Path | None:
+    """Answers already reasoned for this paper, kept with its run."""
+    return Path(run_dir) / "pln_answers.json" if run_dir and Path(run_dir).is_dir() else None
+
+
+def _answer_key(question: str, run_dir: str | None, staging_db: str | None) -> str:
+    """Same question about the same, unchanged facts → same key."""
+    q = re.sub(r'\s+', ' ', question.strip().lower()).rstrip('?').strip()
+    return json.dumps([q, *_paper_state(run_dir, staging_db)[2:]])
 
 
 @router.post("/api/pln-run")
@@ -134,13 +150,24 @@ async def pln_query(req: PLNQueryRequest):
         if not pln.enabled:
             return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
 
+        store = _saved_answers(req.run_dir)
+        key = _answer_key(req.question, req.run_dir, req.staging_db)
+        saved = json.loads(store.read_text()) if store and store.exists() else {}
+        if key in saved and not req.fresh:
+            return {**saved[key], "cached": True}
+
+        t0 = time.perf_counter()
         if paper and fresh:
             pln.load_paper(run_dir=req.run_dir or "", staging_db=req.staging_db)
-
         result = pln.ask(req.question)
 
         from pln.query.answer_generator import generate_json
-        return {"ok": True, **generate_json(result)}
+        reply = {"ok": True, **generate_json(result), "reasoned_ms": round((time.perf_counter() - t0) * 1000),
+                 "saved_at": datetime.now().isoformat(timespec="seconds")}
+        if store:
+            saved[key] = reply
+            store.write_text(json.dumps(saved))
+        return {**reply, "cached": False}
     except Exception as exc:
         import traceback
         return {"ok": False, "error": str(exc), "trace": traceback.format_exc()[:500]}
