@@ -1,5 +1,5 @@
 """Layer 8 MeTTa files → PeTTaChainer atoms: (binds_to (protein A) (protein B)) becomes
-(: binds_to_a_b (Binds_To (protein A) (protein B)) (STV s c))."""
+(: binds_to_a_b (BindsTo a b) (STV s c)), a and b the entities' normalised IDs."""
 import re
 from pathlib import Path
 from typing import Iterator
@@ -16,8 +16,13 @@ def _pascal(name: str) -> str:
 def _make_atom_name(predicate: str, subj: str, obj: str) -> str:
     """Unique atom name from predicate + subject + object, safe for MeTTa."""
     def _safe(s: str) -> str:
-        return re.sub(r'[^a-zA-Z0-9_]', '_', s).strip('_')[:30]
-    return f"{_safe(predicate)}_{_safe(subj)}_{_safe(obj)}"
+        return re.sub(r'[^a-zA-Z0-9_]', '_', s).strip('_')
+    parts = [_safe(predicate), _safe(subj), _safe(obj)]
+    name = "_".join(p[:30] for p in parts)
+    if any(len(p) > 30 for p in parts):                  # cut parts: a hash keeps different triples apart
+        import hashlib
+        name += "_" + hashlib.md5("|".join(parts).encode()).hexdigest()[:8]
+    return name
 
 
 def _parse_triple(expr: str) -> tuple[str, str, str] | None:
@@ -33,11 +38,9 @@ def _parse_triple(expr: str) -> tuple[str, str, str] | None:
     if len(parts) < 3:
         return None
     predicate = parts[0]
-    # Skip metadata predicates (they annotate the triple, not represent it)
-    _META = {'negated', 'source', 'paper_source', 'paper_url', 'section',
-             'species', 'tissue', 'condition', 'effect_size', 'reasoning',
-             'confidence', 'stv', 'STV', 'inferred_from'}
-    if predicate in _META or predicate.startswith(';'):
+    # A relation name, nothing else. Metadata lines (negated, source, paper_url…) parse too: the caller
+    # tells them apart by their subject, which is itself a triple.
+    if not re.fullmatch(r'[a-z][a-z0-9_]*', predicate):
         return None
     subj = parts[1]
     obj  = parts[2]
@@ -101,6 +104,23 @@ class MeTTaAdapter:
     def __init__(self, confidence: float = 0.5, default_strength: float = 0.5):
         self.confidence       = confidence        # default STV confidence
         self.default_strength = default_strength  # default STV strength
+        self.entities: dict[str, dict] = {}       # entity symbol → {'name', 'type'} for display
+
+    def csv_truth(self, run_dir: str | Path) -> dict:
+        """(relation, subject ID, object ID) → (strength, default confidence) from the run's Neo4j edge
+        CSVs, which keep each fact's pipeline score for every run."""
+        import csv
+        truth = {}
+        for f in sorted((Path(run_dir) / "neo4j").rglob("edges_*.csv")):
+            try:
+                for row in csv.DictReader(open(f, newline="", encoding="utf-8"), delimiter="|"):
+                    rel = (row.get("relation") or row.get("label") or "").lower()
+                    if rel and row.get("confidence"):
+                        key = (rel, _id_key(row.get("source_id", "")), _id_key(row.get("target_id", "")))
+                        truth[key] = (float(row["confidence"]), self.confidence)
+            except (OSError, ValueError):
+                continue
+        return truth
 
     def load_run_dir(self, run_dir: str | Path, truth: dict | None = None) -> list[str]:
         """Atoms from a run_dir's MeTTa edge files; truth maps (relation, subject, object) to (s, c)."""
@@ -159,7 +179,7 @@ class MeTTaAdapter:
                 continue
             subj_id = _extract_id(subj)
             obj_id  = _extract_id(obj)
-            name    = _make_atom_name(pred, subj_id, obj_id)
+            name    = _make_atom_name(pred, _id_key(subj_id), _id_key(obj_id))
             result[name] = {
                 'reasoning': m.get('reasoning', '').strip('"'),
                 'source':    m.get('source',    '').strip('"'),
@@ -229,26 +249,19 @@ class MeTTaAdapter:
     def _make_atom(self, predicate: str, subj: str, obj: str,
                    strength: float, confidence: float,
                    id_to_name: dict[str, str] | None = None) -> str | None:
-        """Convert one triple to a PeTTaChainer atom string using entity names."""
-        id_to_name  = id_to_name or {}
-        pascal_pred = _pascal(predicate)
-
-        subj_id   = _extract_id(subj)
-        obj_id    = _extract_id(obj)
-        subj_type = _extract_type(subj)
-        obj_type  = _extract_type(obj)
-
-        # Use the Layer-7 canonical name from this paper's nodes file; fall back to ID slug.
-        subj_name = _name_slug(id_to_name.get(subj_id) or subj_id)
-        obj_name  = _name_slug(id_to_name.get(obj_id)  or obj_id)
-
-        atom_name  = _make_atom_name(predicate, subj_name, obj_name)
-        subj_expr  = f"({subj_type} {subj_name})" if subj_type else subj_name
-        obj_expr   = f"({obj_type} {obj_name})"   if obj_type  else obj_name
-
+        """Convert one triple to a PeTTaChainer atom. An entity is its ontology ID in one form
+        (mesh_d006331), so the same entity from any paper is one atom; its name and type are kept
+        aside for display."""
+        id_to_name = id_to_name or {}
+        terms = []
+        for expr in (subj, obj):
+            eid = _extract_id(expr)
+            term = _id_key(eid)
+            self.entities.setdefault(term, {'name': id_to_name.get(eid) or eid, 'type': _extract_type(expr)})
+            terms.append(term)
         s = f"{strength:.3f}"
         c = f"{confidence:.3f}"
-        return f"(: {atom_name} ({pascal_pred} {subj_expr} {obj_expr}) (STV {s} {c}))"
+        return f"(: {_make_atom_name(predicate, *terms)} ({_pascal(predicate)} {terms[0]} {terms[1]}) (STV {s} {c}))"
 
     def triple_to_atom(self, subject: str, relation: str, object_: str,
                        subject_type: str = "", object_type: str = "",
@@ -274,8 +287,11 @@ class MeTTaAdapter:
 
     @staticmethod
     def _db_stv(row) -> tuple[float, float]:
-        """Strength = the fact's confidence score; confidence = N/(N+1) over its source papers."""
+        """Strength = the fact's 5-channel score; confidence = the store's per-triple evidence
+        confidence, or N/(N+1) over its sources for a store without it."""
         import json
+        if "evidence_confidence" in row.keys() and row["evidence_confidence"] is not None:
+            return float(row["confidence"] or 0.5), float(row["evidence_confidence"])
         try:
             n = max(1, len(json.loads(row["source_papers"] or "[]")))
         except (ValueError, TypeError):

@@ -105,7 +105,9 @@ def generate_pln_html(
     paper_id: str = '',
     atom_meta: dict | None = None,
     label_map: dict | None = None,
+    entities: dict | None = None,
 ) -> Path:
+    """entities: entity symbol → {'name', 'type'}, for atoms whose entities are bare symbols."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -128,13 +130,17 @@ def generate_pln_html(
         and 'Implication' not in t.get('predicate', '')
     ]
 
+    n_backward = sum(1 for t in inferred if (atom_meta or {}).get(t['name'], {}).get('_via') == 'backward')
+    n_forward = len(inferred) - n_backward
     nodes_map: dict = {}
     vis_edges: list = []
     eid = 0
 
     def _node(nid: str, ntype: str) -> None:
         if nid and nid not in nodes_map:
-            human = id_to_label.get(nid, '')
+            known = (entities or {}).get(nid, {})
+            ntype = ntype or known.get('type', '')
+            human = known.get('name') or id_to_label.get(nid, '')
             label = (human[:18] if human else
                      (nid.split(':')[-1][:18] if ':' in nid else nid[:18]))
             color = _node_color(ntype)
@@ -196,19 +202,24 @@ def generate_pln_html(
         _node(oid, t['object_type'])
         if sid and oid:
             s, c = t['strength'], t['confidence']
-            proof = (atom_meta or {}).get(t['name'], {}).get('_proof', {})
+            meta = (atom_meta or {}).get(t['name'], {})
+            proof = meta.get('_proof', {})
+            via = meta.get('_via', 'forward')                  # forward chaining, or backward for a question
+            vcol = '#a855f7' if via == 'forward' else '#22d3ee'
+            icon = '🔮' if via == 'forward' else '🧭'
             slbl, olbl = _display(sid), _display(oid)
             vis_edges.append({
                 'id': eid, 'from': sid, 'to': oid,
-                'label': f"🔮 {t['label']}",
-                'title': f"🔮 {t['label']} [PLN inferred] · stv({s:.2f}, {c:.2f})",
-                'color': {'color': '#a855f7cc', 'highlight': '#ffffff', 'hover': '#ffffff', 'opacity': 0.85},
+                'label': f"{icon} {t['label']}",
+                'title': f"{icon} {t['label']} [inferred by {via} chaining] · stv({s:.2f}, {c:.2f})",
+                'color': {'color': vcol + 'cc', 'highlight': '#ffffff', 'hover': '#ffffff', 'opacity': 0.85},
                 'width': 2, 'dashes': [8, 4],
                 'arrows': {'to': {'enabled': True, 'scaleFactor': 0.6}},
-                'font': {'color': '#c084fc', 'size': 11, 'align': 'middle',
+                'font': {'color': vcol, 'size': 11, 'align': 'middle',
                          'face': 'Inter, sans-serif', 'strokeWidth': 3, 'strokeColor': '#00000066'},
-                'shadow': {'enabled': True, 'color': '#a855f755', 'size': 8, 'x': 0, 'y': 0},
-                '_relation': f"🔮 {t['label']}",
+                'shadow': {'enabled': True, 'color': vcol + '55', 'size': 8, 'x': 0, 'y': 0},
+                '_relation': f"{icon} {t['label']}",
+                '_via': via, '_question': meta.get('_question', ''),
                 '_subject_name': slbl, '_object_name': olbl,
                 '_subject_id': sid, '_object_id': oid,
                 '_confidence': s, '_negated': False,
@@ -342,9 +353,14 @@ def generate_pln_html(
     {paper_opts}
   </select>
   <button class="header-btn" id="facts-badge">✓ {len(original)} facts</button>
-  <button class="header-btn" id="inferred-badge"
+  <button class="header-btn" id="inferred-badge" data-via="forward"
           style="color:#c084fc;border-color:rgba(192,132,252,.3);cursor:pointer"
-          onclick="showInferredOnly(this)">🔮 {len(inferred)} inferred</button>
+          title="Derived by forward chaining: every relation the rules imply"
+          onclick="showInferredOnly(this, 'forward')">🔮 {n_forward} forward-inferred</button>
+  <button class="header-btn" id="backward-badge" data-via="backward"
+          style="color:#22d3ee;border-color:rgba(34,211,238,.3);cursor:pointer"
+          title="Proved by backward chaining while answering a question"
+          onclick="showInferredOnly(this, 'backward')">🧭 {n_backward} backward-inferred</button>
   <button class="header-btn" id="inferred-toggle" onclick="toggleInferred(this)">⛓ Hide inferred</button>
   <input id="search-box" type="text" placeholder="Search nodes…" oninput="searchNodes(this.value)">
   <span id="stats">{len(vis_nodes)} nodes · {len(vis_edges)} edges · {ts}</span>
@@ -420,43 +436,46 @@ var _focusedNode = null;
 var _inferredOnlyMode = false;
 
 // ── Inferred-only view ───────────────────────────────────────────────────────
-function showInferredOnly(btn) {{
-  _inferredOnlyMode = !_inferredOnlyMode;
+function showInferredOnly(btn, via) {{
+  var again = _inferredOnlyMode === via;
+  _inferredOnlyMode = again ? false : via;
   _focusedNode = null;
+  document.querySelectorAll('[data-via]').forEach(b => {{ b.style.background = ''; }});
 
   if (!_inferredOnlyMode) {{
     // Restore full graph
     nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: false}})));
     edgesDS.update(EDGES_DATA.map(e => ({{id: e.id, hidden: e._edge_type === 'inferred' && !inferredVisible}})));
-    btn.style.background = '';
-    btn.style.color = '#c084fc';
     hidePanel();
     return;
   }}
 
-  // Isolate inferred subgraph
-  var inferredEdges = EDGES_DATA.filter(e => e._edge_type === 'inferred');
+  // Isolate the subgraph inferred in this direction
+  var inferredEdges = EDGES_DATA.filter(e => e._edge_type === 'inferred' && e._via === via);
+  var fwd = via === 'forward', col = fwd ? '#c084fc' : '#22d3ee';
   var inferredNodeIds = new Set();
   inferredEdges.forEach(e => {{ inferredNodeIds.add(e.from); inferredNodeIds.add(e.to); }});
 
   nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: !inferredNodeIds.has(n.id)}})));
-  edgesDS.update(EDGES_DATA.map(e => ({{id: e.id, hidden: e._edge_type !== 'inferred'}})));
+  edgesDS.update(EDGES_DATA.map(e => ({{id: e.id, hidden: !(e._edge_type === 'inferred' && e._via === via)}})));
   if (inferredNodeIds.size > 0) {{
     network.fit({{nodes: [...inferredNodeIds], animation: {{duration: 500, easingFunction: 'easeInOutQuad'}}}});
   }}
 
-  btn.style.background = 'rgba(192,132,252,0.2)';
-  btn.style.color = '#e9d5ff';
+  btn.style.background = fwd ? 'rgba(192,132,252,0.2)' : 'rgba(34,211,238,0.15)';
 
   // Build side-panel table of inferred atoms
   var html = `<div style="display:flex;justify-content:flex-end">
-    <span id="close-panel" onclick="document.getElementById('inferred-badge').click()" style="cursor:pointer">✕</span>
+    <span id="close-panel" onclick="showInferredOnly(document.querySelector('[data-via=${{via}}]'), '${{via}}')" style="cursor:pointer">✕</span>
   </div>
-  <div style="color:#c084fc;font-size:13px;font-weight:600;margin-bottom:12px">
-    🔮 PLN Inferred Atoms (${{inferredEdges.length}})
+  <div style="color:${{col}};font-size:13px;font-weight:600;margin-bottom:12px">
+    ${{fwd ? '🔮 Forward-inferred' : '🧭 Backward-inferred'}} (${{inferredEdges.length}})
   </div>
   <div style="font-size:11px;color:#8b949e;margin-bottom:12px">
-    Derived by forward chaining. Click any row for full derivation.
+    ${{fwd ? 'Derived by forward chaining: every relation the rules imply from the facts.'
+           : 'Proved by backward chaining while answering a question; the question is on each row.'}}
+    Click any row for full derivation.
+    ${{inferredEdges.length ? '' : '<br><br>None yet' + (fwd ? '.' : ': ask questions in the PLN board.')}}
   </div>`;
 
   inferredEdges.forEach(e => {{
@@ -470,6 +489,7 @@ function showInferredOnly(btn) {{
       <span style="color:#484f58"> → </span>
       <span style="font-size:11px;color:#c9d1d9">${{esc(e._object_name || e.to)}}</span><br>
       <span style="font-family:monospace;font-size:10px;color:#6e7681">${{stv}}</span>
+      ${{e._question ? `<br><span style="font-size:10px;color:#22d3ee">for: ${{esc(e._question)}}</span>` : ''}}
     </div>`;
   }});
 
@@ -538,7 +558,9 @@ function buildStvDetail(e) {{
   if (isInf) {{
     provenanceHtml =
       '<div style="margin-bottom:10px;padding:10px 12px;background:#0d1117;border-radius:8px;border-left:3px solid #a855f7">' +
-      '<div style="color:#c084fc;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Forward Chaining Proof</div>' +
+      '<div style="color:' + (e._via === 'backward' ? '#22d3ee' : '#c084fc') + ';font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">' +
+        (e._via === 'backward' ? 'Backward Chaining Proof' : 'Forward Chaining Proof') + '</div>' +
+      (e._question ? '<div style="color:#8b949e;font-size:10px;margin-bottom:6px">Proved for the question: <span style="color:#22d3ee">' + esc(e._question) + '</span></div>' : '') +
       '<div style="color:#8b949e;font-size:10px;margin-bottom:6px">Rule: <code style="color:#a855f7">' + esc(e._rule || 'bio_rules.metta') + '</code></div>' +
       (e._premise1 && e._premise2
         ? '<div style="background:#161b22;border-radius:6px;padding:8px 10px;margin-bottom:6px">' +
@@ -558,8 +580,8 @@ function buildStvDetail(e) {{
       '<div style="color:#3fb950;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">LLM Extraction Origin</div>' +
       (e._source
         ? '<div style="margin-bottom:6px"><span style="color:#484f58;font-size:10px">Paper: </span>' +
-            (e._paper_url
-              ? '<a href="' + e._paper_url + '" target="_blank" style="color:#58a6ff;font-size:11px;text-decoration:none">' + esc(e._source) + ' ↗</a>'
+            (/^https?:\/\//.test(e._paper_url || '')
+              ? '<a href="' + esc(e._paper_url) + '" target="_blank" style="color:#58a6ff;font-size:11px;text-decoration:none">' + esc(e._source) + ' ↗</a>'
               : '<span style="color:#79c0ff;font-size:11px">' + esc(e._source) + '</span>') +
           '</div>'
         : '') +
