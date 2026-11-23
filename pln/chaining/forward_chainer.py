@@ -195,6 +195,15 @@ class ForwardChainer:
                 'derived_s': sv, 'derived_c': cv, 'proof': proof,
             }
 
+    def derived(self) -> list[str]:
+        """Relations the last run derived; empty before any run."""
+        return list(self._derived_atoms)
+
+    def invalidate(self) -> None:
+        """Facts were added: the next run derives again."""
+        self.materialized = False
+        self._derived_atoms, self._derivations = [], {}
+
     def rules(self) -> dict[str, tuple[float, float]]:
         """Loaded rule names → (s, c)."""
         return dict(self._rules)

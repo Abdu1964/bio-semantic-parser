@@ -1,22 +1,8 @@
 """Convert PLN ReasoningResult into human-readable answer text."""
+from pln.query.nl_to_pln import _words
 from pln.query.reasoner import ReasoningResult
 
 
-_PRED_TEMPLATES: dict[str, str] = {
-    'Inhibits':          '{subject} inhibits {object}',
-    'Activates':         '{subject} activates {object}',
-    'Binds_To':          '{subject} binds to {object}',
-    'Causes':            '{subject} causes {object}',
-    'Is_Associated_With':'{subject} is associated with {object}',
-    'Treats':            '{subject} treats {object}',
-    'Upregulates':       '{subject} upregulates {object}',
-    'Downregulates':     '{subject} downregulates {object}',
-    'Is_Biomarker_Of':   '{subject} is a biomarker of {object}',
-    'Protects_Against':  '{subject} protects against {object}',
-    'IdenticalTo':       '{subject} may refer to the same entity as {object}',
-    'Encodes':           '{subject} encodes {object}',
-    'Co_Expressed_With': '{subject} is co-expressed with {object}',
-}
 
 
 def _clean(expr: str) -> str:
@@ -53,8 +39,7 @@ def generate_answer(result: ReasoningResult, max_answers: int = 10) -> str:
         if key in seen:
             continue
         seen.add(key)
-        tmpl = _PRED_TEMPLATES.get(pred, '{subject} — {predicate} — {object}')
-        sentence = tmpl.format(subject=subj, object=obj, predicate=pred)
+        sentence = f"{subj} {' '.join(_words(pred))} {obj}"
         how = "inferred" if ans.get('inferred') else "fact"
         lines.append(f"• {sentence}  ({how}; strength={s:.2f}, confidence={c:.2f})")
 
@@ -76,10 +61,13 @@ def generate_json(result: ReasoningResult) -> dict:
         'answers': [
             {
                 'predicate':  a['predicate'],
-                'subject':    _clean(a['subject']),
-                'object':     _clean(a['object']),
-                'subject_type': _kind(a['subject']),
-                'object_type':  _kind(a['object']),
+                'subject':    a.get('subject_name') or _clean(a['subject']),
+                'object':     a.get('object_name') or _clean(a['object']),
+                'papers':     a.get('papers', []),
+                'subject_type': a.get('subject_type') or _kind(a['subject']),
+                'object_type':  a.get('object_type') or _kind(a['object']),
+                'subject_id':   a['subject'],
+                'object_id':    a['object'],
                 'strength':   a['strength'],
                 'confidence': a['confidence'],
                 'inferred':   a.get('inferred', False),

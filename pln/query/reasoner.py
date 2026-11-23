@@ -46,6 +46,10 @@ class PLNReasoner:
         self._backward = backward
         self._materialized = False
 
+    def invalidate(self) -> None:
+        """Facts were added: derive again on the next question."""
+        self._materialized = False
+
     def ensure_materialized(self) -> None:
         """Run forward materialization once; subsequent calls are no-ops."""
         if not self._materialized:
@@ -53,8 +57,9 @@ class PLNReasoner:
             self._materialized = True
 
     def ask(self, question: str, raw_pln_query: str | None = None,
-            entity_map: dict | None = None, terms: list[str] | None = None) -> ReasoningResult:
-        """Answer a question; raw_pln_query skips translation, entity_map and terms resolve names."""
+            names: dict | None = None, predicates: list[str] | None = None) -> ReasoningResult:
+        """Answer a question; raw_pln_query skips translation. names: entity symbol → its names and
+        synonyms; predicates: the relations in the atomspace, whose question forms are tried."""
         result = ReasoningResult()
         result.query = question
         def log(step, detail, t0=None, explain='', data=None):
@@ -65,15 +70,16 @@ class PLNReasoner:
             pln_query, filters = raw_pln_query, {}
             log('Question', 'raw PeTTa query given, no translation')
         else:
-            pln_query, filters, notes = plan_query(question, entity_map, terms)
+            pln_query, filters, notes = plan_query(question, names, predicates)
             log('Question', notes[0], explain=(
-                "The question is matched against relation templates in order; the first that fits gives the predicate "
-                "and which side is asked for: $target (what X affects) or $source (what affects X)."))
+                "Each relation in the atomspace has two question forms made from its own words (BindsTo: 'What does X "
+                "bind to?' and 'What binds to X?'); the form that fits gives the relation and which side is asked for: "
+                "$target (what X affects) or $source (what affects X)."))
             for note in notes[1:]:
                 log('Name', note, explain=(
-                    "Names are matched to this paper's entities in order: the exact name, then a synonym with the same "
-                    "ontology ID, then an entity whose name holds all the words. One match becomes that entity; several "
-                    "become a variable and the answers are kept only for those entities."))
+                    "An entity in the atomspace is its ontology ID, so the same entity from any paper is one atom. The name "
+                    "is matched to the entities' names and synonyms: exactly first, else every entity whose name holds all "
+                    "the words. One match becomes that entity; several become a variable and only their answers are kept."))
         if not pln_query:
             return result
         result.pln_query = pln_query
@@ -81,15 +87,15 @@ class PLNReasoner:
             "(: $prf (Predicate subject object) $tv) asks PeTTaChainer for any proof $prf of the statement together with "
             "its truth value $tv. Words starting with $ are variables PeTTaChainer fills in; the others must match."))
 
-        reused = self._forward.materialized
-        t0 = time.perf_counter()
-        self.ensure_materialized()
-        derived = self._forward.run()
-        detail = f"{len(self._forward.rules())} rules over the facts → {len(derived)} new relation(s) derived"
-        log('Forward chaining', detail + (" (reused: derived when this paper was loaded)" if reused else ""), None if reused else t0,
-            explain=("Forward chaining starts from the facts. For every predicate a rule can conclude, PeTTaChainer looks for "
-                     "rule matches whose premises are all facts (or earlier conclusions) and keeps relations the paper did "
-                     "not already state. Each rule carries its own STV: how reliable the pattern is."),
+        derived = self._forward.derived()
+        detail = (f"{len(derived)} relation(s) derived by the last inference run, from {len(self._forward.rules())} rules"
+                  if self._forward.materialized else
+                  f"not needed for a question: backward chaining applies the {len(self._forward.rules())} rules itself")
+        log('Forward chaining', detail,
+            explain=("Forward chaining starts from the facts and applies every rule to list all relations they imply; "
+                     "Run PLN Inference does that and shows them. A question does not need it: backward chaining below "
+                     "applies the same rules, starting from the question. Each rule carries its own STV: how reliable "
+                     "the pattern is."),
             data={'rules': self._forward.rule_info(),
                   'derived': [{'atom': a, **self._forward.derivations().get(a.split()[1], {})} for a in derived]})
 
@@ -144,5 +150,6 @@ class PLNReasoner:
             'strength':   round(strength,   3),
             'confidence': round(confidence, 3),
             'inferred':   prf.startswith('(by '),
-            'proof':      proof,
+            'proof':      prf,                       # a fact's name, or (by rule (conjunction premises…))
+            'result':     proof,                     # the whole line PeTTaChainer returned
         }
