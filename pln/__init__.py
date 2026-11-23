@@ -49,8 +49,7 @@ class PLNModule:
         self._writer   = PLNWriter()
 
         # Load lib + bio rules once
-        self._forward.load_rules_file(self._cfg.lib_path)
-        self._forward.load_rules_file(self._cfg.rules_path)
+        self._forward.load_rules_file(self._cfg.lib_path)          # PLN helper functions; rules come from the schema and the facts
 
         # BackwardChainer shares the handler so it sees forward-derived facts
         self._backward = BackwardChainer(self._cfg, self._forward.handler())
@@ -107,7 +106,28 @@ class PLNModule:
         self._forward.load_atoms(new)
         self._forward.invalidate()                   # new facts can chain with old ones: derive again
         self._reasoner.invalidate()
+        self._rules_stale = True                     # rules follow the facts' relations and patterns
         return len(new)
+
+    def refresh_rules(self) -> None:
+        """Rules for the loaded facts: from the schema (Biolink parents and symmetry, RO transitivity) and learned
+        from the facts' own patterns. Rebuilt only after facts were added."""
+        if not getattr(self, '_rules_stale', False):
+            return
+        from pln.rules.schema_rules import schema_rules
+        from pln.rules.mined_rules import mine_rules
+        facts = self.facts()
+        schema = schema_rules({f[0] for f in facts})
+        known = {r['text'] for r in schema}
+        mined = [r for r in mine_rules(facts, self._cfg.mine_min_support, self._cfg.mine_min_coverage,
+                                       self._cfg.mine_min_lift, self._cfg.mine_min_strength) if r['text'] not in known]
+        self._forward.set_rules(schema + mined)
+        self._rule_counts = {'schema': len(schema), 'learned': len(mined)}
+        self._rules_stale = False
+
+    def rule_counts(self) -> dict:
+        """How many rules came from the schema and how many were learned from the facts."""
+        return dict(getattr(self, '_rule_counts', {'schema': 0, 'learned': 0}))
 
     def papers(self) -> list[str]:
         """Papers loaded into this atomspace."""
@@ -158,6 +178,7 @@ class PLNModule:
             r.query = question
             return r
         self._ensure_components()
+        self.refresh_rules()
         names = self.names()
         predicates = sorted({f[0] for f in self.facts()})
         result = self._reasoner.ask(question, raw_pln_query, names=names, predicates=predicates)
@@ -218,6 +239,7 @@ class PLNModule:
         """Atoms derived by the rules: forward chaining's, then those proved for questions."""
         if self._forward is None:
             return []
+        self.refresh_rules()
         from pln.chaining.forward_chainer import _parse_result
         forward = self._forward.run()
         seen = {tuple(_parse_result(a)[1:4]) for a in forward}            # same triple found both ways: once
@@ -235,6 +257,7 @@ class PLNModule:
         if not self._cfg.enabled:
             return
         self._ensure_components()
+        self.refresh_rules()
         self._forward.materialize(steps=self._cfg.forward_steps)
 
     def generate_visualization(self, run_dir: str | Path, paper_id: str = '') -> Path | None:
@@ -244,6 +267,7 @@ class PLNModule:
         self._ensure_components()
 
         # Materialize inferred atoms via forward chaining
+        self.refresh_rules()
         self._forward.materialize(steps=self._cfg.forward_steps)
 
         all_atoms = self.all_facts()

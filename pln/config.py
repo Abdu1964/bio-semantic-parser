@@ -13,7 +13,10 @@ class PLNConfig:
     backward_timeout:    int   = field(default_factory=lambda: int(os.getenv("PLN_BACKWARD_TIMEOUT", "30")))
     identity_threshold:  float = field(default_factory=lambda: float(os.getenv("PLN_IDENTITY_THRESHOLD", "0.8")))
     min_confidence:      float = field(default_factory=lambda: float(os.getenv("PLN_MIN_CONFIDENCE", "0.5")))
-    rules_path:          Path  = field(default_factory=lambda: Path(__file__).resolve().parent / "rules" / "bio_rules.metta")
+    mine_min_support:    int   = field(default_factory=lambda: int(os.getenv("PLN_MINE_MIN_SUPPORT", "2")))  # cases a learned rule needs
+    mine_min_coverage:   float = field(default_factory=lambda: float(os.getenv("PLN_MINE_MIN_COVERAGE", "0.01")))  # share of R's facts it explains
+    mine_min_lift:       float = field(default_factory=lambda: float(os.getenv("PLN_MINE_MIN_LIFT", "2.0")))  # times above R's base rate
+    mine_min_strength:   float = field(default_factory=lambda: float(os.getenv("PLN_MINE_MIN_STRENGTH", "0.1")))  # share of its cases it holds in
     lib_path:            Path  = field(default_factory=lambda: Path(__file__).resolve().parent / "lib" / "lib_pln.metta")
 
     @classmethod
