@@ -89,9 +89,10 @@ def test_kind_conflicts():
 def test_fact_organism_from_its_sentences():
     text = ("Human RA-FLS were stimulated with IL-1β, which induced IL6. "
             "In rats with arthritis, PIA elevated IL1B. Mice and rats were compared for TNF and IL1B.")
-    assert E._sentence_organism(text, "IL-1β", "IL6") == "Homo sapiens"
-    assert E._sentence_organism(text, "PIA", "IL1B") == "Rattus norvegicus"
-    assert E._sentence_organism(text, "TNF", "IL1B") == ""                  # two organisms named: unknown
+    mentions = ["Human RA-FLS", "rats", "Mice"]                             # Layer 4 organism mentions
+    assert E._sentence_organism(text, "IL-1β", "IL6", mentions) == "Homo sapiens"
+    assert E._sentence_organism(text, "PIA", "IL1B", mentions) == "Rattus norvegicus"
+    assert E._sentence_organism(text, "TNF", "IL1B", mentions) == ""        # two organisms named: unknown
 
 
 def test_organism_must_be_named_in_the_text():

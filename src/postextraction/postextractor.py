@@ -57,8 +57,14 @@ def fit_relation_targets(records: list) -> tuple:
             discarded += 1
     return moved, discarded
 
-_ORGANISMS = {t.value for t in EntityType if any(k in t.value for k in ("ORGANISM", "POPULATION", "COHORT"))}
-_CONDITIONS = {"DISEASE", "CANCER", "SYMPTOM", "CLINICAL_FINDING", "PATHOLOGICAL_PROCESS"}
+def _biolink_kind(*classes: str) -> set:
+    """Entity types whose Biolink class descends from any of these Biolink classes."""
+    from src.schema.biolink_generated import ANCESTORS, ENTITY_CLASS
+    return {t for t, c in ENTITY_CLASS.items() if set(ANCESTORS.get(c, [c])) & set(classes)}
+
+
+_ORGANISMS = _biolink_kind("organism taxon", "population of individual organisms", "individual organism")
+_CONDITIONS = _biolink_kind("disease", "pathological process", "clinical finding")
 _EFFECT_RELATIONS = {r.value for r in RelationType if _EVENT.get(r.value) in ("Positive_regulation", "Negative_regulation",
                                                                                "Regulation")} | {"causes", "participates_in"}
 
@@ -221,6 +227,7 @@ def process(
         if step_cb: step_cb(1, "Entity Normalization", f"{len(raw_records)} relations")
         log("Step 1 — Entity Normalization")
         entity_normalization.reset_document_cache()   # one ID per concept within this paper
+        entity_normalization.remember_organism_mentions(all_chunks)
         _n_total = len(raw_records)
 
         def _progress(done, total):
@@ -281,7 +288,7 @@ def process(
             _paper = " ".join(c.get("text", "") for c in all_chunks if c.get("section") != "figure")
             _fc = text_check.check(records, _paper)
             _msg = (f"Figure facts vs text: {_fc['checked']} checked — {_fc['supported']} supported, "
-                    f"{_fc['contradicted']} contradicted (held back), {_fc['unaddressed']} not addressed by the text")
+                    f"{_fc['contradicted']} contradicted (rejected), {_fc['unaddressed']} not addressed by the text")
             if step_cb: step_cb(1, "Figure facts vs text", _msg)
             log(_msg)
 
@@ -343,7 +350,8 @@ def process(
         return ":" in entity_id
 
     from src.postextraction import local_concepts
-    _n_local = local_concepts.mark(records, " ".join(c.get("text", "") for c in all_chunks))
+    _n_local = local_concepts.mark(records, " ".join(c.get("text", "") for c in all_chunks),
+                                   " ".join(c.get("text", "") for c in all_chunks if c.get("section") != "figure"))
     if _n_local:
         log(f"  → {_n_local} names without an ontology ID given a local ID")
 

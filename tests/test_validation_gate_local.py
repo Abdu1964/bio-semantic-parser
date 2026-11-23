@@ -15,6 +15,20 @@ def test_mark_needs_two_mentions_and_a_real_other_side():
     assert recs[0]["subject_local_id"] == "LOCAL:alz/m2"
 
 
+def test_both_sides_local_only_when_both_are_central():
+    text = ("Epigenomic erosion rose in AD. Epigenomic erosion tracked identity loss. With epigenomic erosion, "
+            "identity loss grew. Identity loss was strongest late. Normal cells were fewer.")
+    recs = [_rec("epigenomic erosion", "TEXT:e", obj="identity loss", object_id="TEXT:i"),
+            _rec("epigenomic erosion", "TEXT:e", obj="normal cells", object_id="TEXT:n")]
+    assert mark(recs, text) == 2
+    assert recs[0]["subject_local_id"] == "LOCAL:alz/epigenom-erosion" and recs[0]["object_local_id"]
+    assert "subject_local_id" not in recs[1] and "object_local_id" not in recs[1]
+    auto, _ = route(recs[:1])
+    assert auto[0]["object_id"] == "LOCAL:alz/identity-loss"
+    labels = [_rec("lateAD", "TEXT:l", obj="Mic DUSP1", object_id="TEXT:m")]
+    assert mark(labels, "Panel A: lateAD vs Mic DUSP1. " * 3, "Late-AD showed fewer microglia.") == 0
+
+
 def test_gate_inserts_only_valid_local_facts():
     ok = _rec("M2", "TEXT:m2", subject_local_id="LOCAL:alz/m2")
     bad = _rec("M2", "TEXT:m2", subject_local_id="LOCAL:alz/m2", validation_verdict="REVIEW")

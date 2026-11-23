@@ -51,8 +51,10 @@ def _taxonomy_block() -> str:
     for rel, entry in TAXONOMY.items():
         lines.append(f"  {rel.value}")
         lines.append(f"    Definition : {entry['definition']}")
-        lines.append(f"    Example    : {entry['example']}")
-        lines.append(f"    Not this   : {entry['not_this']}")
+        if entry.get("example"):
+            lines.append(f"    Example    : {entry['example']}")
+        if entry.get("not_this"):
+            lines.append(f"    Not this   : {entry['not_this']}")
         lines.append("")
     _TAXONOMY_BLOCK = "\n".join(lines)
     return _TAXONOMY_BLOCK

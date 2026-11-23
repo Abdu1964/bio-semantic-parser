@@ -9,6 +9,7 @@ from .node_naming import (
     pick_node_name, pick_node_full_name, pick_node_source_url,
     merge_node_synonyms, pick_node_entity_type, merge_node_evidence,
 )
+from src.schema.biolink_qualifiers import qualifiers
 
 _OUT_DIR = Path(os.getenv("METTA_OUTPUT_DIR", "data/output/metta"))
 
@@ -196,6 +197,9 @@ def write(records: list, run_dir: Path = None) -> dict:
                     for prop, key in (("evidence_source", "source"), ("evidence_kind", "evidence")):
                         if r.get(key):                              # this study or cited; measured or predicted
                             f.write(f"({prop} {triple} {_metta_val(r[key])})\n")
+                    for prop, val in qualifiers(r).items():          # Biolink edge qualifiers
+                        if val:
+                            f.write(f"({prop} {triple} {_metta_val(val)})\n")
 
                     reasoning = (r.get("reasoning", "") or "").strip()[:200]
                     if reasoning:

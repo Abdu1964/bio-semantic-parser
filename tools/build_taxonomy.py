@@ -490,6 +490,22 @@ def print_report(all_types: list) -> None:
         print("\n  All schema types are covered. Taxonomy is complete.\n")
 
 
+def print_biolink_predicate_coverage() -> None:
+    """Biolink predicates only (not all slots), with inverses and non-applicable ones accounted for."""
+    from collections import Counter
+    from src.schema.biolink_generated import BIOLINK_VERSION, COVERAGE
+    print("\n" + "═" * 72)
+    if not COVERAGE:
+        print("  BIOLINK PREDICATES: no coverage table — run tools/build_biolink_coverage.py")
+        return
+    kinds = Counter("inverse" if v.startswith("inverse of") else "not applicable" if v.startswith("not applicable") else v
+                    for v in COVERAGE.values())
+    print(f"  BIOLINK PREDICATES (Biolink {BIOLINK_VERSION}): {len(COVERAGE)}/{len(COVERAGE)} accounted for — "
+          f"{kinds['direct']} direct, {kinds['added']} added, {kinds['inverse']} as inverses, "
+          f"{kinds['not applicable']} not applicable")
+    print("  (the BIOLINK section above counts every Biolink slot, most of which are not predicates)\n")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
@@ -525,6 +541,7 @@ def main() -> None:
 
     all_types = check_coverage(all_types)
     print_report(all_types)
+    print_biolink_predicate_coverage()
 
     if args.output:
         out = Path(args.output)
