@@ -13,7 +13,7 @@
     code, pre, .mono { font-family: var(--font-mono); }
   </style>
   <link rel="stylesheet" href="/static/style.css">
-  <link rel="stylesheet" href="/static/pln-board.css?v=3">
+  <link rel="stylesheet" href="/static/pln-board.css?v=5">
   <link rel="stylesheet" href="/static/query/query.css">
   <link rel="stylesheet" href="/static/query/query-builder.css">
   <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
@@ -661,8 +661,9 @@ async function _regenerateUnifiedPLN(btn) {
         🔮 PLN Inference &amp; AtomSpace
       </div>
       <div class="commit-step-sub">
-        Run PLN forward chaining over this paper's triples to infer new relations.
-        Opens an interactive graph showing original triples + inferred triples (purple dashed edges).
+        <b>Run PLN Inference</b> — forward chaining: derive every relation the rules imply from this paper's facts,
+        shown in a graph (purple dashed edges). <b>PLN Query</b> — backward chaining: prove an answer to your question
+        over every loaded paper; relations it proves join the graph (cyan dashed edges).
       </div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <button class="run-btn" id="pln-inference-btn" onclick="commitPLNInference()"
@@ -673,7 +674,7 @@ async function _regenerateUnifiedPLN(btn) {
           style="background:none;border:1px solid var(--pln2);border-radius:8px;padding:10px 16px;color:var(--pln);font-size:12px;cursor:pointer;font-family:var(--font)">
           🔮 PLN Query
         </button>
-        <span style="font-size:11px;color:var(--text3)">MeTTa only · PeTTaChainer forward chaining</span>
+        <span style="font-size:11px;color:var(--text3)">PeTTaChainer · forward chaining (Run) · backward chaining (Query)</span>
       </div>
       <div id="pln-commit-result" style="margin-top:14px;display:none"></div>
     </div>
@@ -837,7 +838,7 @@ async function _regenerateUnifiedPLN(btn) {
 <script src="/static/js/main/09-event-handler.js?v=3"></script>
 <script src="/static/js/main/10-renderers.js?v=6"></script>
 <script src="/static/js/main/11-triple-editor.js?v=2"></script>
-<script src="/static/js/main/12-pln-query.js?v=4"></script>
+<script src="/static/js/main/12-pln-query.js?v=6"></script>
 <script src="/static/js/main/13-tabs-helpers.js?v=2"></script>
 <script src="/static/js/main/14-init.js?v=2"></script>
 <script src="/static/js/main/15-bio-picker.js?v=3"></script>

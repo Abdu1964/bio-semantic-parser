@@ -46,7 +46,8 @@
                                font-size: 12px; color: var(--text2); background: rgba(255, 255, 255, .03);
                                border: 1px solid rgba(255, 255, 255, .05); transition: all .2s; }
 .pb-forms span:hover, .pb-hist div:not(.pb-label):hover { border-color: rgba(167, 139, 250, .5); color: var(--text); transform: translateX(3px); }
-.pb-hist div b { float: right; font-weight: 500; color: var(--text3); font-size: 10px; }
+.pb-hist div:not(.pb-label) { display: flex !important; justify-content: space-between; align-items: baseline; gap: 10px; }
+.pb-hist div b { flex-shrink: 0; font-weight: 500; color: var(--text3); font-size: 10px; white-space: nowrap; }
 
 /* idle and running */
 .pb-center { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 14px; }
@@ -75,6 +76,8 @@
 .pb-again { padding: 4px 11px; border-radius: 20px; cursor: pointer; font: 600 11px var(--font); color: var(--text2);
             background: rgba(255, 255, 255, .04); border: 1px solid var(--border); transition: color .2s, border-color .2s; }
 .pb-again:hover { color: var(--text); border-color: #a78bfa; }
+.pb-paper { margin-left: 8px; font-size: 10px; color: #93c5fd; padding: 1px 7px; border-radius: 8px; background: rgba(56, 189, 248, .1); }
+.pb-note { font-size: 11px; color: var(--text3); margin-top: 6px; line-height: 1.5; }
 .pb-q { color: var(--text3); font: 11px var(--mono, monospace); background: rgba(255, 255, 255, .04); padding: 8px 10px; border-radius: 8px;
         margin-bottom: 16px; word-break: break-word; }
 .pb-learn { margin-left: auto; padding: 9px 16px; border-radius: 12px; cursor: pointer; font: 700 12px var(--font); color: #06101a; border: 0;

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PLN Answer</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/pln-board.css?v=5">
+  <style>
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 20% 0%, #1e1442, #070b16 60%); }
+    .pb-page { max-width: 1100px; margin: 0 auto; padding: 28px 20px 60px; }
+    .pb-page .pb-head { border-radius: 18px 18px 0 0; }
+    .pb-page .pb-main { border: 1px solid rgba(167, 139, 250, .25); border-top: 0; border-radius: 0 0 18px 18px;
+                        background: rgba(13, 16, 32, .9); overflow: visible; }
+  </style>
+</head>
+<body>
+  <!-- One saved PLN answer on its own page: /static/pln-answer.html?q=<question> -->
+  <div class="pb-page">
+    <div class="pb-head">
+      <div class="pb-orb"></div>
+      <div><h2>PLN Answer</h2><p id="pln-stats">Loading…</p></div>
+    </div>
+    <div class="pb-main" id="pln-results"></div>
+  </div>
+  <script>
+    function esc(s) { return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  </script>
+  <script src="/static/js/main/12-pln-query.js?v=6"></script>
+  <script>
+    // The saved answer comes back at once; a question never asked is reasoned here
+    (async () => {
+      const q = new URLSearchParams(location.search).get('q') || '';
+      document.title = `PLN — ${q}`;
+      const t0 = performance.now();
+      const d = await (await fetch('/api/pln-unified-query', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ question: q }),
+      })).json();
+      if (!d.ok) { document.getElementById('pln-results').innerHTML = `<div class="pb-err">PLN error: ${esc(d.error)}</div>`; return; }
+      document.getElementById('pln-stats').textContent =
+        `${d.papers} paper${d.papers === 1 ? '' : 's'} in the atomspace · saved ${String(d.saved_at || '').replace('T', ' ')}`;
+      _plnLast = { ...d, took: _plnSecs(performance.now() - t0) };
+      _plnShowResult();
+      document.querySelector('.pb-again[title^="Open this answer"]')?.remove();      // already on its own page
+    })();
+  </script>
+</body>
+</html>
