@@ -1,4 +1,4 @@
-"""Forward chaining over facts and bio_rules.metta. PeTTaChainer derives each rule's conclusions
+"""Forward chaining over the facts and the rules (from the schema and learned from the facts). PeTTaChainer derives each rule's conclusions
 (PLN truth formulas, multi-step chains, proofs); derived atoms are kept apart from the KB so
 later queries do not count them twice."""
 import re
@@ -89,6 +89,7 @@ class ForwardChainer:
         self._handler = None
         self._rules: dict[str, tuple[float, float]] = {}      # rule name → (s, c)
         self._rule_info: dict[str, dict] = {}                # rule name → {'text', 'meaning'}
+        self._generated: dict[str, str] = {}                 # rules set by set_rules: name → its STV and text
         self._conclusions: set[str] = set()                   # predicates rules conclude
         self._facts: dict[str, str] = {}                      # fact name → statement atom
         self._derived_atoms: list[str] = []
@@ -113,9 +114,9 @@ class ForwardChainer:
             if m:
                 self._facts[m.group(1)] = atom
 
-    def load_rules_file(self, rules_path: Path | None = None) -> None:
+    def load_rules_file(self, rules_path: Path) -> None:
         """Add the file's rules to PeTTaChainer and note each rule's conclusion predicate."""
-        path = rules_path or self._cfg.rules_path
+        path = rules_path
         if not path or not path.exists():
             return
         self._ensure_handler()
@@ -142,6 +143,31 @@ class ForwardChainer:
             m = _CONCLUSION_RE.search(expr)
             if m:
                 self._conclusions.add(m.group(1))
+
+    def set_rules(self, rules: list[dict]) -> None:
+        """Make these the rules (each: name, text, stv, meaning). New ones are added, changed ones replaced, and
+        ones no longer given removed; derived results are dropped, since what follows has changed."""
+        self._ensure_handler()
+        wanted = {r['name']: r for r in rules}
+        for name in [n for n, key in self._generated.items()
+                     if n not in wanted or key != wanted[n]['stv'] + wanted[n]['text']]:
+            self._handler.remove_statement(name)
+            for d in (self._generated, self._rules, self._rule_info):
+                d.pop(name, None)
+        for name, r in wanted.items():
+            if name in self._generated:
+                continue
+            expr = f"(: {name} {r['text']} {r['stv']})"
+            try:
+                self._handler.add_atom(expr)
+            except Exception:
+                continue
+            s, c = re.findall(r'[\d.]+', r['stv'])
+            self._generated[name] = r['stv'] + r['text']
+            self._rules[name] = (float(s), float(c))
+            self._rule_info[name] = {'text': expr, 'meaning': r['meaning']}
+        self._conclusions = {m.group(1) for i in self._rule_info.values() if (m := _CONCLUSION_RE.search(i['text']))}
+        self.invalidate()
 
     def _label(self, proof: str) -> tuple[str, str]:
         """'subject —[P]→ object' and its STV for a premise proof."""

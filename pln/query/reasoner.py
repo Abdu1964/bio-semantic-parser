@@ -94,8 +94,10 @@ class PLNReasoner:
         log('Forward chaining', detail,
             explain=("Forward chaining starts from the facts and applies every rule to list all relations they imply; "
                      "Run PLN Inference does that and shows them. A question does not need it: backward chaining below "
-                     "applies the same rules, starting from the question. Each rule carries its own STV: how reliable "
-                     "the pattern is."),
+                     "applies the same rules, starting from the question. Rules come from the schema (Biolink: a "
+                     "relation implies its parents, symmetric relations hold both ways; RO: transitive ones chain), "
+                     "STV 1.0 by definition, or are learned from the facts, with strength = how often the pattern "
+                     "holds and confidence n/(n+1) over the cases seen."),
             data={'rules': self._forward.rule_info(),
                   'derived': [{'atom': a, **self._forward.derivations().get(a.split()[1], {})} for a in derived]})
 

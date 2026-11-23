@@ -561,7 +561,7 @@ function buildStvDetail(e) {{
       '<div style="color:' + (e._via === 'backward' ? '#22d3ee' : '#c084fc') + ';font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">' +
         (e._via === 'backward' ? 'Backward Chaining Proof' : 'Forward Chaining Proof') + '</div>' +
       (e._question ? '<div style="color:#8b949e;font-size:10px;margin-bottom:6px">Proved for the question: <span style="color:#22d3ee">' + esc(e._question) + '</span></div>' : '') +
-      '<div style="color:#8b949e;font-size:10px;margin-bottom:6px">Rule: <code style="color:#a855f7">' + esc(e._rule || 'bio_rules.metta') + '</code></div>' +
+      '<div style="color:#8b949e;font-size:10px;margin-bottom:6px">Rule: <code style="color:#a855f7">' + esc(e._rule || 'rule') + '</code></div>' +
       (e._premise1 && e._premise2
         ? '<div style="background:#161b22;border-radius:6px;padding:8px 10px;margin-bottom:6px">' +
             '<div style="color:#58a6ff;font-size:10px;font-weight:700;margin-bottom:3px">P1</div>' +
@@ -881,7 +881,7 @@ function initNetwork() {{
         <div class="field-group">
           <div class="field-label">Derivation chain</div>
           <div class="field-value canonical" style="color:#c084fc">${{esc(e._chain)}}</div>
-          <div style="color:#484f58;font-size:10px;margin-top:4px">PeTTaChainer forward chaining · bio_rules.metta</div>
+          <div style="color:#484f58;font-size:10px;margin-top:4px">PeTTaChainer · rules from the schema and learned from the facts</div>
         </div>`;
     }}
     html += `
