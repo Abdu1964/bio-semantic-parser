@@ -104,7 +104,8 @@ class PLNModule:
             self._fact_papers.setdefault(name, []).append(paper)
         self._original_atoms.extend(new)
         self._forward.load_atoms(new)
-        self._forward.invalidate()                   # new facts can chain with old ones: derive again
+        self._forward.invalidate(premises={m.group(1) for a in new if (m := re.match(r'\(:\s+\S+\s+\((\w+)', a))})
+                                                     # derive again only what the new facts' relations can affect
         self._reasoner.invalidate()
         self._rules_stale = True                     # rules follow the facts' relations and patterns
         return len(new)

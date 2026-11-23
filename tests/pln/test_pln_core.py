@@ -131,11 +131,28 @@ def test_schema_rules_come_from_the_schema():
 
 def test_rules_are_learned_from_repeated_patterns():
     from pln.rules.mined_rules import mine_rules
-    facts = []
-    for i in range(4):                                                  # inhibits a cause → treats, in 3 of 4 cases
+    facts = [("ExpressedIn", f"g{i}", f"t{i}") for i in range(60)]     # unrelated background, as in a real graph
+    for i in range(10):                                                 # inhibits a cause → treats, in 9 of 10 cases
         facts += [("Inhibits", f"d{i}", f"p{i}"), ("Causes", f"p{i}", f"x{i}")]
-        if i < 3:
+        if i < 9:
             facts.append(("Treats", f"d{i}", f"x{i}"))
     rules = {r["name"]: r for r in mine_rules(facts, min_support=2)}
-    assert rules["mined_Inhibits_Causes_Treats"]["stv"] == "(STV 0.7500 0.8000)"
+    assert rules["mined_Inhibits_Causes_Treats"]["stv"] == "(STV 0.9000 0.9091)"
     assert not any(r.startswith("mined_Treats") for r in rules)         # nothing seen often enough
+
+
+@needs_petta
+def test_new_facts_rederive_only_what_they_affect(papers, tmp_path, monkeypatch):
+    monkeypatch.setenv("ENABLE_PLN", "true")
+    from pln import PLNModule
+    pln = PLNModule.from_env()
+    for p in papers:
+        pln.load_paper(run_dir=p)
+    pln.inferred()
+    assert "PartOf" in pln._forward.last_derived
+    other = _paper(tmp_path, "2026-01-03_00-00-00_P3", "P3", [("expressed_in", "HGNC_1", "UBERON_2", 0.9)],
+                   [("HGNC_1", "Gene one", ""), ("UBERON_2", "Liver", "")])
+    pln.load_paper(run_dir=other)
+    pln.inferred()
+    assert "PartOf" not in pln._forward.last_derived                     # untouched by an unrelated relation
+    assert any("(PartOf mesh_d1 mesh_d3)" in a for a in pln.inferred())  # earlier results kept
