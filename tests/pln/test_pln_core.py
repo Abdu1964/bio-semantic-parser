@@ -29,9 +29,9 @@ def _paper(root, name, doc, facts, nodes):
 
 @pytest.fixture
 def papers(tmp_path):
-    p1 = _paper(tmp_path, "2026-01-01_00-00-00_P1", "P1", [("causes", "MESH_D1", "MESH_D2", 0.9)],
+    p1 = _paper(tmp_path, "2026-01-01_00-00-00_P1", "P1", [("part_of", "MESH_D1", "MESH_D2", 0.9)],
                 [("MESH_D1", "Hypertension", "High blood pressure"), ("MESH_D2", "Heart disease", "Cardiac disease")])
-    p2 = _paper(tmp_path, "2026-01-02_00-00-00_P2", "P2", [("causes", "MESH_D2", "MESH_D3", 0.8)],
+    p2 = _paper(tmp_path, "2026-01-02_00-00-00_P2", "P2", [("part_of", "MESH_D2", "MESH_D3", 0.8)],
                 [("MESH_D2", "Heart diseases", ""), ("MESH_D3", "Heart failure", "")])
     return p1, p2
 
@@ -94,16 +94,18 @@ def test_inference_both_ways_across_papers(papers, monkeypatch):
         pln.load_paper(run_dir=p)
 
     forward = pln.inferred()                                        # forward: everything the rules imply
-    assert any("(Causes mesh_d1 mesh_d3)" in a for a in forward)
-    s, c = (float(x) for x in forward[0].rsplit("(STV", 1)[1].rstrip(")").split())
+    chained = [a for a in forward if "(PartOf mesh_d1 mesh_d3)" in a]  # part_of is transitive (RO), a schema rule
+    assert chained
+    s, c = (float(x) for x in chained[0].rsplit("(STV", 1)[1].rstrip(")").split())
     assert (s, c) != (0.5, 0.5)                                     # computed by PeTTaChainer from the premises
 
-    result = pln.ask("What does hypertension cause?")               # backward: proved for the question
-    inferred = [a for a in result.answers if a["inferred"]]
-    assert inferred and inferred[0]["object"] == "mesh_d3"
+    result = pln.ask("What is hypertension part of?")               # backward: proved for the question
+    inferred = [a for a in result.answers if a["inferred"] and a["object"] == "mesh_d3"]
+    assert inferred
     assert set(inferred[0]["papers"]) == {p.name for p in papers}
-    assert any(v["question"] == "What does hypertension cause?" for v in pln.backward_found().values())
-    assert sum("(Causes mesh_d1 mesh_d3)" in a for a in pln.inferred()) == 1   # found both ways: listed once
+    assert any(v["question"] == "What is hypertension part of?" for v in pln.backward_found().values())
+    assert sum("(PartOf mesh_d1 mesh_d3)" in a for a in pln.inferred()) == 1   # found both ways: listed once
+    assert pln.rule_counts()["schema"] > 0
 
 
 def test_negated_facts_stay_out_and_metadata_is_read(tmp_path):
@@ -115,3 +117,25 @@ def test_negated_facts_stay_out_and_metadata_is_read(tmp_path):
     atoms = ad._parse_file(f)
     assert len(atoms) == 1 and "(Causes a b)" in atoms[0]           # "A does not cause C" is not a fact
     assert ad._parse_file_meta(f)["causes_a_b"]["paper_url"] == "https://example.org/p1"
+
+
+def test_schema_rules_come_from_the_schema():
+    from pln.rules.schema_rules import schema_rules
+    rules = {r["name"]: r for r in schema_rules({"BindsTo", "PartOf", "InteractsWith"})}
+    assert "schema_isa_binds_to_interacts_with" in rules                # Biolink: binds to is a kind of interacts with
+    assert "schema_transitive_part_of" in rules                         # RO: part of is transitive
+    assert "schema_symmetric_interacts_with" in rules                   # Biolink: interacts with is symmetric
+    assert not any("causes" in n for n in rules)                        # no fact uses it: no rule
+    assert all(r["stv"] == "(STV 1.0 1.0)" for r in rules.values())
+
+
+def test_rules_are_learned_from_repeated_patterns():
+    from pln.rules.mined_rules import mine_rules
+    facts = []
+    for i in range(4):                                                  # inhibits a cause → treats, in 3 of 4 cases
+        facts += [("Inhibits", f"d{i}", f"p{i}"), ("Causes", f"p{i}", f"x{i}")]
+        if i < 3:
+            facts.append(("Treats", f"d{i}", f"x{i}"))
+    rules = {r["name"]: r for r in mine_rules(facts, min_support=2)}
+    assert rules["mined_Inhibits_Causes_Treats"]["stv"] == "(STV 0.7500 0.8000)"
+    assert not any(r.startswith("mined_Treats") for r in rules)         # nothing seen often enough
