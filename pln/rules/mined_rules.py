@@ -4,15 +4,25 @@ evidence formula as each fact's. Nothing is listed: the rules change as papers a
 
 Counting, not listing: two-step paths are counted per middle entity and closed paths found from each fact's two
 ends through an index, so the cost grows with the number of facts, not with paths through hub entities."""
+import math
 from collections import Counter, defaultdict
+
+
+def lower_bound(k: int, n: int, z: float = 1.96) -> float:
+    """Wilson 95% lower bound of k/n: what the rate is at least, given how many cases back it."""
+    if not n:
+        return 0.0
+    p = k / n
+    return (p + z * z / (2 * n) - z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / (1 + z * z / n)
 
 
 def mine_rules(facts: list[tuple[str, str, str]], min_support: int = 2, min_coverage: float = 0.01,
                min_lift: float = 2.0, min_strength: float = 0.1) -> list[dict]:
     """Rules from (predicate, subject, object) facts: P(a,b) → R(a,b), P(a,b) → R(b,a), and
     P(a,b) ∧ Q(b,c) → R(a,c). A rule is kept when its conclusion holds in at least min_support cases, those explain
-    at least min_coverage of R's facts (head coverage, as in AMIE), it holds in at least min_strength of its cases,
-    and min_lift times more often than R holds between connected entities anyway — coincidences fail one of these."""
+    at least min_coverage of R's facts (head coverage, as in AMIE), the 95% lower bound of its rate is at least
+    min_strength, and that bound is min_lift times above how often R holds between connected entities anyway —
+    coincidences and rates resting on few cases fail one of these."""
     pairs: dict[str, set] = defaultdict(set)
     out_edges: dict[str, list] = defaultdict(list)           # a → [(P, b)]
     in_edges: dict[str, list] = defaultdict(list)            # c → [(Q, b)]
@@ -35,7 +45,7 @@ def mine_rules(facts: list[tuple[str, str, str]], min_support: int = 2, min_cove
     connected = len(set().union(*pairs.values())) or 1
     base = {R: len(rs) / connected for R, rs in pairs.items()}       # how often R holds between connected entities
     keep = lambda k, n, R: (k >= min_support and k >= min_coverage * len(pairs[R])
-                            and n and (k / n) >= max(min_strength, min_lift * base[R]))
+                            and n and lower_bound(k, n) >= max(min_strength, min_lift * base[R]))
     rules = []
     for P, ps in pairs.items():                                   # one premise, same pair or reversed
         same, back = Counter(), Counter()
