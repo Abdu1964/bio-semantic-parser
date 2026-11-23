@@ -58,7 +58,7 @@ def _latest_run_dirs(kg_root: Path) -> list[Path]:
     """Return one run dir per unique paper (latest timestamp wins) that has edge MeTTa files."""
     best: dict[str, Path] = {}
     for run_dir in sorted(kg_root.iterdir()):
-        if run_dir.name in ("unified_metta", "unified_neo4j"):
+        if run_dir.name.startswith("unified_"):                  # merged outputs, not papers
             continue
         metta_dir = run_dir / "metta"
         if not metta_dir.exists() or not any(metta_dir.rglob("edges_*.metta")):
@@ -69,23 +69,89 @@ def _latest_run_dirs(kg_root: Path) -> list[Path]:
     return sorted(best.values())
 
 
+_unified_state: dict[str, tuple] = {}         # paper → (run folder, last change to its facts) as loaded
+_unified_sync: dict = {}                       # what the last sync did
+
+
+def _doc_ids(run_dir: Path) -> list[str]:
+    """Document IDs a run's facts name in their (source …) lines; staging DBs are named after them."""
+    found = []
+    for f in (run_dir / "metta").rglob("edges_*.metta"):
+        for m in re.finditer(r'^\(source \(.*\) (\S+)\)$', f.read_text(encoding="utf-8"), re.M):
+            if m.group(1) not in found:
+                found.append(m.group(1))
+    return found
+
+
+def _facts_stamp(run_dir: Path) -> tuple:
+    """A run folder and the last change to its fact files."""
+    stamps = [f.stat().st_mtime for f in (run_dir / "metta").rglob("edges_*.metta")]
+    return (run_dir.name, max(stamps, default=0), len(stamps))
+
+
 def _get_unified_pln(force_reload: bool = False):
-    """Return the unified PLN module, lazy-loading one run dir per unique paper."""
-    global _unified_pln_module
-    if _unified_pln_module is not None and not force_reload:
-        return _unified_pln_module
+    """The all-papers atomspace. Each call loads only papers it does not hold yet; a paper whose facts
+    changed or that is gone means a rebuild, since atoms cannot be taken back out one by one."""
+    global _unified_pln_module, _unified_state, _unified_sync
     from pln import PLNModule
     from pln.config import PLNConfig
     cfg = PLNConfig.from_env()
     if not cfg.enabled:
         return None
-    pln = PLNModule(cfg)
     kg_root = Path("data/kg_output")
-    if kg_root.exists():
-        for run_dir in _latest_run_dirs(kg_root):
-            pln.load_paper(run_dir=run_dir)
-    _unified_pln_module = pln
+    current = {}
+    for d in (_latest_run_dirs(kg_root) if kg_root.exists() else []):
+        current[_TS_PREFIX_RE.sub('', d.name) or d.name] = (d, _facts_stamp(d))
+    from src.postextraction.deduplication import db_path_for_format
+    store = db_path_for_format("metta")
+    current["(triple store)"] = (None, (store.name, store.stat().st_mtime if store.exists() else 0, 0))
+    changed = [k for k, st in _unified_state.items() if k not in current or current[k][1] != st]
+    rebuilt = ''
+    if force_reload or changed or _unified_pln_module is None:
+        rebuilt = ('requested' if force_reload else
+                   f"{len(changed)} paper(s) changed or removed: {', '.join(changed[:5])}" if changed else 'first load')
+        _unified_pln_module, _unified_state = PLNModule(cfg), {}
+    added = [k for k in current if k not in _unified_state and current[k][0] is not None]
+    _unified_state["(triple store)"] = current["(triple store)"][1]       # truth values read from it
+    t0 = time.perf_counter()
+    for k in added:
+        # truth values: strength from the paper's own staging DB, paper count from the unified store
+        dbs = [db for doc in _doc_ids(current[k][0])
+               for db in sorted(Path("data/staging").glob(f"{doc.replace('/', '_').replace(':', '_')}_*.db"))] + [store]
+        _unified_pln_module.load_paper(run_dir=current[k][0], staging_db=[str(d) for d in dbs])
+        _unified_state[k] = current[k][1]
+    if rebuilt:
+        _restore_found(_unified_pln_module, _UNIFIED_PLN_DIR / "pln_backward.json", sorted(_unified_state.items()))
+    _unified_sync = {'papers': len(_unified_state) - 1, 'added': added, 'rebuilt': rebuilt,
+                     'ms': round((time.perf_counter() - t0) * 1000)}
     return _unified_pln_module
+
+
+def _keep_found(pln, path: Path, state) -> None:
+    """Save the triples backward chaining proved, with the state of the facts they were proved from."""
+    found = pln.backward_found()
+    if found:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"state": state, "found": found}))
+
+
+def _restore_found(pln, path: Path, state) -> None:
+    """Triples proved for earlier questions come back while the facts are unchanged."""
+    try:
+        saved = json.loads(path.read_text()) if path.exists() else {}
+    except ValueError:
+        saved = {}
+    if saved.get("state") == json.loads(json.dumps(state)):
+        pln.restore_backward(saved.get("found", {}))
+
+
+def _sync_note() -> str:
+    """One line on what the last sync loaded."""
+    s = _unified_sync
+    if not s.get('added'):
+        return f"all {s.get('papers', 0)} paper(s) were already loaded; nothing new to load"
+    how = f"rebuilt ({s['rebuilt']})" if s.get('rebuilt') else "kept the papers already loaded"
+    return f"loaded {len(s['added'])} new paper(s) in {s['ms']} ms; {how}"
 
 
 class PLNRunRequest(BaseModel):
@@ -125,6 +191,7 @@ async def pln_run(req: PLNRunRequest):
         n_atoms = pln.load_paper(run_dir=req.run_dir, staging_db=req.staging_db)
         if n_atoms == 0:
             return {"ok": False, "error": "No atoms loaded — check run_dir / staging_db path"}
+        _restore_found(pln, Path(req.run_dir) / "pln_backward.json", _paper_state(req.run_dir, req.staging_db))
 
         html_path = pln.generate_visualization(
             run_dir=req.run_dir,
@@ -159,7 +226,11 @@ async def pln_query(req: PLNQueryRequest):
         t0 = time.perf_counter()
         if paper and fresh:
             pln.load_paper(run_dir=req.run_dir or "", staging_db=req.staging_db)
+            if req.run_dir:
+                _restore_found(pln, Path(req.run_dir) / "pln_backward.json", _paper_state(req.run_dir, req.staging_db))
         result = pln.ask(req.question)
+        if req.run_dir:
+            _keep_found(pln, Path(req.run_dir) / "pln_backward.json", _paper_state(req.run_dir, req.staging_db))
 
         from pln.query.answer_generator import generate_json
         reply = {"ok": True, **generate_json(result), "reasoned_ms": round((time.perf_counter() - t0) * 1000),
@@ -215,7 +286,7 @@ async def pln_papers():
     papers = []
     if kg_root.exists():
         for run_dir in sorted(kg_root.iterdir()):
-            if run_dir.name in ("unified_metta", "unified_neo4j"):
+            if run_dir.name.startswith("unified_"):
                 continue
             html = run_dir / "pln_graph.html"
             if html.exists():
@@ -260,7 +331,7 @@ async def pln_unified_run():
         if not cfg.enabled:
             return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
 
-        pln = _get_unified_pln(force_reload=True)
+        pln = _get_unified_pln()                       # loads only papers not in it yet
         if pln is None:
             return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
 
@@ -300,17 +371,62 @@ async def pln_unified_run():
         return {"ok": False, "error": str(exc), "trace": traceback.format_exc()[:600]}
 
 
-@router.post("/api/pln-unified-query")
-async def pln_unified_query(req: PLNQueryRequest):
-    """Answer a NL question against the full unified atomspace (all committed papers)."""
+@router.get("/api/pln-overview")
+async def pln_overview():
+    """What the all-papers atomspace holds, and questions built from its own facts."""
     try:
         pln = _get_unified_pln()
         if pln is None:
             return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
+        from pln.query.nl_to_pln import suggest_questions
+        facts = pln.facts()
+        store = _UNIFIED_PLN_DIR / "pln_answers.json"
+        saved = json.loads(store.read_text()) if store.exists() else {}
+        state = json.loads(json.dumps(sorted(_unified_state.items())))
+        asked = [{"question": v["question"], "ms": v.get("reasoned_ms"), "saved_at": v.get("saved_at")}
+                 for k, v in saved.items() if json.loads(k)[1] == state]
+        names = pln.names()
+        return {"ok": True, "papers": len(pln.papers()), "facts": len(facts),
+                "entities": len(names), "relations": len({f[0] for f in facts}), "sync": _sync_note(),
+                "asked": sorted(asked, key=lambda a: a["saved_at"] or "", reverse=True),
+                **suggest_questions(facts, names, limit=3)}
+    except Exception as exc:
+        import traceback
+        return {"ok": False, "error": str(exc), "trace": traceback.format_exc()[:500]}
+
+
+@router.post("/api/pln-unified-query")
+async def pln_unified_query(req: PLNQueryRequest):
+    """Answer a question over the all-papers atomspace; a repeat question returns the saved answer."""
+    try:
+        t0 = time.perf_counter()
+        pln = _get_unified_pln()
+        if pln is None:
+            return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
+
+        store = _UNIFIED_PLN_DIR / "pln_answers.json"
+        q = re.sub(r'\s+', ' ', req.question.strip().lower()).rstrip('?').strip()
+        key = json.dumps([q, sorted(_unified_state.items())])
+        saved = json.loads(store.read_text()) if store.exists() else {}
+        if key in saved and not req.fresh:
+            return {**saved[key], "cached": True}
 
         result = pln.ask(req.question)
+        _keep_found(pln, _UNIFIED_PLN_DIR / "pln_backward.json", sorted(_unified_state.items()))
+        result.trace.insert(1, {'step': 'Sync', 'ms': _unified_sync.get('ms'), 'detail': _sync_note(), 'data': None,
+                                'explain': ("Before reasoning, the atomspace is compared with the processed papers: only papers "
+                                            "it does not hold yet are loaded. A paper whose facts changed means a rebuild, "
+                                            "since atoms cannot be taken back out one by one.")})
         from pln.query.answer_generator import generate_json
-        return {"ok": True, **generate_json(result)}
+        reply = {"ok": True, **generate_json(result), "papers": len(_unified_state),
+                 "reasoned_ms": round((time.perf_counter() - t0) * 1000),
+                 "saved_at": datetime.now().isoformat(timespec="seconds")}
+        _UNIFIED_PLN_DIR.mkdir(parents=True, exist_ok=True)
+        state = json.loads(key)[1]
+        saved = {k: v for k, v in saved.items() if json.loads(k)[1] == state}   # answers for older paper sets go
+        saved[key] = reply
+        store.write_text(json.dumps(saved))
+        return {**reply, "cached": False}
     except Exception as exc:
         import traceback
         return {"ok": False, "error": str(exc), "trace": traceback.format_exc()[:500]}
