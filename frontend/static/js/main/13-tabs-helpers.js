@@ -208,3 +208,15 @@ function exportUnifiedKG(fmt) {
   document.querySelectorAll('#unified-export-menu').forEach(m => m.classList.remove('open'));
 }
 
+
+// The loader ring turns only on the idle Ready screen: not during a run, after it, or with results loaded
+(function () {
+  const title = document.getElementById('coffee-title'), svg = document.querySelector('#bio-loader svg');
+  const out = document.getElementById('output');
+  if (!title || !svg || !svg.pauseAnimations) return;
+  const sync = () => (title.textContent.trim() === 'Ready' && !(out && out.classList.contains('show')))
+    ? svg.unpauseAnimations() : svg.pauseAnimations();
+  new MutationObserver(sync).observe(title, { childList: true, characterData: true, subtree: true });
+  if (out) new MutationObserver(sync).observe(out, { attributes: true, attributeFilter: ['class'] });
+  sync();
+})();

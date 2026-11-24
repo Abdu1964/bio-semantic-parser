@@ -121,6 +121,46 @@ function commitPLNInference() {
   _runPLNInference(d.run_dir || '', d.staging_db || '', d.doc_id || '', btn);
 }
 
+// ── Unified PLN tab: the saved all-papers graph; updates load only papers not in the atomspace yet ──
+function _showUnifiedPLN(path) {
+  const frame = document.getElementById('pln-tab-frame'), empty = document.getElementById('pln-tab-empty');
+  const full = document.getElementById('pln-tab-full');
+  frame.style.display = path ? '' : 'none';
+  empty.style.display = path ? 'none' : 'flex';
+  full.style.display = path ? '' : 'none';
+  if (path) { const src = fileUrl(path) + '&t=' + Date.now(); frame.src = src; full.href = src; }
+}
+
+async function loadUnifiedPLNTab() {
+  if (document.getElementById('pln-tab-frame').src) return;          // already showing the saved graph
+  try {
+    const d = await (await fetch('/api/pln-unified-status')).json();
+    _showUnifiedPLN(d.exists ? d.path : '');
+  } catch (e) {
+    document.getElementById('pln-tab-status').textContent = 'Could not read the saved graph: ' + e.message;
+  }
+}
+
+async function updateUnifiedPLN(reload) {
+  const btn = document.getElementById('pln-tab-update'), status = document.getElementById('pln-tab-status');
+  btn.disabled = true;
+  status.textContent = reload ? 'Reloading every paper…' : 'Adding papers not loaded yet and inferring…';
+  try {
+    const d = await (await fetch('/api/pln-unified-run' + (reload ? '?reload=true' : ''), { method: 'POST' })).json();
+    if (d.ok && d.pln_html) {
+      const s = d.sync || {};
+      const what = s.rebuilt ? `reloaded all (${s.rebuilt})` : s.added && s.added.length ? `added ${s.added.length} paper(s)` : 'no new papers';
+      status.textContent = `${d.papers || 0} papers · ${d.atoms_loaded || 0} atoms · ${d.inferred || 0} inferred · ${what}`;
+      _showUnifiedPLN(d.pln_html);
+    } else {
+      status.textContent = 'PLN error: ' + (d.error || 'unknown');
+    }
+  } catch (e) {
+    status.textContent = 'Network error: ' + e.message;
+  }
+  btn.disabled = false;
+}
+
 function commitPLNQuery() {
   const d = _outputData || {};
   openPLNPanel(d.staging_db || '', d.run_dir || '', `PLN Query — ${d.doc_id || ''}`);

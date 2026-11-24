@@ -54,13 +54,18 @@
       color:var(--text3,#6e7681);font-size:13px;font-weight:600;cursor:pointer;
       transition:all .15s;white-space:nowrap
     ">🌐 Unified KG</button>
+    <button id="tab-pln" data-pln-feature onclick="switchTab('pln')" style="
+      display:none;padding:12px 20px;background:none;border:none;border-bottom:2px solid transparent;
+      color:var(--text3,#6e7681);font-size:13px;font-weight:600;cursor:pointer;
+      transition:all .15s;white-space:nowrap
+    ">🔮 Unified PLN</button>
   </div>
 </div>
 
 <script>
 function switchTab(tab) {
-  ['pipeline','query','unified'].forEach(t => {
-    const display = tab === t ? (t === 'unified' ? 'flex' : '') : 'none';
+  ['pipeline','query','unified','pln'].forEach(t => {
+    const display = tab === t ? (t === 'unified' || t === 'pln' ? 'flex' : '') : 'none';
     document.getElementById('page-'+t).style.display = display;
     const btn = document.getElementById('tab-'+t);
     btn.style.borderBottomColor = tab === t ? 'var(--blue,#1f6feb)' : 'transparent';
@@ -71,6 +76,7 @@ function switchTab(tab) {
     if (canvas && !canvas.dataset.init) { canvas.dataset.init = '1'; if (window.initQueryBuilder) initQueryBuilder(); }
   }
   if (tab === 'unified') loadUnifiedKG();
+  if (tab === 'pln') loadUnifiedPLNTab();
 }
 
 // Hide PLN option in unified dropdown when PLN is disabled
@@ -661,20 +667,16 @@ async function _regenerateUnifiedPLN(btn) {
         🔮 PLN Inference &amp; AtomSpace
       </div>
       <div class="commit-step-sub">
-        <b>Run PLN Inference</b> — forward chaining: derive every relation the rules imply from this paper's facts,
-        shown in a graph (purple dashed edges). <b>PLN Query</b> — backward chaining: prove an answer to your question
-        over every loaded paper; relations it proves join the graph (cyan dashed edges).
+        For <b>all papers</b> (inference and questions), commit this paper, then open the
+        <a href="#" onclick="switchTab('pln');return false" style="color:var(--pln)">🔮 Unified PLN</a> tab.
       </div>
+      <div style="font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--text3);margin:14px 0 6px">THIS PAPER</div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <button class="run-btn" id="pln-inference-btn" onclick="commitPLNInference()"
-          style="background:linear-gradient(135deg,var(--pln2),var(--pln));padding:10px 24px;font-size:13px;margin-top:0;width:auto">
+        <button id="pln-inference-btn" onclick="commitPLNInference()"
+          style="background:none;border:1px solid var(--border);border-radius:8px;padding:8px 14px;color:var(--text2);font-size:12px;cursor:pointer;font-family:var(--font)">
           🔮 Run PLN Inference
         </button>
-        <button id="pln-query-btn" onclick="commitPLNQuery()"
-          style="background:none;border:1px solid var(--pln2);border-radius:8px;padding:10px 16px;color:var(--pln);font-size:12px;cursor:pointer;font-family:var(--font)">
-          🔮 PLN Query
-        </button>
-        <span style="font-size:11px;color:var(--text3)">PeTTaChainer · forward chaining (Run) · backward chaining (Query)</span>
+        <span style="font-size:11px;color:var(--text3)">forward chaining over this run's facts only</span>
       </div>
       <div id="pln-commit-result" style="margin-top:14px;display:none"></div>
     </div>
@@ -760,6 +762,21 @@ async function _regenerateUnifiedPLN(btn) {
 </div><!-- end page-query -->
 
 
+<div id="page-pln" style="display:none;height:calc(100vh - 50px);flex-direction:column">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid var(--border,#30363d);background:var(--bg,#0d1117)">
+    <span style="font-size:13px;font-weight:600;color:var(--pln,#a855f7)">🔮 Unified PLN AtomSpace</span>
+    <span id="pln-tab-status" style="font-size:12px;color:var(--text3,#6e7681)"></span>
+    <span style="flex:1"></span>
+    <button id="pln-tab-update" onclick="updateUnifiedPLN(false)" style="padding:6px 14px;background:var(--pln2,#7c3aed);border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:600;cursor:pointer">⟳ Add new papers &amp; infer</button>
+    <button onclick="commitPLNQuery()" style="padding:6px 14px;background:none;border:1px solid var(--pln2,#7c3aed);border-radius:6px;color:var(--pln,#a855f7);font-size:12px;font-weight:600;cursor:pointer">🔮 PLN board · ask a question</button>
+    <button onclick="updateUnifiedPLN(true)" title="Reload every paper, e.g. after facts were edited" style="padding:6px 12px;background:none;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text3,#6e7681);font-size:12px;cursor:pointer">Reload all</button>
+    <a id="pln-tab-full" target="_blank" style="display:none;padding:6px 12px;border:1px solid var(--border,#30363d);border-radius:6px;color:var(--text2,#8b949e);font-size:12px;text-decoration:none">↗ Full screen</a>
+  </div>
+  <iframe id="pln-tab-frame" style="flex:1;width:100%;border:none;background:#0d1117"></iframe>
+  <div id="pln-tab-empty" style="display:none;flex:1;align-items:center;justify-content:center;color:var(--text3,#6e7681);font-size:13px">
+    No unified PLN graph yet — click “Add new papers &amp; infer”.</div>
+</div>
+
 <div id="page-unified" style="display:none;height:calc(100vh - 50px);flex-direction:column">
   <div style="display:flex;align-items:center;gap:12px;padding:10px 20px;border-bottom:1px solid var(--border,#30363d);background:var(--bg,#0d1117)">
     <span style="font-size:13px;font-weight:600;color:var(--text2,#8b949e)">Database:</span>
@@ -827,7 +844,7 @@ async function _regenerateUnifiedPLN(btn) {
 
 <script src="/static/state.js?v=2"></script>
 <script src="/static/js/main/00-globals.js?v=2"></script>
-<script src="/static/js/main/01-atomspace-commit.js?v=2"></script>
+<script src="/static/js/main/01-atomspace-commit.js?v=4"></script>
 <script src="/static/js/main/02-existing-output.js?v=3"></script>
 <script src="/static/js/main/03-run-selector.js?v=2"></script>
 <script src="/static/js/main/04-view-mode.js?v=2"></script>
@@ -839,7 +856,7 @@ async function _regenerateUnifiedPLN(btn) {
 <script src="/static/js/main/10-renderers.js?v=6"></script>
 <script src="/static/js/main/11-triple-editor.js?v=2"></script>
 <script src="/static/js/main/12-pln-query.js?v=6"></script>
-<script src="/static/js/main/13-tabs-helpers.js?v=2"></script>
+<script src="/static/js/main/13-tabs-helpers.js?v=3"></script>
 <script src="/static/js/main/14-init.js?v=2"></script>
 <script src="/static/js/main/15-bio-picker.js?v=3"></script>
 <script src="/static/js/main/16-run-timer.js?v=2"></script>
