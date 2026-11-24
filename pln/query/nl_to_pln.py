@@ -45,9 +45,10 @@ def question_forms(predicate: str) -> tuple[str, str]:
 
 
 def _form_regex(form: str, slot: str) -> re.Pattern:
-    """A question form as a pattern: the slot captures the entity name; spacing and case are free."""
+    """A question form as a pattern: the slot captures the entity name; spacing, case and a word's
+    -s/-es/-d/-ed ending ('regulates' for 'regulate') are free."""
     before, after = form.rstrip('?').split(slot)
-    esc = lambda t: r'\s+'.join(re.escape(w) for w in t.split())
+    esc = lambda t: r'\s+'.join(re.escape(w) + r'(?:e?s|e?d)?' for w in t.split())
     return re.compile(rf"^\s*{esc(before)}\s*(.+?)\s*{esc(after)}\s*\??\s*$", re.I)
 
 
@@ -64,12 +65,42 @@ def _candidates(name: str, names: dict[str, set]) -> tuple[list[str], str]:
     return found, 'all words in a name'
 
 
+def _respell(question: str, names: dict[str, set], predicates: list[str]) -> tuple[str, list[str]]:
+    """The question with each word that is close to a question-form word ('regulates', 'regualtes' →
+    'regulate') spelled as that word; words of entity names are left alone. Returns (question, changes)."""
+    import difflib
+    vocab = {w for p in predicates for f in question_forms(p)
+             for w in re.findall(r'[a-z]+', f.lower().replace('{s}', ' ').replace('{o}', ' '))}
+    name_words = {w for labels in names.values() for l in labels for w in _name_slug(l).split('_')}
+    out, changes = [], []
+    for tok in re.split(r'(\W+)', question):
+        low = tok.lower()
+        if len(low) > 3 and low not in vocab and low not in name_words:
+            close = difflib.get_close_matches(low, vocab, n=1, cutoff=0.8)
+            if close:
+                changes.append(f"'{tok}' → '{close[0]}'")
+                tok = close[0]
+        out.append(tok)
+    return ''.join(out), changes
+
+
 def plan_query(question: str, names: dict[str, set] | None = None,
                predicates: list[str] | None = None) -> tuple[str | None, dict, list[str]]:
     """(query, filters, notes) for a question over the given relations. A name that matches one entity
     becomes that entity; one that matches several becomes a variable, and filters ({'subject'|'object':
-    set of symbols}) keeps only answers about those entities. notes say how each step went."""
+    set of symbols}) keeps only answers about those entities. notes say how each step went. A question
+    no form matches is tried once more with its words respelled to the forms' words."""
     names = names or {}
+    query, filters, notes = _plan(question, names, predicates)
+    if query is None:
+        respelled, changes = _respell(question, names, predicates or [])
+        if changes:
+            query, filters, notes = _plan(respelled, names, predicates)
+            notes = [f"read {', '.join(changes)}"] + notes
+    return query, filters, notes
+
+
+def _plan(question: str, names: dict[str, set], predicates: list[str] | None) -> tuple[str | None, dict, list[str]]:
     # longer relations first, so 'regulates expression of' wins over 'regulates'
     for pred in sorted(predicates or [], key=lambda p: -len(_words(p))):
         fwd, back = question_forms(pred)

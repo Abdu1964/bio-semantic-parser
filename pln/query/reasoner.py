@@ -102,9 +102,13 @@ class PLNReasoner:
                   'derived': [{'atom': a, **self._forward.derivations().get(a.split()[1], {})} for a in derived]})
 
         t0 = time.perf_counter()
-        proofs = self._backward.query(pln_query)
+        # a name with several entities: one bound query each, since an open query on both sides makes
+        # backward chaining try every rule for every pair
+        bound = [pln_query.replace(f'${role}', sym, 1) for role, syms in filters.items() for sym in sorted(syms)]
+        proofs = [p for q in bound for p in self._backward.query(q)] if 0 < len(bound) <= 25 else self._backward.query(pln_query)
         result.proofs = proofs
-        log('Backward chaining', f"{len(proofs)} proof(s) found for the query", t0,
+        log('Backward chaining', f"{len(proofs)} proof(s) found for the query"
+                                 + (f" ({len(bound)} queries, one per matched entity)" if 0 < len(bound) <= 25 else ''), t0,
             explain=("Backward chaining starts from the query and works back: it matches the statement against facts "
                      "directly, or against a rule's conclusion and then proves that rule's premises the same way. "
                      "Every way it finds is one proof."),

@@ -181,7 +181,8 @@ class PLNModule:
         self._ensure_components()
         self.refresh_rules()
         names = self.names()
-        predicates = sorted({f[0] for f in self.facts()})
+        # relations stated in facts, and those only rules conclude (asking for them needs the rules)
+        predicates = sorted({f[0] for f in self.facts()} | self._forward._conclusions)
         result = self._reasoner.ask(question, raw_pln_query, names=names, predicates=predicates)
         for a in result.answers:
             a['papers'] = self._papers_of(a)

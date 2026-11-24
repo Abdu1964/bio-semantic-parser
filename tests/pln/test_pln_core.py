@@ -1,4 +1,5 @@
 """PLN over papers: entities by ID, truth values from the pipeline, question forms, and inference both ways."""
+import json
 import importlib.util
 import sqlite3
 
@@ -72,6 +73,14 @@ def test_question_forms_come_from_relation_words():
     assert fwd == "What does {s} bind to?" and back == "What binds to {o}?"
 
 
+def test_misspelled_or_inflected_relation_words_still_match():
+    names = {"chebi_26708": {"sodium"}, "mesh_d001794": {"blood pressure"}}
+    for q in ("what does sodium regulates ?", "what does sodium regualtes", "What does sodium regulate?"):
+        query, _, notes = plan_query(q, names, ["Regulates", "Inhibits"])
+        assert query == "(: $prf (Regulates chebi_26708 $target) $tv)", (q, notes)
+    assert plan_query("what does sodium xyz", names, ["Regulates"])[0] is None   # nothing close: no guess
+
+
 def test_names_and_synonyms_resolve_to_the_entity():
     names = {"mesh_d1": {"Hypertension", "high blood pressure"}, "mesh_d2": {"Heart disease"}}
     q, _, _ = plan_query("What does high blood pressure cause?", names, ["Causes"])
@@ -106,6 +115,9 @@ def test_inference_both_ways_across_papers(papers, monkeypatch):
     assert any(v["question"] == "What is hypertension part of?" for v in pln.backward_found().values())
     assert sum("(PartOf mesh_d1 mesh_d3)" in a for a in pln.inferred()) == 1   # found both ways: listed once
     assert pln.rule_counts()["schema"] > 0
+    json.dumps(result.trace)                                        # the answer is saved and sent as JSON
+    only_by_rule = pln.ask("What does hypertension overlap?")      # Overlaps is in no fact, only a rule's conclusion
+    assert any(a["inferred"] for a in only_by_rule.answers)
 
 
 def test_negated_facts_stay_out_and_metadata_is_read(tmp_path):

@@ -267,7 +267,9 @@ class ForwardChainer:
 
     def rule_info(self) -> list[dict]:
         """Each rule: name, STV, its MeTTa text and the plain meaning written above it."""
-        return [{'name': n, 'stv': list(self._rules.get(n, (0, 0))), **i} for n, i in self._rule_info.items()]
+        return [{'name': n, 'stv': list(self._rules.get(n, (0, 0))),
+                 **{k: sorted(v) if isinstance(v, set) else v for k, v in i.items()}}     # JSON has no sets
+                for n, i in self._rule_info.items()]
 
     def premise_label(self, proof: str) -> str:
         """'subject —[P]→ object (stv s c)' for a premise proof."""
