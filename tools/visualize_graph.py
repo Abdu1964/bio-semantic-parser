@@ -207,6 +207,8 @@ def build_graph_data(neo4j_dirs: list) -> tuple:
         edges = _read_edges(neo4j_dir)
         all_nodes.update(nodes)
         all_edges.extend(edges)
+    for i, e in enumerate(all_edges, 1):          # each folder numbers its edges from 1
+        e["id"] = i
     return all_nodes, all_edges
 
 
@@ -227,6 +229,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
         '></script>'
     )
 
+    big = len(nodes) > 400          # large graphs: lighter layout and drawing, so pan and zoom stay smooth
     degrees: dict = {}
     for e in edges:
         degrees[e["source_id"]] = degrees.get(e["source_id"], 0) + 1
@@ -252,7 +255,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
             "size":  max(18, 12 + degree * 5),
             "font":  {"color": "#ffffff", "size": 12, "face": "Inter, sans-serif",
                       "strokeWidth": 3, "strokeColor": "#00000066"},
-            "shadow": {"enabled": True, "color": color + "88", "size": 16, "x": 0, "y": 0},
+            "shadow": {"enabled": not big, "color": color + "88", "size": 16, "x": 0, "y": 0},
             "borderWidth": 2,
             "borderWidthSelected": 3,
             "_name":  name,
@@ -285,7 +288,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
             "font":   {"color": "#ffffff", "size": 11, "align": "middle",
                        "face": "Inter, sans-serif",
                        "strokeWidth": 3, "strokeColor": "#00000066"},
-            "shadow": {"enabled": True, "color": color + "55", "size": 8, "x": 0, "y": 0},
+            "shadow": {"enabled": not big, "color": color + "55", "size": 8, "x": 0, "y": 0},
             "_relation":     rel,
             "_subject_name": _display_name(e["source_id"], e.get("source_name", "")),
             "_object_name":  _display_name(e["target_id"], e.get("target_name", "")),
@@ -489,6 +492,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
   {items}
 </div>"""
 
+    _smooth = "false" if big else "{type: 'curvedCW', roundness: 0.2}"
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -843,6 +847,7 @@ let network;
 function initNetwork() {{
   const container = document.getElementById('network');
   network = new vis.Network(container, {{nodes: nodesDS, edges: edgesDS}}, {{
+  layout: {{improvedLayout: {'false' if big else 'true'}}},
   physics: {{
     barnesHut: {{
       gravitationalConstant: -12000,
@@ -860,10 +865,12 @@ function initNetwork() {{
     navigationButtons: true,
     keyboard: true,
     zoomView: true,
-    multiselect: false
+    multiselect: false,
+    hideEdgesOnDrag: {'true' if big else 'false'},
+    hideEdgesOnZoom: {'true' if big else 'false'}
   }},
   edges: {{
-    smooth: {{type: 'curvedCW', roundness: 0.2}},
+    smooth: {_smooth},
     scaling: {{
       label: {{
         enabled: true,
