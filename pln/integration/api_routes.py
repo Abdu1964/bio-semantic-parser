@@ -1,7 +1,9 @@
 """PLN API: /api/pln-run, /api/pln-query, /api/pln-facts, /api/pln-inferred, /api/run_pln (legacy)."""
+import functools
 import json
 import os
 import re
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +17,17 @@ router = APIRouter()
 _pln_module = None
 # Unified atomspace — loaded from all committed papers, kept alive for queries
 _unified_pln_module = None
+_pln_lock = threading.Lock()
+
+
+def _serial(fn):
+    """PLN routes run in worker threads, so the rest of the API keeps answering; PeTTa is not
+    thread-safe, so one PLN job at a time."""
+    @functools.wraps(fn)
+    def run(*a, **k):
+        with _pln_lock:
+            return fn(*a, **k)
+    return run
 
 
 def _get_pln():
@@ -89,6 +102,18 @@ def _facts_stamp(run_dir: Path) -> tuple:
     return (run_dir.name, max(stamps, default=0), len(stamps))
 
 
+def _current_state() -> dict:
+    """paper → (run folder, stamp of its facts) on disk, and the triple store's stamp; read from files only."""
+    kg_root = Path("data/kg_output")
+    current = {}
+    for d in (_latest_run_dirs(kg_root) if kg_root.exists() else []):
+        current[_TS_PREFIX_RE.sub('', d.name) or d.name] = (d, _facts_stamp(d))
+    from src.postextraction.deduplication import db_path_for_format
+    store = db_path_for_format("metta")
+    current["(triple store)"] = (None, (store.name, store.stat().st_mtime if store.exists() else 0, 0))
+    return current
+
+
 def _get_unified_pln(force_reload: bool = False):
     """The all-papers atomspace. Each call loads only papers it does not hold yet; a paper whose facts
     changed or that is gone means a rebuild, since atoms cannot be taken back out one by one."""
@@ -98,14 +123,12 @@ def _get_unified_pln(force_reload: bool = False):
     cfg = PLNConfig.from_env()
     if not cfg.enabled:
         return None
-    kg_root = Path("data/kg_output")
-    current = {}
-    for d in (_latest_run_dirs(kg_root) if kg_root.exists() else []):
-        current[_TS_PREFIX_RE.sub('', d.name) or d.name] = (d, _facts_stamp(d))
+    current = _current_state()
     from src.postextraction.deduplication import db_path_for_format
     store = db_path_for_format("metta")
-    current["(triple store)"] = (None, (store.name, store.stat().st_mtime if store.exists() else 0, 0))
     changed = [k for k, st in _unified_state.items() if k not in current or current[k][1] != st]
+    if changed == ["(triple store)"] and any(k not in _unified_state and current[k][0] is not None for k in current):
+        changed = []        # a commit of new papers: load them; facts they share keep their loaded confidence
     rebuilt = ''
     if force_reload or changed or _unified_pln_module is None:
         rebuilt = ('requested' if force_reload else
@@ -125,6 +148,72 @@ def _get_unified_pln(force_reload: bool = False):
     _unified_sync = {'papers': len(_unified_state) - 1, 'added': added, 'rebuilt': rebuilt,
                      'ms': round((time.perf_counter() - t0) * 1000)}
     return _unified_pln_module
+
+
+def _write_pln_page(pln, run_dirs: list[Path], out: Path) -> None:
+    """The all-papers page in the Unified KG viewer: each paper's facts, plus the triples PLN inferred
+    (purple dashed), each shown with a paper that names its subject (else its object)."""
+    from tools.visualize_graph import build_graph_data, render_html
+    from pln.chaining.forward_chainer import _parse_result, _proof_parts
+    from pln.bridge.metta_adapter import _id_key
+    nodes, edges = build_graph_data([d / "neo4j" for d in run_dirs])
+    by_key = {_id_key(n): n for n in nodes}
+    paper_of: dict = {}
+    for e in edges:
+        for side in ("source_id", "target_id"):
+            paper_of.setdefault(e[side], e["_paper"])
+    seen = {(e["source_id"], e["relation"], e["target_id"]) for e in edges}
+    derivations = pln._forward.derivations()
+    backward = {tuple((_parse_result(v["atom"]) or [None] * 4)[1:4]): v for v in pln.backward_found().values()}
+    meaning = {r["name"]: r.get("meaning", "") for r in pln._forward.rule_info()}
+    name_of = lambda key: nodes.get(by_key.get(key, ""), {}).get("name") or key
+    papers_of = lambda fact: sorted({_TS_PREFIX_RE.sub('', p) for p in pln._fact_papers.get(fact, [])})
+
+    inferred = pln.inferred()
+    by_proof = {}                                   # a derived premise's proof → its own statement and STV
+    for atom in inferred:
+        r = _parse_result(atom)
+        if r and (derivations.get(r[0]) or {}).get("proof"):
+            by_proof[derivations[r[0]]["proof"]] = (f"{r[2]} —[{r[1]}]→ {r[3]}", f"(stv {float(r[4]):.2f} {float(r[5]):.2f})")
+
+    def premise(fact: str, label: str = "", stv: str = "") -> dict:
+        """One premise for the audit table: the statement with entity names, its STV and the papers stating it;
+        a premise PLN inferred in an earlier step is shown as that inferred statement."""
+        derived = fact in by_proof and (not label or label == "derived relation")
+        if derived:
+            label, stv = by_proof[fact]
+        m = re.match(r"(\S+) —\[(\w+)\]→ (\S+)", label or "")
+        text = f"{name_of(m.group(1))} —[{m.group(2)}]→ {name_of(m.group(3))}" if m else (label or fact)
+        ends = {"from": by_key.get(m.group(1), ""), "to": by_key.get(m.group(3), ""),
+                "rel": re.sub(r'(?<!^)(?=[A-Z])', '_', m.group(2)).lower()} if m else {}
+        return {"text": text + (" (inferred)" if derived else ""), "stv": stv, "papers": papers_of(fact), **ends}
+    for atom in inferred:
+        r = _parse_result(atom)
+        if not r:
+            continue
+        proof, pred, a, b, strength = r[0], r[1], r[2], r[3], r[4]
+        sid, tid = by_key.get(a), by_key.get(b)
+        rel = re.sub(r'(?<!^)(?=[A-Z])', '_', pred).lower()
+        if not sid or not tid or (sid, rel, tid) in seen:
+            continue
+        seen.add((sid, rel, tid))
+        d, bw = derivations.get(proof) or {}, backward.get((pred, a, b))
+        rule = d.get("rule") or (bw or {}).get("rule", "")
+        names = (_proof_parts(d.get("proof", "")) or ("", []))[1] if d else (bw or {}).get("premises", [])
+        prem = ([premise(n, d.get(f"premise{i + 1}", ""), d.get(f"premise{i + 1}_stv", "")) for i, n in enumerate(names[:2])]
+                if d else [premise(n, pln._forward.premise_label(n)) for n in names])
+        trace = {"rule": rule, "meaning": meaning.get(rule, ""),
+                 "rule_stv": f"(stv {d['rule_s']:.2f} {d['rule_c']:.2f})" if d else "",
+                 "derived_stv": f"(stv {float(r[4]):.2f} {float(r[5]):.2f})", "premises": prem,
+                 "question": (bw or {}).get("question", "")}
+        paper = paper_of.get(sid) or paper_of.get(tid, "")
+        edges.append({"id": f"pln-{len(edges)}", "source_id": sid, "target_id": tid, "relation": rel,
+                      "source_name": nodes[sid].get("name", ""), "target_name": nodes[tid].get("name", ""),
+                      "confidence": float(strength or 0), "negated": False, "inferred": True,
+                      "inferred_via": "backward" if bw and not d else "forward", "trace": trace,
+                      "source_paper": paper, "_paper": paper,
+                      "reasoning": f"Inferred by PLN{' with rule ' + rule if rule else ''}; no paper states it."})
+    render_html(nodes, edges, out, title="Unified PLN AtomSpace", fast_physics=True)
 
 
 def _keep_found(pln, path: Path, state) -> None:
@@ -179,7 +268,8 @@ def _answer_key(question: str, run_dir: str | None, staging_db: str | None) -> s
 
 
 @router.post("/api/pln-run")
-async def pln_run(req: PLNRunRequest):
+@_serial
+def pln_run(req: PLNRunRequest):
     """Load a paper into PLN, run forward chaining, generate vis.js graph HTML."""
     try:
         global _paper_key
@@ -209,7 +299,8 @@ async def pln_run(req: PLNRunRequest):
 
 
 @router.post("/api/pln-query")
-async def pln_query(req: PLNQueryRequest):
+@_serial
+def pln_query(req: PLNQueryRequest):
     """Answer a NL question over the KG using PLN forward+backward chaining."""
     try:
         paper = bool(req.run_dir or req.staging_db)
@@ -245,7 +336,8 @@ async def pln_query(req: PLNQueryRequest):
 
 
 @router.get("/api/pln-facts")
-async def pln_facts(limit: int = Query(default=200, le=2000)):
+@_serial
+def pln_facts(limit: int = Query(default=200, le=2000)):
     """Return all atoms currently in the PLN atomspace."""
     try:
         pln = _get_pln()
@@ -258,7 +350,8 @@ async def pln_facts(limit: int = Query(default=200, le=2000)):
 
 
 @router.get("/api/pln-inferred")
-async def pln_inferred(
+@_serial
+def pln_inferred(
     run_dir: str = Query(default=""),
     limit:   int = Query(default=200, le=2000),
 ):
@@ -280,7 +373,8 @@ async def pln_inferred(
 
 
 @router.get("/api/pln-papers")
-async def pln_papers():
+@_serial
+def pln_papers():
     """List all papers that have a PLN graph HTML file."""
     kg_root = Path("data/kg_output")
     papers = []
@@ -302,7 +396,7 @@ _UNIFIED_PLN_DIR = Path("data/kg_output/unified_pln")
 
 
 @router.get("/api/pln-unified-status")
-async def pln_unified_status():
+def pln_unified_status():
     """Check if unified PeTTaChainer PLN graph exists; return path + basic stats."""
     pln_html = _UNIFIED_PLN_DIR / "pln_atomspace.html"
     if pln_html.exists():
@@ -322,7 +416,8 @@ async def pln_unified_status():
 
 
 @router.post("/api/pln-unified-run")
-async def pln_unified_run():
+@_serial
+def pln_unified_run(reload: bool = False):
     """Load ALL committed MeTTa files, run PeTTaChainer forward chaining, generate unified PLN graph."""
     global _unified_pln_module
     try:
@@ -331,7 +426,7 @@ async def pln_unified_run():
         if not cfg.enabled:
             return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
 
-        pln = _get_unified_pln()                       # loads only papers not in it yet
+        pln = _get_unified_pln(force_reload=reload)    # loads only papers not in it yet, unless reload
         if pln is None:
             return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
 
@@ -345,16 +440,8 @@ async def pln_unified_run():
         # All PLN output goes to unified_pln/ — HTML + flat metta + per-category metta/
         _UNIFIED_PLN_DIR.mkdir(parents=True, exist_ok=True)
 
-        pln.generate_visualization(
-            run_dir=str(_UNIFIED_PLN_DIR),
-            paper_id=f"Unified ({len(loaded_papers)} papers)",
-        )
-        # generate_visualization writes pln_graph.html; rename to pln_atomspace.html
-        pln_html    = _UNIFIED_PLN_DIR / "pln_atomspace.html"
-        default_html = _UNIFIED_PLN_DIR / "pln_graph.html"
-        if default_html.exists():
-            import shutil
-            shutil.move(str(default_html), str(pln_html))
+        pln_html = _UNIFIED_PLN_DIR / "pln_atomspace.html"
+        _write_pln_page(pln, _latest_run_dirs(kg_root), pln_html)
 
         inferred  = len(pln.inferred())
         metta     = _UNIFIED_PLN_DIR / "pln_atomspace.metta"
@@ -365,6 +452,7 @@ async def pln_unified_run():
             "inferred":     inferred,
             "pln_html":     str(pln_html) if pln_html.exists() else "",
             "pln_metta":    str(metta) if metta.exists() else "",
+            "sync":         _unified_sync,
         }
     except Exception as exc:
         import traceback
@@ -372,7 +460,8 @@ async def pln_unified_run():
 
 
 @router.get("/api/pln-overview")
-async def pln_overview():
+@_serial
+def pln_overview():
     """What the all-papers atomspace holds, and questions built from its own facts."""
     try:
         pln = _get_unified_pln()
@@ -396,18 +485,22 @@ async def pln_overview():
 
 
 @router.post("/api/pln-unified-query")
-async def pln_unified_query(req: PLNQueryRequest):
+@_serial
+def pln_unified_query(req: PLNQueryRequest):
     """Answer a question over the all-papers atomspace; a repeat question returns the saved answer."""
     try:
         t0 = time.perf_counter()
+        store = _UNIFIED_PLN_DIR / "pln_answers.json"
+        q = re.sub(r'\s+', ' ', req.question.strip().lower()).rstrip('?').strip()
+        saved = json.loads(store.read_text()) if store.exists() else {}
+        on_disk = json.dumps([q, sorted((k, v[1]) for k, v in _current_state().items())])
+        if on_disk in saved and not req.fresh:          # a saved answer needs no atomspace, even after a restart
+            return {**saved[on_disk], "cached": True}
+
         pln = _get_unified_pln()
         if pln is None:
             return {"ok": False, "error": "PLN disabled — set ENABLE_PLN=true"}
-
-        store = _UNIFIED_PLN_DIR / "pln_answers.json"
-        q = re.sub(r'\s+', ' ', req.question.strip().lower()).rstrip('?').strip()
         key = json.dumps([q, sorted(_unified_state.items())])
-        saved = json.loads(store.read_text()) if store.exists() else {}
         if key in saved and not req.fresh:
             return {**saved[key], "cached": True}
 
@@ -433,7 +526,8 @@ async def pln_unified_query(req: PLNQueryRequest):
 
 
 @router.post("/api/run_pln")
-async def run_pln_endpoint():
+@_serial
+def run_pln_endpoint():
     """Legacy — Layer 9 STV + contradiction analysis via layer9_pln."""
     try:
         os.environ.setdefault("TRIPLE_STORE_PATH", "data/triple_store.db")

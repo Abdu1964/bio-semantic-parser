@@ -10,7 +10,9 @@ _ROOT = Path(__file__).resolve().parent.parent
 class PLNConfig:
     enabled:             bool  = field(default_factory=lambda: os.getenv("ENABLE_PLN", "false").lower() == "true")
     forward_steps:       int   = field(default_factory=lambda: int(os.getenv("PLN_FORWARD_STEPS", "5")))
-    backward_timeout:    int   = field(default_factory=lambda: int(os.getenv("PLN_BACKWARD_TIMEOUT", "30")))
+    # 0: queries run in-process, bounded by their search steps. A timeout makes PeTTaChainer re-add every
+    # atom in a new process for each query (seconds per query, minutes for forward chaining).
+    backward_timeout:    int   = field(default_factory=lambda: int(os.getenv("PLN_BACKWARD_TIMEOUT", "0")))
     identity_threshold:  float = field(default_factory=lambda: float(os.getenv("PLN_IDENTITY_THRESHOLD", "0.8")))
     min_confidence:      float = field(default_factory=lambda: float(os.getenv("PLN_MIN_CONFIDENCE", "0.5")))
     mine_min_support:    int   = field(default_factory=lambda: int(os.getenv("PLN_MINE_MIN_SUPPORT", "2")))  # cases a learned rule needs

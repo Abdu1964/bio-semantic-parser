@@ -207,6 +207,8 @@ def build_graph_data(neo4j_dirs: list) -> tuple:
         edges = _read_edges(neo4j_dir)
         all_nodes.update(nodes)
         all_edges.extend(edges)
+    for i, e in enumerate(all_edges, 1):          # each folder numbers its edges from 1
+        e["id"] = i
     return all_nodes, all_edges
 
 
@@ -227,6 +229,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
         '></script>'
     )
 
+    big = len(nodes) > 400          # large graphs: lighter layout and drawing, so pan and zoom stay smooth
     degrees: dict = {}
     for e in edges:
         degrees[e["source_id"]] = degrees.get(e["source_id"], 0) + 1
@@ -252,7 +255,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
             "size":  max(18, 12 + degree * 5),
             "font":  {"color": "#ffffff", "size": 12, "face": "Inter, sans-serif",
                       "strokeWidth": 3, "strokeColor": "#00000066"},
-            "shadow": {"enabled": True, "color": color + "88", "size": 16, "x": 0, "y": 0},
+            "shadow": {"enabled": not big, "color": color + "88", "size": 16, "x": 0, "y": 0},
             "borderWidth": 2,
             "borderWidthSelected": 3,
             "_name":  name,
@@ -268,8 +271,9 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
         _review_reason = e.get("review_reason", "") or e.get("_review_reason", "")
         _verdict = e.get("validation", "") or e.get("_validation", "")
         _human   = bool(_review_reason) or _verdict in ("REVIEW", "REJECT")
-        color   = "#888888" if neg else ("#F59E0B" if _human else _edge_color(rel))
-        label   = ("✗ " if neg else "") + ("👤 " if _human else "") + rel.replace("_", " ")
+        inf     = bool(e.get("inferred"))                # derived by PLN, not stated in a paper
+        color   = "#a855f7" if inf else "#888888" if neg else ("#F59E0B" if _human else _edge_color(rel))
+        label   = ("⛓ " if inf else "") + ("✗ " if neg else "") + ("👤 " if _human else "") + rel.replace("_", " ")
         conf    = e["confidence"]
         vis_edges.append({
             "id":     e["id"],
@@ -280,12 +284,12 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
             "color":  {"color": color + "cc", "highlight": "#ffffff", "hover": "#ffffff",
                        "opacity": 0.85},
             "width":  max(1.5, conf * 3.5),
-            "dashes": neg,
+            "dashes": [6, 4] if inf else neg,
             "arrows": {"to": {"enabled": True, "scaleFactor": 0.6}},
             "font":   {"color": "#ffffff", "size": 11, "align": "middle",
                        "face": "Inter, sans-serif",
                        "strokeWidth": 3, "strokeColor": "#00000066"},
-            "shadow": {"enabled": True, "color": color + "55", "size": 8, "x": 0, "y": 0},
+            "shadow": {"enabled": not big, "color": color + "55", "size": 8, "x": 0, "y": 0},
             "_relation":     rel,
             "_subject_name": _display_name(e["source_id"], e.get("source_name", "")),
             "_object_name":  _display_name(e["target_id"], e.get("target_name", "")),
@@ -293,6 +297,9 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
             "_object_id":    e["target_id"],
             "_confidence":   conf,
             "_negated":      neg,
+            "_inferred":     inf,
+            "_via":          e.get("inferred_via", ""),
+            "_trace":        e.get("trace"),
             # source_paper may be empty when rebuilt from unified DB (uses source_papers JSON)
             # fall back to first entry of source_papers JSON array
             "_paper":        (e.get("source_paper", "") or
@@ -489,6 +496,17 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
   {items}
 </div>"""
 
+    _smooth = "false" if big else "{type: 'curvedCW', roundness: 0.2}"
+    _n_fwd = sum(1 for e in edges if e.get("inferred") and e.get("inferred_via") != "backward")
+    _n_bwd = sum(1 for e in edges if e.get("inferred_via") == "backward")
+    _chip = ('style="margin-left:8px;padding:4px 10px;border-radius:14px;border:1px solid #a855f766;'
+             'background:none;color:#c4b5fd;font-size:12px;cursor:pointer"')
+    _inf_chips = (f'<button {_chip} onclick="showInferred(\'\')">All</button>'
+                  f'<button {_chip} onclick="showInferred(\'forward\')">⛓ Forward-inferred ({_n_fwd})</button>'
+                  f'<button {_chip} onclick="showInferred(\'backward\')">↩ Backward-inferred ({_n_bwd})</button>'
+                  if _n_fwd or _n_bwd else '')
+    _inf_legend = ('<h4 style="color:#a855f7">Purple dashed = inferred by PLN</h4>'
+                   if any(e.get("inferred") for e in edges) else '')
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -613,6 +631,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
   </select>
   {_papers_btn}
   <input id="search-box" type="text" placeholder="Search nodes…" oninput="searchNodes(this.value)">
+  {_inf_chips}
   <span id="stats">{len(nodes)} nodes · {len(edges)} edges</span>
 </div>
 {_papers_html}
@@ -620,11 +639,14 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
 <div id="main">
   <div id="graph-container">
     <div id="network"></div>
+    <div id="inf-table" style="display:none;position:absolute;left:0;right:0;bottom:0;max-height:42%;overflow:auto;
+         background:#0d1117f2;border-top:1px solid #a855f766;font-size:12px;color:#c9d1d9;z-index:5"></div>
     <div id="legend">
       <h4>Node types</h4>
       {"".join(f'<div class="legend-item"><div class="legend-dot" style="background:{c}"></div>{t.replace("_"," ").title()}</div>' for t, c in legend_nodes[:10])}
       <h4 style="margin-top:8px">Edge width = confidence</h4>
       <h4>Dashed = negated</h4>
+      {_inf_legend}
     </div>
   </div>
 
@@ -803,6 +825,72 @@ function updatePaperBadge(paperId) {{
   el.outerHTML = badgeForPaper(paperId);
 }}
 
+// Only the triples PLN inferred one way ('forward' | 'backward') and their nodes; '' shows everything
+function showInferred(via) {{
+  if (!via) {{
+    document.getElementById('inf-table').style.display = 'none';
+    nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: false}})));
+    edgesDS.update(EDGES_DATA.map(e => ({{id: e.id, hidden: false}})));
+    return;
+  }}
+  const keep = new Set(EDGES_DATA.filter(e => e._inferred && (e._via || 'forward') === via).map(e => e.id));
+  renderInfTable(via);
+  const ids = new Set();
+  EDGES_DATA.forEach(e => {{ if (keep.has(e.id)) {{ ids.add(e.from); ids.add(e.to); }} }});
+  nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: !ids.has(n.id)}})));
+  edgesDS.update(EDGES_DATA.map(e => ({{id: e.id, hidden: !keep.has(e.id)}})));
+}}
+
+// Audit table: each inferred triple with the rule, its premises (STV and papers) and the derived STV
+function renderInfTable(via) {{
+  const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}})[c]);
+  const nameOf = id => (NODES_DATA.find(n => n.id === id) || {{}})._name || id;
+  const words = r => String(r || '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();   // one form for every relation
+  const rel = t => esc(String(t || '').replace(/—\[(\w+)\]→/g, (m, r) => `—[${{words(r)}}]→`));
+  const KINDS = [['schema_isa', 'parent relation'], ['schema_symmetric', 'symmetric'], ['schema_transitive', 'transitive'], ['mined_', 'learned pattern']];
+  const kind = t => {{ const k = KINDS.find(([p]) => (t.rule || '').startsWith(p)); const n = (t.premises || []).length;
+                       return `${{k ? k[1] : 'rule'}} · ${{n}} premise${{n === 1 ? '' : 's'}}`; }};
+  const rows = EDGES_DATA.filter(e => e._inferred && (e._via || 'forward') === via);
+  const box = document.getElementById('inf-table');
+  const th = 'style="position:sticky;top:0;background:#161b22;text-align:left;padding:6px 8px;color:#c4b5fd;font-weight:600"';
+  const td = 'style="padding:6px 8px;border-top:1px solid #21262d;vertical-align:top"';
+  box.innerHTML = `<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#161b22">
+      <b style="color:#c4b5fd">${{via === 'backward' ? '↩ Backward' : '⛓ Forward'}}-inferred triples (${{rows.length}})</b>
+      <span style="color:#8b949e">each row: the rule, the facts it combined and the truth values; click a row to see it on the graph</span>
+      <span style="flex:1"></span><button onclick="showInferred('')" style="background:none;border:1px solid #30363d;color:#8b949e;border-radius:6px;cursor:pointer">✕</button></div>
+    <table style="width:100%;border-collapse:collapse"><tr><th ${{th}}>#</th><th ${{th}}>Inferred triple</th><th ${{th}}>STV</th>
+      <th ${{th}}>How it was inferred (premises ⟹ rule ⟹ result)</th><th ${{th}}>Rule</th></tr>` +
+    rows.map((e, i) => {{
+      const t = e._trace || {{}};
+      const num = '①②③④⑤';
+      const prem = (t.premises || []).map((p, k) => `<div>${{num[k] || '•'}} ${{rel(p.text)}} <span style="color:#8b949e">${{esc(p.stv)}}</span>` +
+        (p.papers && p.papers.length ? `<div style="color:#6e7681;margin-left:16px">from: ${{esc(p.papers.join(', '))}}</div>` : '') + `</div>`).join('')
+        + (t.premises && t.premises.length ? `<div style="margin-top:4px;color:#c4b5fd">⟹ rule ${{esc(t.rule_stv)}} gives <b>${{esc(nameOf(e.from))}}</b> —[${{esc(words(e._relation))}}]→ <b>${{esc(nameOf(e.to))}}</b> ${{esc(t.derived_stv)}}</div>` : '');
+      return `<tr style="cursor:pointer" onclick="focusEdge('${{e.id}}')"><td ${{td}}>${{i + 1}}</td>
+        <td ${{td}}><b>${{esc(nameOf(e.from))}}</b> —[${{esc(words(e._relation))}}]→ <b>${{esc(nameOf(e.to))}}</b>
+          ${{t.question ? `<div style="color:#6e7681">asked: ${{esc(t.question)}}</div>` : ''}}</td>
+        <td ${{td}}>${{esc(t.derived_stv)}}</td>
+        <td ${{td}}>${{prem || '<span style="color:#6e7681">—</span>'}}</td>
+        <td ${{td}}><span style="display:inline-block;padding:1px 8px;border-radius:10px;background:#a855f722;color:#c4b5fd;margin-bottom:3px">${{kind(t)}}</span><div>${{esc(t.rule)}}</div><div style="color:#8b949e">${{esc(t.meaning)}}</div><div style="color:#6e7681">${{esc(t.rule_stv)}}</div></td></tr>`;
+    }}).join('') + `</table>`;
+  box.style.display = rows.length ? 'block' : 'none';
+}}
+
+function focusEdge(id) {{
+  const e = EDGES_DATA.find(x => String(x.id) === String(id));
+  if (!e) return;
+  // this triple and the facts it was inferred from
+  const prem = ((e._trace || {{}}).premises || []).filter(p => p.from && p.to);
+  const shown = new Set([e.id]);
+  EDGES_DATA.forEach(x => {{ if (prem.some(p => p.from === x.from && p.to === x.to && p.rel === x._relation)) shown.add(x.id); }});
+  const ids = new Set();
+  EDGES_DATA.forEach(x => {{ if (shown.has(x.id)) {{ ids.add(x.from); ids.add(x.to); }} }});
+  nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: !ids.has(n.id)}})));
+  edgesDS.update(EDGES_DATA.map(x => ({{id: x.id, hidden: !shown.has(x.id)}})));
+  network.selectEdges([e.id]);
+  network.fit({{nodes: [...ids], animation: {{duration: 400, easingFunction: 'easeInOutQuad'}}}});
+}}
+
 function filterByPaper(paperId) {{
   _focusedNode = null;
   updatePaperBadge(paperId);
@@ -843,6 +931,7 @@ let network;
 function initNetwork() {{
   const container = document.getElementById('network');
   network = new vis.Network(container, {{nodes: nodesDS, edges: edgesDS}}, {{
+  layout: {{improvedLayout: {'false' if big else 'true'}}},
   physics: {{
     barnesHut: {{
       gravitationalConstant: -12000,
@@ -860,10 +949,12 @@ function initNetwork() {{
     navigationButtons: true,
     keyboard: true,
     zoomView: true,
-    multiselect: false
+    multiselect: false,
+    hideEdgesOnDrag: {'true' if big else 'false'},
+    hideEdgesOnZoom: {'true' if big else 'false'}
   }},
   edges: {{
-    smooth: {{type: 'curvedCW', roundness: 0.2}},
+    smooth: {_smooth},
     scaling: {{
       label: {{
         enabled: true,
