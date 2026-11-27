@@ -59,8 +59,49 @@ def _organism(text: str) -> str:
     return hit.get("canonical_name") or text          # the taxonomy's name: 'Homo sapiens', not the caption phrase
 
 
-def _clean_name(name: str) -> str:
-    return _SOURCE_TAG.sub("", name).strip() or name
+# A trailing parenthesis on a label line: "Inflammatory response (DisGeNET)".
+_TRAILING_PAREN = re.compile(r"\s*\([^()]{2,30}\)\s*$")
+# A duration or time point written with a name: "5 days RTD-1", "RTD-1 24 h", "day 3 PIA".
+_TIME = r"(?:day|week|month)\s*\d+|\d+(?:\.\d+)?\s*-?\s*(?:h|hr|hrs|hours?|d|days?|wk|wks|weeks?|mo|months?|min|mins|minutes?)"
+_TIME_IN_NAME = re.compile(rf"^\s*({_TIME})\b\s+|\s+({_TIME})\s*$", re.I)
+
+
+def _tags_label_convention(ocr: str) -> bool:
+    """Whether the figure labels its items with a trailing source in brackets ('X (GO)', 'Y (MSigDB)'):
+    three or more label lines end that way, so a trailing bracket on a name is a source, not part of it."""
+    return sum(1 for line in (ocr or "").splitlines() if _TRAILING_PAREN.search(line)) >= 3
+
+
+def _clean_name(name: str, tagged: bool = False) -> str:
+    cleaned = _SOURCE_TAG.sub("", name).strip()
+    if tagged:
+        cleaned = _TRAILING_PAREN.sub("", cleaned).strip()
+    return cleaned or name
+
+
+def _time_out_of_name(r: dict) -> dict:
+    """A time point written with a name moves to the condition: '5 days RTD-1' → RTD-1, condition '5 days'."""
+    for side in ("subject_name", "object_name"):
+        name = r.get(side)
+        if not isinstance(name, str):
+            continue
+        m = _TIME_IN_NAME.search(name)
+        rest = _TIME_IN_NAME.sub(" ", name).strip() if m else name
+        if m and len(rest) > 1:
+            when = (m.group(1) or m.group(2)).strip()
+            r[side] = rest
+            r["condition"] = "; ".join(x for x in (str(r.get("condition") or "").strip(), when) if x)
+    return r
+
+
+def _association_if_enrichment(rel: BiologicalRelation) -> BiologicalRelation:
+    """Enrichment shows an association: a causal or regulatory relation the model gave for it becomes
+    associates_with, predicted."""
+    if "enrich" not in (rel.reasoning or "").lower():
+        return rel
+    if rel.relation.value.startswith(("associat", "correlat", "genetically_associated")):
+        return rel.model_copy(update={"evidence": "predicted"})          # an association, still inferred
+    return rel.model_copy(update={"relation": RelationType.ASSOCIATES_WITH, "evidence": "predicted"})
 
 
 def _fix_type(rel: BiologicalRelation):
@@ -125,8 +166,9 @@ RULES:
    as rs IDs, proteins, cell types, diseases, chemicals). Never numbers, p-values, axis labels,
    method names or panel titles.
 4. relation, subject_type and object_type MUST be values from the lists above.
-5. One object per distinct subject–relation–object triple; be precise. Give at most {max_relations}
-   relations — the ones the figure shows most clearly.
+5. One object per distinct subject–relation–object triple; be precise. Give every relation the figure
+   shows, up to {max_relations}: a chart comparing conditions across several genes gives one relation per
+   gene it shows as significantly changed.
 6. If the figure shows no relation, return an empty relations list.
 7. The first image is the whole figure; any further images are zoomed quarters of it — use them to
    read small labels. Spell every name exactly as in TEXT FOUND IN THE FIGURE.
@@ -145,7 +187,20 @@ RULES:
 13. A colour, cluster, box or legend group shows only that its items share the group — never a relation
    between an item and the group.
 14. evidence: predicted for activity an analysis infers (upstream regulator or pathway analysis,
-   z-scores, enrichment); measured for observed results."""
+   z-scores, enrichment); measured for observed results.
+15. Enrichment charts (gene-set, pathway or GO enrichment; –log10 P bars; enrichment heatmaps) show that the
+   genes changed in a condition fall in a category more often than by chance — an association. Use
+   associates_with, never a causal or regulatory relation (upstream of, regulates, activates, causes).
+16. A name holds the entity only. A time point, dose or duration written with it ('5 days RTD-1',
+   '10 uM drug', 'day 3 cohort') goes in condition; the name is the entity ('RTD-1').
+17. When the caption states the direction of an effect the figure shows ('suppresses', 'increased',
+   'reduced'), use that direction (downregulates, upregulates, decreases…), not an undirected relation.
+18. Grouped or paired bars (a legend names the groups, e.g. filled vs open bars): read only the bars of the
+   group the relation is about. For scores centred on zero (z-score, log fold change), above zero means
+   activated or increased in that group, below zero inhibited or decreased.
+19. A stimulus or treatment the figure compares (columns marked – and +, or with and without it) is an agent
+   too: give its own effect (stimulus upregulates the gene) as well as the effects measured under it; the
+   stimulus also goes in condition for those."""
 
 
 def _compact(title: str, taxonomy: dict) -> str:
@@ -235,6 +290,7 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
     checkable = available() or context or (caption or "").strip()          # OCR, paper text or a caption
     known = (tokens(ocr + " " + user) | (context or set())) if checkable else None
     relations, invalid, ungrounded, not_entities = [], 0, 0, 0
+    tagged = _tags_label_convention(ocr)
     figure_species = _organism(str(data.get("species") or ""))
     if kind in ("diagram", "chart", "table"):
         for r in data.get("relations") or []:
@@ -247,9 +303,11 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
                 r["species"] = figure_species         # the figure's organism unless the relation names one
             for side in ("subject_name", "object_name"):
                 if isinstance(r.get(side), str):
-                    r[side] = _clean_name(r[side])
+                    r[side] = _clean_name(r[side], tagged)
+            r = _time_out_of_name(r)
             try:
                 rel = _fix_type(BiologicalRelation(**_canonical_direction(r)))
+                rel = _association_if_enrichment(rel) if rel else rel
             except (ValidationError, TypeError) as e:
                 invalid += 1
                 logger.info("Figure relation dropped (invalid): %s", str(e)[:200])

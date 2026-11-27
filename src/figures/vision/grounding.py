@@ -12,7 +12,7 @@ _TOKEN = re.compile(r"[^\W_]+(?:[-.][^\W_]+)*")          # letters of any script
 
 def figure_text(image: bytes) -> str:
     """OCR text of a figure image (all zoom levels joined), or '' when OCR is unavailable."""
-    from src.figures.ocr import available
+    from src.figures.ocr import OCR_LOCK, available
     if not available():
         return ""
     import pymupdf
@@ -21,8 +21,9 @@ def figure_text(image: bytes) -> str:
         doc = pymupdf.open()
         page = doc.new_page(width=pix.width, height=pix.height)       # 1 point per pixel
         page.insert_image(page.rect, pixmap=pix)
-        return "\n".join(page.get_text(textpage=page.get_textpage_ocr(language="eng", dpi=int(72 * s), full=True))
-                         for s in _SCALES)
+        with OCR_LOCK:                                                # one Tesseract call at a time
+            return "\n".join(page.get_text(textpage=page.get_textpage_ocr(language="eng", dpi=int(72 * s), full=True))
+                             for s in _SCALES)
     except Exception as e:
         logger.warning("Figure OCR failed: %s", e)
         return ""

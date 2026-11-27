@@ -1,6 +1,7 @@
 """OCR for scanned PDF pages (Tesseract through PyMuPDF)."""
 import logging
 import os
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +12,7 @@ _MIN_TEXT = 20                    # fewer chars than this → no real text layer
 _MIN_COVER = 0.5                  # images covering this share of the page → scanned
 
 _available = None
+OCR_LOCK = threading.Lock()       # Tesseract (Leptonica) fails when two threads run it at once
 
 
 def available() -> bool:
@@ -46,8 +48,9 @@ def image_text(data: bytes) -> str:
         raise RuntimeError("OCR is unavailable (Tesseract not installed or OCR_ENABLED=false)")
     pdf = pymupdf.open("pdf", pymupdf.open(stream=data).convert_to_pdf())
     from src.fetcher.handlers import PAGE_BREAK
-    return PAGE_BREAK.join(page.get_text(textpage=page.get_textpage_ocr(language=_LANG, dpi=_DPI, full=True))
-                           for page in pdf)
+    with OCR_LOCK:
+        return PAGE_BREAK.join(page.get_text(textpage=page.get_textpage_ocr(language=_LANG, dpi=_DPI, full=True))
+                               for page in pdf)
 
 
 def page_text(page) -> str:
@@ -58,7 +61,8 @@ def page_text(page) -> str:
     try:                                       # OCR never breaks plain text extraction
         if not is_scanned(page, text) or not available():
             return text
-        return page.get_text(textpage=page.get_textpage_ocr(language=_LANG, dpi=_DPI, full=True))
+        with OCR_LOCK:
+            return page.get_text(textpage=page.get_textpage_ocr(language=_LANG, dpi=_DPI, full=True))
     except Exception as e:
         logger.warning("OCR failed on page %s: %s", getattr(page, "number", -1) + 1, e)
         return text
