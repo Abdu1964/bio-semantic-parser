@@ -210,10 +210,10 @@ def _write_pln_page(pln, run_dirs: list[Path], out: Path) -> None:
         edges.append({"id": f"pln-{len(edges)}", "source_id": sid, "target_id": tid, "relation": rel,
                       "source_name": nodes[sid].get("name", ""), "target_name": nodes[tid].get("name", ""),
                       "confidence": float(strength or 0), "negated": False, "inferred": True,
-                      "inferred_via": "backward" if bw and not d else "forward", "trace": trace,
+                      "inferred_via": "both" if bw and d else "backward" if bw else "forward", "trace": trace,
                       "source_paper": paper, "_paper": paper,
                       "reasoning": f"Inferred by PLN{' with rule ' + rule if rule else ''}; no paper states it."})
-    render_html(nodes, edges, out, title="Unified PLN AtomSpace", fast_physics=True)
+    render_html(nodes, edges, out, title="PLN Reasoning · PeTTaChainer", fast_physics=True)
 
 
 def _keep_found(pln, path: Path, state) -> None:

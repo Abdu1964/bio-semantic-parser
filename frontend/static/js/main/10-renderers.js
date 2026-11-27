@@ -927,7 +927,7 @@ function renderOutput(d) {
       <div class="out-card pln-card" onclick="openViewer('${plnSrc}','PLN AtomSpace')"
            title="Opens PLN graph — stv values, inferred triples, contradictions ↗">
         <div class="oc-icon">🔮</div>
-        <div class="oc-label">PLN AtomSpace</div>
+        <div class="oc-label">PLN Reasoning</div>
         <div class="oc-meta">${d.pln_extracted||0} extracted · ${d.pln_inferred||0} inferred</div>
         <span class="oc-badge oc-pln">MeTTa + stv ↗</span>
       </div>`;

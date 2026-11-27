@@ -159,7 +159,9 @@ function _plnShowResult() {
         <div>strength <u><i style="width:${pct(a.strength)}%"></i></u> ${(a.strength || 0).toFixed(2)}</div>
         <div>confidence <u><i style="width:${pct(a.confidence)}%"></i></u> ${(a.confidence || 0).toFixed(2)}</div>
       </div>
-      <div class="pb-kind">${a.inferred ? '<b class="inf">inferred by a rule</b>' : '<b>stated in the paper</b>'}
+      <div class="pb-kind">${a.inferred ? '<b class="inf">inferred by a rule</b>'
+        : a.negated ? '<b style="color:#f87171">negative finding: stated as NOT holding</b>'
+        : a.contested ? '<b style="color:#fbbf24">contested: papers disagree</b>' : '<b>stated in the paper</b>'}
         ${(a.papers || []).map(p => `<span class="pb-paper">📄 ${esc(_plnPaper(p))}</span>`).join('')}</div>
     </div>`).join('');
   res.innerHTML = `

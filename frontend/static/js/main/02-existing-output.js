@@ -223,7 +223,7 @@ async function _runPLNInference(runDir, stagingDb, docId, btn) {
           <div class="out-card pln-card" onclick="openViewer('${htmlUrl}','PLN AtomSpace')"
                title="Opens PLN graph — original + inferred triples ↗">
             <div class="oc-icon">🔮</div>
-            <div class="oc-label">PLN AtomSpace</div>
+            <div class="oc-label">PLN Reasoning</div>
             <div class="oc-meta">${d.atoms_loaded||0} atoms · ${d.inferred||0} inferred</div>
             <span class="oc-badge oc-pln">MeTTa + stv ↗</span>
           </div>` : '';

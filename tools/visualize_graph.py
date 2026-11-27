@@ -252,7 +252,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
                       "border": color,
                       "highlight": {"background": "#FFFFFF", "border": color},
                       "hover":     {"background": "#FFFFFF", "border": color}},
-            "size":  max(18, 12 + degree * 5),
+            "size":  (min(34, 10 + 4 * degree ** 0.5) if big else min(60, max(18, 12 + degree * 5))),
             "font":  {"color": "#ffffff", "size": 12, "face": "Inter, sans-serif",
                       "strokeWidth": 3, "strokeColor": "#00000066"},
             "shadow": {"enabled": not big, "color": color + "88", "size": 16, "x": 0, "y": 0},
@@ -497,13 +497,18 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
 </div>"""
 
     _smooth = "false" if big else "{type: 'curvedCW', roundness: 0.2}"
+    _solver = ("solver: 'forceAtlas2Based', forceAtlas2Based: {gravitationalConstant: -80, centralGravity: 0.008, "
+               "springLength: 140, springConstant: 0.06, damping: 0.6, avoidOverlap: 1}, minVelocity: 1.5,"
+               if big else
+               "barnesHut: {gravitationalConstant: -12000, centralGravity: 0.1, springLength: 220, "
+               "springConstant: 0.04, damping: 0.12, avoidOverlap: 0.3},")
     _n_fwd = sum(1 for e in edges if e.get("inferred") and e.get("inferred_via") != "backward")
-    _n_bwd = sum(1 for e in edges if e.get("inferred_via") == "backward")
+    _n_bwd = sum(1 for e in edges if e.get("inferred_via") in ("backward", "both"))
     _chip = ('style="margin-left:8px;padding:4px 10px;border-radius:14px;border:1px solid #a855f766;'
              'background:none;color:#c4b5fd;font-size:12px;cursor:pointer"')
     _inf_chips = (f'<button {_chip} onclick="showInferred(\'\')">All</button>'
-                  f'<button {_chip} onclick="showInferred(\'forward\')">⛓ Forward-inferred ({_n_fwd})</button>'
-                  f'<button {_chip} onclick="showInferred(\'backward\')">↩ Backward-inferred ({_n_bwd})</button>'
+                  f'<button id="chip-fwd" {_chip} onclick="showInferred(\'forward\')">⛓ Forward-inferred ({_n_fwd})</button>'
+                  f'<button id="chip-bwd" {_chip} onclick="showInferred(\'backward\')">↩ Backward-inferred ({_n_bwd})</button>'
                   if _n_fwd or _n_bwd else '')
     _inf_legend = ('<h4 style="color:#a855f7">Purple dashed = inferred by PLN</h4>'
                    if any(e.get("inferred") for e in edges) else '')
@@ -639,8 +644,7 @@ def render_html(nodes: dict, edges: list, output_path: Path, title: str,
 <div id="main">
   <div id="graph-container">
     <div id="network"></div>
-    <div id="inf-table" style="display:none;position:absolute;left:0;right:0;bottom:0;max-height:42%;overflow:auto;
-         background:#0d1117f2;border-top:1px solid #a855f766;font-size:12px;color:#c9d1d9;z-index:5"></div>
+    <div id="inf-drawer"><div class="ifd-head" id="ifd-head"></div><div class="ifd-body" id="ifd-body"></div></div>
     <div id="legend">
       <h4>Node types</h4>
       {"".join(f'<div class="legend-item"><div class="legend-dot" style="background:{c}"></div>{t.replace("_"," ").title()}</div>' for t, c in legend_nodes[:10])}
@@ -825,75 +829,159 @@ function updatePaperBadge(paperId) {{
   el.outerHTML = badgeForPaper(paperId);
 }}
 
-// Only the triples PLN inferred one way ('forward' | 'backward') and their nodes; '' shows everything
+// ── Inferred triples: scope follows the selected paper; a drawer lists them, one opens as its derivation ──
+let _curPaper = '', _infVia = '', _infSel = null, _drawerOpen = true;
+(function () {{
+  const st = document.createElement('style');
+  st.textContent = `
+  #inf-drawer {{ position:absolute; left:14px; right:14px; bottom:14px; max-height:46%; display:none; flex-direction:column;
+    background:rgba(13,17,23,.93); backdrop-filter:blur(10px); border:1px solid rgba(168,85,247,.35); border-radius:14px;
+    box-shadow:0 14px 44px rgba(0,0,0,.55); z-index:6; font:12px Inter,system-ui,sans-serif; color:#c9d1d9; overflow:hidden }}
+  .ifd-head {{ display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid rgba(255,255,255,.06) }}
+  .ifd-title {{ font-weight:700; color:#e9d5ff; font-size:13px }}
+  .ifd-scope {{ padding:2px 9px; border-radius:10px; background:rgba(168,85,247,.15); color:#c4b5fd }}
+  .ifd-hint {{ color:#6e7681 }}
+  .ifd-btn {{ background:none; border:1px solid rgba(255,255,255,.12); color:#c4b5fd; border-radius:8px; padding:3px 10px; cursor:pointer }}
+  .ifd-btn:hover {{ background:rgba(168,85,247,.15) }}
+  .ifd-toggle {{ margin-left:auto; width:30px; height:26px; padding:0; font-size:14px }}
+  .ifd-body {{ overflow:auto; padding:6px 8px 10px }}
+  .ifd-row {{ display:grid; grid-template-columns:30px 1fr auto auto; gap:10px; align-items:center; padding:10px 12px;
+    margin:0 0 6px; border-radius:11px; cursor:pointer; background:rgba(255,255,255,.025);
+    border:1px solid rgba(255,255,255,.06); transition:background .15s, border-color .15s, transform .15s }}
+  .ifd-row:hover {{ background:rgba(168,85,247,.10); border-color:rgba(168,85,247,.45); transform:translateY(-1px) }}
+  .ifd-n {{ color:#6e7681; text-align:right; font-variant-numeric:tabular-nums }}
+  .ifd-ent {{ color:#f0f6fc; font-weight:600 }}
+  .ifd-rel {{ color:#c4b5fd; margin:0 4px }}
+  .ifd-pill {{ padding:2px 8px; border-radius:10px; background:rgba(255,255,255,.06); color:#8b949e; font-variant-numeric:tabular-nums; white-space:nowrap }}
+  .ifd-kind {{ padding:2px 9px; border-radius:10px; background:rgba(168,85,247,.18); color:#d8b4fe; white-space:nowrap }}
+  .ifd-detail {{ display:grid; grid-template-columns:minmax(0,3fr) minmax(0,2fr); gap:12px; padding:6px 6px 8px }}
+  .ifd-card {{ background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.07); border-radius:12px; padding:12px 14px }}
+  .ifd-h {{ font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:#8b949e; margin-bottom:8px }}
+  .ifd-step {{ display:flex; gap:10px; align-items:flex-start; margin:7px 0 }}
+  .ifd-num {{ width:20px; height:20px; border-radius:50%; background:#a855f7; color:#fff; display:inline-flex;
+    align-items:center; justify-content:center; font-size:11px; flex:none }}
+  .ifd-src {{ color:#6e7681; font-size:11px; margin-top:2px }}
+  .ifd-result {{ margin-top:10px; padding-top:10px; border-top:1px dashed rgba(168,85,247,.4); color:#e9d5ff }}
+  .ifd-mono {{ font-family:ui-monospace,Menlo,monospace; color:#e6edf3; word-break:break-all }}
+  .ifd-muted {{ color:#8b949e; margin-top:6px }}`;
+  document.head.appendChild(st);
+}})();
+const _esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}})[c]);
+const _nameOf = id => (NODES_DATA.find(n => n.id === id) || {{}})._name || id;
+const _words = r => String(r || '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+const _relText = t => _esc(String(t || '').replace(/ \(inferred\)$/, '')).replace(/—\[(\w+)\]→/g, (m, r) => `<span class="ifd-rel">—[${{_words(r)}}]→</span>`);
+const _KINDS = [['schema_isa', 'parent relation'], ['schema_symmetric', 'symmetric'], ['schema_transitive', 'transitive'], ['mined_', 'learned pattern']];
+const _kind = t => {{ const k = _KINDS.find(([p]) => (t.rule || '').startsWith(p)); const n = (t.premises || []).length;
+  return `${{k ? k[1] : 'rule'}} · ${{n}} premise${{n === 1 ? '' : 's'}}`; }};
+function _inPaper(e, label) {{
+  const p = e._paper || '';
+  if (!p) return false;
+  const ids = p.startsWith('[') ? (() => {{ try {{ return JSON.parse(p); }} catch (x) {{ return [p]; }} }})() : [p];
+  return ids.some(id => paperLabel(String(id).trim()) === label);
+}}
+function _premiseEdges(e) {{
+  const prem = ((e._trace || {{}}).premises || []).filter(p => p.from && p.to);
+  return EDGES_DATA.filter(x => prem.some(p => p.from === x.from && p.to === x.to && p.rel === x._relation));
+}}
+function _infEdges(via) {{        // inferred triples of one direction ('' = both), within the selected paper
+  const ways = v => v === 'both' ? ['forward', 'backward'] : [v || 'forward'];      // found both ways: under both
+  return EDGES_DATA.filter(e => e._inferred && (!via || ways(e._via).includes(via))
+    && (!_curPaper || _inPaper(e, _curPaper) || _premiseEdges(e).some(x => _inPaper(x, _curPaper))));
+}}
+function _updateChips() {{
+  const f = document.getElementById('chip-fwd'), b = document.getElementById('chip-bwd');
+  if (f) f.textContent = `⛓ Forward-inferred (${{_infEdges('forward').length}})`;
+  if (b) b.textContent = `↩ Backward-inferred (${{_infEdges('backward').length}})`;
+}}
+function _showEdges(list, animate) {{      // these edges with their premise facts, and nothing else
+  const shown = new Set();
+  list.forEach(e => {{ shown.add(e.id); _premiseEdges(e).forEach(x => shown.add(x.id)); }});
+  const ids = new Set();
+  EDGES_DATA.forEach(e => {{ if (shown.has(e.id)) {{ ids.add(e.from); ids.add(e.to); }} }});
+  nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: !ids.has(n.id)}})));
+  edgesDS.update(EDGES_DATA.map(e => ({{id: e.id, hidden: !shown.has(e.id)}})));
+  if (ids.size) _fitAbove([...ids], animate);
+  return ids;
+}}
+function _fitAbove(ids, animate) {{      // fit into the area the drawer leaves free
+  network.fit({{nodes: ids, animation: false}});
+  const d = document.getElementById('inf-drawer');
+  const h = d && d.style.display === 'flex' ? d.offsetHeight + 14 : 0;
+  if (!h) return;
+  const sc = network.getScale() * Math.max(0.35, 1 - h / network.body.container.clientHeight);
+  const pos = network.getViewPosition();
+  network.moveTo({{position: {{x: pos.x, y: pos.y + (h / 2) / sc}}, scale: sc,
+                  animation: animate ? {{duration: 450, easingFunction: 'easeInOutQuad'}} : false}});
+}}
+function showReasoned() {{ _showEdges(_infEdges(''), false); }}
 function showInferred(via) {{
+  _infVia = via; _infSel = null;
   if (!via) {{
-    document.getElementById('inf-table').style.display = 'none';
-    nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: false}})));
-    edgesDS.update(EDGES_DATA.map(e => ({{id: e.id, hidden: false}})));
+    document.getElementById('inf-drawer').style.display = 'none';
+    if (_curPaper) filterByPaper(_curPaper); else {{
+      nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: false}})));
+      edgesDS.update(EDGES_DATA.map(e => ({{id: e.id, hidden: false}})));
+      network.fit({{animation: false}});
+    }}
     return;
   }}
-  const keep = new Set(EDGES_DATA.filter(e => e._inferred && (e._via || 'forward') === via).map(e => e.id));
   renderInfTable(via);
-  const ids = new Set();
-  EDGES_DATA.forEach(e => {{ if (keep.has(e.id)) {{ ids.add(e.from); ids.add(e.to); }} }});
-  nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: !ids.has(n.id)}})));
-  edgesDS.update(EDGES_DATA.map(e => ({{id: e.id, hidden: !keep.has(e.id)}})));
+  _showEdges(_infEdges(via), true);
 }}
-
-// Audit table: each inferred triple with the rule, its premises (STV and papers) and the derived STV
+function toggleDrawer() {{
+  _drawerOpen = !_drawerOpen;
+  renderInfTable(_infVia);
+  _showEdges(_infSel != null ? [EDGES_DATA.find(x => String(x.id) === String(_infSel))] : _infEdges(_infVia), true);
+}}
 function renderInfTable(via) {{
-  const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}})[c]);
-  const nameOf = id => (NODES_DATA.find(n => n.id === id) || {{}})._name || id;
-  const words = r => String(r || '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();   // one form for every relation
-  const rel = t => esc(String(t || '').replace(/—\[(\w+)\]→/g, (m, r) => `—[${{words(r)}}]→`));
-  const KINDS = [['schema_isa', 'parent relation'], ['schema_symmetric', 'symmetric'], ['schema_transitive', 'transitive'], ['mined_', 'learned pattern']];
-  const kind = t => {{ const k = KINDS.find(([p]) => (t.rule || '').startsWith(p)); const n = (t.premises || []).length;
-                       return `${{k ? k[1] : 'rule'}} · ${{n}} premise${{n === 1 ? '' : 's'}}`; }};
-  const rows = EDGES_DATA.filter(e => e._inferred && (e._via || 'forward') === via);
-  const box = document.getElementById('inf-table');
-  const th = 'style="position:sticky;top:0;background:#161b22;text-align:left;padding:6px 8px;color:#c4b5fd;font-weight:600"';
-  const td = 'style="padding:6px 8px;border-top:1px solid #21262d;vertical-align:top"';
-  box.innerHTML = `<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#161b22">
-      <b style="color:#c4b5fd">${{via === 'backward' ? '↩ Backward' : '⛓ Forward'}}-inferred triples (${{rows.length}})</b>
-      <span style="color:#8b949e">each row: the rule, the facts it combined and the truth values; click a row to see it on the graph</span>
-      <span style="flex:1"></span><button onclick="showInferred('')" style="background:none;border:1px solid #30363d;color:#8b949e;border-radius:6px;cursor:pointer">✕</button></div>
-    <table style="width:100%;border-collapse:collapse"><tr><th ${{th}}>#</th><th ${{th}}>Inferred triple</th><th ${{th}}>STV</th>
-      <th ${{th}}>How it was inferred (premises ⟹ rule ⟹ result)</th><th ${{th}}>Rule</th></tr>` +
-    rows.map((e, i) => {{
-      const t = e._trace || {{}};
-      const num = '①②③④⑤';
-      const prem = (t.premises || []).map((p, k) => `<div>${{num[k] || '•'}} ${{rel(p.text)}} <span style="color:#8b949e">${{esc(p.stv)}}</span>` +
-        (p.papers && p.papers.length ? `<div style="color:#6e7681;margin-left:16px">from: ${{esc(p.papers.join(', '))}}</div>` : '') + `</div>`).join('')
-        + (t.premises && t.premises.length ? `<div style="margin-top:4px;color:#c4b5fd">⟹ rule ${{esc(t.rule_stv)}} gives <b>${{esc(nameOf(e.from))}}</b> —[${{esc(words(e._relation))}}]→ <b>${{esc(nameOf(e.to))}}</b> ${{esc(t.derived_stv)}}</div>` : '');
-      return `<tr style="cursor:pointer" onclick="focusEdge('${{e.id}}')"><td ${{td}}>${{i + 1}}</td>
-        <td ${{td}}><b>${{esc(nameOf(e.from))}}</b> —[${{esc(words(e._relation))}}]→ <b>${{esc(nameOf(e.to))}}</b>
-          ${{t.question ? `<div style="color:#6e7681">asked: ${{esc(t.question)}}</div>` : ''}}</td>
-        <td ${{td}}>${{esc(t.derived_stv)}}</td>
-        <td ${{td}}>${{prem || '<span style="color:#6e7681">—</span>'}}</td>
-        <td ${{td}}><span style="display:inline-block;padding:1px 8px;border-radius:10px;background:#a855f722;color:#c4b5fd;margin-bottom:3px">${{kind(t)}}</span><div>${{esc(t.rule)}}</div><div style="color:#8b949e">${{esc(t.meaning)}}</div><div style="color:#6e7681">${{esc(t.rule_stv)}}</div></td></tr>`;
-    }}).join('') + `</table>`;
-  box.style.display = rows.length ? 'block' : 'none';
+  const box = document.getElementById('inf-drawer'), head = document.getElementById('ifd-head'), body = document.getElementById('ifd-body');
+  const rows = _infEdges(via);
+  const sel = _infSel != null ? EDGES_DATA.find(x => String(x.id) === String(_infSel)) : null;
+  const title = via === 'backward' ? '↩ Backward-inferred' : '⛓ Forward-inferred';
+  head.innerHTML = (sel ? `<button class="ifd-btn" onclick="backToList()">← All ${{rows.length}}</button>` : '')
+    + `<span class="ifd-title">${{title}} · ${{rows.length}}</span>`
+    + `<span class="ifd-scope">${{_curPaper ? _esc(_curPaper) : 'all papers'}}</span>`
+    + (sel ? '' : '<span class="ifd-hint">click a triple to see how it was inferred</span>')
+    + `<button class="ifd-btn ifd-toggle" title="${{_drawerOpen ? 'Hide' : 'Show'}}" onclick="toggleDrawer()">${{_drawerOpen ? '▾' : '▴'}}</button>`;
+  body.style.display = _drawerOpen ? '' : 'none';
+  if (sel) {{
+    const t = sel._trace || {{}};
+    const steps = (t.premises || []).map((p, k) => `<div class="ifd-step"><span class="ifd-num">${{k + 1}}</span><div>
+        ${{_relText(p.text)}}${{/ \(inferred\)$/.test(p.text || '') ? ' <span class="ifd-kind">inferred earlier</span>' : ''}} <span class="ifd-pill">${{_esc(p.stv)}}</span>
+        ${{p.papers && p.papers.length ? `<div class="ifd-src">from ${{_esc(p.papers.join(', '))}}</div>` : ''}}</div></div>`).join('');
+    body.innerHTML = `<div class="ifd-detail">
+      <div class="ifd-card"><div class="ifd-h">How it was inferred</div>${{steps || '<div class="ifd-muted">no premises recorded</div>'}}
+        <div class="ifd-result">⟹ <span class="ifd-ent">${{_esc(_nameOf(sel.from))}}</span><span class="ifd-rel">—[${{_esc(_words(sel._relation))}}]→</span><span class="ifd-ent">${{_esc(_nameOf(sel.to))}}</span>
+          <span class="ifd-pill">${{_esc(t.derived_stv)}}</span></div></div>
+      <div class="ifd-card"><div class="ifd-h">Rule</div><span class="ifd-kind">${{_kind(t)}}</span>
+        <div class="ifd-mono" style="margin-top:8px">${{_esc(t.rule)}}</div>
+        <div class="ifd-muted">${{_esc(t.meaning)}}</div><div class="ifd-muted">rule truth value <span class="ifd-pill">${{_esc(t.rule_stv)}}</span></div>
+        ${{t.question ? `<div class="ifd-muted">proved for the question: “${{_esc(t.question)}}”</div>` : ''}}</div></div>`;
+  }} else {{
+    body.innerHTML = rows.length ? rows.map((e, i) => {{ const t = e._trace || {{}};
+      return `<div class="ifd-row" onclick="focusEdge('${{e.id}}')"><span class="ifd-n">${{i + 1}}</span>
+        <span><span class="ifd-ent">${{_esc(_nameOf(e.from))}}</span><span class="ifd-rel">—[${{_esc(_words(e._relation))}}]→</span><span class="ifd-ent">${{_esc(_nameOf(e.to))}}</span></span>
+        <span class="ifd-kind">${{_kind(t)}}</span><span class="ifd-pill">${{_esc(t.derived_stv)}}</span></div>`; }}).join('')
+      : '<div class="ifd-muted" style="padding:10px">No inferred triples here.</div>';
+  }}
+  box.style.display = 'flex';
 }}
-
 function focusEdge(id) {{
   const e = EDGES_DATA.find(x => String(x.id) === String(id));
   if (!e) return;
-  // this triple and the facts it was inferred from
-  const prem = ((e._trace || {{}}).premises || []).filter(p => p.from && p.to);
-  const shown = new Set([e.id]);
-  EDGES_DATA.forEach(x => {{ if (prem.some(p => p.from === x.from && p.to === x.to && p.rel === x._relation)) shown.add(x.id); }});
-  const ids = new Set();
-  EDGES_DATA.forEach(x => {{ if (shown.has(x.id)) {{ ids.add(x.from); ids.add(x.to); }} }});
-  nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: !ids.has(n.id)}})));
-  edgesDS.update(EDGES_DATA.map(x => ({{id: x.id, hidden: !shown.has(x.id)}})));
+  _infSel = e.id;
+  renderInfTable(_infVia || (e._via === 'backward' ? 'backward' : 'forward'));
+  _showEdges([e], true);
   network.selectEdges([e.id]);
-  network.fit({{nodes: [...ids], animation: {{duration: 400, easingFunction: 'easeInOutQuad'}}}});
 }}
+function backToList() {{ _infSel = null; renderInfTable(_infVia); _showEdges(_infEdges(_infVia), true); }}
 
 function filterByPaper(paperId) {{
   _focusedNode = null;
   updatePaperBadge(paperId);
+  _curPaper = paperId || '';
+  _updateChips();
+  if (_infVia) {{ showInferred(_infVia); return; }}
   if (!paperId) {{
     // Show all
     nodesDS.update(NODES_DATA.map(n => ({{id: n.id, hidden: false}})));
@@ -933,15 +1021,8 @@ function initNetwork() {{
   network = new vis.Network(container, {{nodes: nodesDS, edges: edgesDS}}, {{
   layout: {{improvedLayout: {'false' if big else 'true'}}},
   physics: {{
-    barnesHut: {{
-      gravitationalConstant: -12000,
-      centralGravity: 0.1,
-      springLength: 220,
-      springConstant: 0.04,
-      damping: 0.12,
-      avoidOverlap: 0.3
-    }},
-    stabilization: {{iterations: {'80' if fast_physics else '300'}, updateInterval: 25}}
+    {_solver}
+    stabilization: {{iterations: {'400' if big else '80' if fast_physics else '300'}, updateInterval: 50}}
   }},
   interaction: {{
     hover: true,
@@ -978,11 +1059,28 @@ function initNetwork() {{
   }}
 }});
 
-// Auto-fit all nodes after stabilization completes
-network.once('stabilizationIterationsDone', function() {{
-  network.fit({{ animation: {{ duration: 600, easingFunction: 'easeInOutQuad' }} }});
+// The graph appears once laid out, already fitted: no zoom in and out while the layout settles
+const _net = document.getElementById('network');
+_net.style.visibility = 'hidden';
+let _shown = false;
+const _wait = document.createElement('div');
+_wait.textContent = 'Laying out ' + NODES_DATA.length + ' nodes…';
+_wait.style.cssText = 'position:absolute;top:45%;width:100%;text-align:center;color:#8b949e;font-size:14px';
+_net.parentNode.appendChild(_wait);
+function _showGraph() {{
+  if (_shown) return;
+  _shown = true;
   network.setOptions({{ physics: {{ enabled: false }} }});
-}});
+  if (NODES_DATA.length > 400 && EDGES_DATA.some(e => e._inferred)) showReasoned();   // what PLN added, and why
+  else network.fit({{ animation: false }});
+  _wait.remove();
+  _net.style.visibility = 'visible';
+}}
+// Dragging a node pulls its neighbours along for a moment, so edges do not stretch across the graph
+network.on('dragStart', p => {{ if (p.nodes.length) network.setOptions({{ physics: {{ enabled: true }} }}); }});
+network.on('dragEnd', p => {{ if (p.nodes.length) setTimeout(() => network.setOptions({{ physics: {{ enabled: false }} }}), 1200); }});
+network.once('stabilizationIterationsDone', _showGraph);
+setTimeout(_showGraph, 15000);          // never stay hidden
 
 // ── Click node ──────────────────────────────────────────────────────────────
 let _focusedNode = null;
