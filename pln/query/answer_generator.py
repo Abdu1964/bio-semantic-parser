@@ -71,6 +71,8 @@ def generate_json(result: ReasoningResult) -> dict:
                 'strength':   a['strength'],
                 'confidence': a['confidence'],
                 'inferred':   a.get('inferred', False),
+                'negated':    a.get('negated', False),
+                'contested':  a.get('contested', False),
                 'proof':      a.get('proof', ''),
             }
             for a in result.answers

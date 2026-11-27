@@ -91,7 +91,9 @@ class ForwardChainer:
         self._rule_info: dict[str, dict] = {}                # rule name → {'text', 'meaning'}
         self._generated: dict[str, str] = {}                 # rules set by set_rules: name → its STV and text
         self._conclusions: set[str] = set()                   # predicates rules conclude
-        self._facts: dict[str, str] = {}                      # fact name → statement atom
+        self._facts: dict[str, str] = {}
+        self.negative: set[str] = set()      # facts papers state only as not holding: answers, never premises
+        self.contested: set[str] = set()     # facts papers both state and deny: truth values revised                      # fact name → statement atom
         self._derived_atoms: list[str] = []
         self._derivations: dict[str, dict] = {}
         self.materialized = False                             # derived once; also when nothing follows
@@ -116,6 +118,24 @@ class ForwardChainer:
             m = _STATEMENT_RE.match(atom.strip())
             if m:
                 self._facts[m.group(1)] = atom
+
+    def fact(self, name: str) -> str | None:
+        """The loaded fact atom with this name."""
+        return self._facts.get(name)
+
+    def replace_fact(self, name: str, atom: str) -> None:
+        """Swap a fact for the same statement with a revised truth value."""
+        self._ensure_handler()
+        try:
+            self._handler.remove_statement(name)
+        except Exception:
+            pass
+        self._handler.add_atom(atom)
+        self._facts[name] = atom
+
+    def uses_negative(self, proof: str) -> bool:
+        """Whether a proof rests on a negative finding: 'A does not bind B' says nothing about what follows."""
+        return bool(self.negative) and bool(self.negative & set(re.findall(r'[A-Za-z0-9_]+', proof)))
 
     def load_rules_file(self, rules_path: Path) -> None:
         """Add the file's rules to PeTTaChainer and note each rule's conclusion predicate."""
@@ -218,8 +238,8 @@ class ForwardChainer:
                     continue
                 proof, p, s, o, sv, cv = parsed
                 parts = _proof_parts(proof)
-                if not parts or (p, s, o) in known or s == o:
-                    continue
+                if not parts or (p, s, o) in known or s == o or self.uses_negative(proof):
+                   continue
                 key = (p, s, o)
                 if key not in best or cv > best[key][4]:
                     best[key] = (proof, parts, s, o, cv, sv)

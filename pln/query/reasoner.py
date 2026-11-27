@@ -104,17 +104,22 @@ class PLNReasoner:
         t0 = time.perf_counter()
         # a name with several entities: one bound query each, since an open query on both sides makes
         # backward chaining try every rule for every pair
-        bound = [pln_query.replace(f'${role}', sym, 1) for role, syms in filters.items() for sym in sorted(syms)]
-        proofs = [p for q in bound for p in self._backward.query(q)] if 0 < len(bound) <= 25 else self._backward.query(pln_query)
+        rels = filters.pop('all_relations', None)          # "What does X?": one query per relation
+        queries = [pln_query.replace('ALL_RELATIONS', r) for r in rels] if rels else [pln_query]
+        bound = [q.replace(f'${role}', sym, 1) for q in queries for role, syms in filters.items() for sym in sorted(syms)]
+        if bound and len(bound) <= 400:
+            queries = bound
+        proofs = [p for q in queries for p in self._backward.query(q)]
         result.proofs = proofs
         log('Backward chaining', f"{len(proofs)} proof(s) found for the query"
-                                 + (f" ({len(bound)} queries, one per matched entity)" if 0 < len(bound) <= 25 else ''), t0,
+                                 + (f" ({len(queries)} queries)" if len(queries) > 1 else ''), t0,
             explain=("Backward chaining starts from the query and works back: it matches the statement against facts "
                      "directly, or against a rule's conclusion and then proves that rule's premises the same way. "
                      "Every way it finds is one proof."),
             data={'proofs': proofs})
 
-        answers = [a for a in (self._parse_proof(p) for p in proofs if p) if a]
+        answers = [a for a in (self._parse_proof(p) for p in proofs if p) if a
+                   and not (a['inferred'] and self._forward.uses_negative(a['proof']))]   # no rule over a "does not"
         if filters:
             kept = [a for a in answers if all(a[role] in allowed for role, allowed in filters.items())]
             log('Filter', f"kept {len(kept)} of {len(answers)} answer(s) about the matched entities",
@@ -137,6 +142,10 @@ class PLNReasoner:
         head = f"{answer['subject']} {answer['predicate']} {answer['object']} (stv {answer['strength']:.2f} {answer['confidence']:.2f})"
         parts = _proof_parts(answer['proof'])
         if not parts:
+            if answer.get('negated'):
+                return f"{head} — negative finding {answer['proof']}: papers state it does NOT hold"
+            if answer.get('contested'):
+                return f"{head} — contested fact {answer['proof']}: papers disagree, truth values revised"
             return f"{head} — stated fact {answer['proof']}"
         rule, premises = parts
         used = ' + '.join(self._forward.premise_label(p) for p in premises)
@@ -156,6 +165,8 @@ class PLNReasoner:
             'strength':   round(strength,   3),
             'confidence': round(confidence, 3),
             'inferred':   prf.startswith('(by '),
+            'negated':    prf in self._forward.negative,     # papers state it only as not holding
+            'contested':  prf in self._forward.contested,    # papers both state and deny it
             'proof':      prf,                       # a fact's name, or (by rule (conjunction premises…))
             'result':     proof,                     # the whole line PeTTaChainer returned
         }

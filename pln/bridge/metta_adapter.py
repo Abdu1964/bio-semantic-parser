@@ -105,10 +105,12 @@ class MeTTaAdapter:
         self.confidence       = confidence        # default STV confidence
         self.default_strength = default_strength  # default STV strength
         self.entities: dict[str, dict] = {}       # entity symbol → {'name', 'type'} for display
+        self.polarity: dict[str, set] = {}         # atom name → {'+'} stated, {'-'} stated as not holding, or both
 
     def csv_truth(self, run_dir: str | Path) -> dict:
-        """(relation, subject ID, object ID) → (strength, default confidence) from the run's Neo4j edge
-        CSVs, which keep each fact's pipeline score for every run."""
+        """(relation, subject ID, object ID, negated) → (strength, default confidence) from the run's Neo4j edge
+        CSVs, which keep each fact's pipeline score for every run. A negative finding scored 0.9 makes the
+        statement 0.1 likely: strength 1 − score."""
         import csv
         truth = {}
         for f in sorted((Path(run_dir) / "neo4j").rglob("edges_*.csv")):
@@ -116,8 +118,10 @@ class MeTTaAdapter:
                 for row in csv.DictReader(open(f, newline="", encoding="utf-8"), delimiter="|"):
                     rel = (row.get("relation") or row.get("label") or "").lower()
                     if rel and row.get("confidence"):
-                        key = (rel, _id_key(row.get("source_id", "")), _id_key(row.get("target_id", "")))
-                        truth[key] = (float(row["confidence"]), self.confidence)
+                        neg = str(row.get("negated", "")).strip().lower() == "true"
+                        key = (rel, _id_key(row.get("source_id", "")), _id_key(row.get("target_id", "")), neg)
+                        score = float(row["confidence"])
+                        truth[key] = (1.0 - score if neg else score, self.confidence)
             except (OSError, ValueError):
                 continue
         return truth
@@ -174,9 +178,6 @@ class MeTTaAdapter:
         result: dict[str, dict] = {}
         for expr, pred, subj, obj in triples:
             m = meta.get(expr, {})
-            negated = m.get('negated', 'False').strip().lower() == 'true'
-            if negated:
-                continue
             subj_id = _extract_id(subj)
             obj_id  = _extract_id(obj)
             name    = _make_atom_name(pred, _id_key(subj_id), _id_key(obj_id))
@@ -185,6 +186,7 @@ class MeTTaAdapter:
                 'source':    m.get('source',    '').strip('"'),
                 'section':   m.get('section',   '').strip('"'),
                 'paper_url': m.get('paper_url', '').strip('"'),
+                'negated':   m.get('negated', 'False').strip().lower() == 'true',
             }
         return result
 
@@ -230,15 +232,15 @@ class MeTTaAdapter:
         atoms = []
         for expr, pred, subj, obj in triples:
             m = meta.get(expr, {})
-            negated = m.get('negated', 'False').strip().lower() == 'true'
-            if negated:
-                continue
-
-            strength   = float(m.get('strength',   str(self.default_strength)))
+            negated = m.get('negated', 'False').strip().lower() == 'true'     # a negative finding: the
+            # same statement with low strength, as PLN (and PeTTaChainer's spec) writes "does not hold"
+            strength   = 0.0 if negated else float(m.get('strength', str(self.default_strength)))
             confidence = float(m.get('confidence', str(self.confidence)))
-            key = (pred.lower(), _id_key(_extract_id(subj)), _id_key(_extract_id(obj)))
+            s_key, o_key = _id_key(_extract_id(subj)), _id_key(_extract_id(obj))
+            key = (pred.lower(), s_key, o_key, negated)
             if truth and key in truth:
                 strength, confidence = truth[key]
+            self.polarity.setdefault(_make_atom_name(pred, s_key, o_key), set()).add('-' if negated else '+')
 
             atom = self._make_atom(pred, subj, obj, strength, confidence, id_to_name)
             if atom:
@@ -274,12 +276,12 @@ class MeTTaAdapter:
         return f"(: {name} ({pascal} {subj_expr} {obj_expr}) (STV {confidence:.3f} {confidence:.3f}))"
 
     def _db_rows(self, staging_db: str | Path) -> list:
-        """Published, non-negated triples of a staging DB."""
+        """Published triples of a staging DB, negative findings included."""
         import sqlite3
         try:
             conn = sqlite3.connect(str(staging_db), timeout=10)
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT * FROM triples WHERE flagged_for_review=0 AND negated=0").fetchall()
+            rows = conn.execute("SELECT * FROM triples WHERE flagged_for_review=0").fetchall()
             conn.close()
             return rows
         except Exception:
@@ -287,21 +289,27 @@ class MeTTaAdapter:
 
     @staticmethod
     def _db_stv(row) -> tuple[float, float]:
-        """Strength = the fact's 5-channel score; confidence = the store's per-triple evidence
-        confidence, or N/(N+1) over its sources for a store without it."""
+        """Strength = the fact's 5-channel score (1 − score for a negative finding); confidence = the store's
+        per-triple evidence confidence, or N/(N+1) over its sources for a store without it."""
         import json
+        score = float(row["confidence"] or 0.5)
+        s = 1.0 - score if MeTTaAdapter._negated(row) else score
         if "evidence_confidence" in row.keys() and row["evidence_confidence"] is not None:
-            return float(row["confidence"] or 0.5), float(row["evidence_confidence"])
+            return s, float(row["evidence_confidence"])
         try:
             n = max(1, len(json.loads(row["source_papers"] or "[]")))
         except (ValueError, TypeError):
             n = 1
-        return float(row["confidence"] or 0.5), round(n / (n + 1), 4)
+        return s, round(n / (n + 1), 4)
+
+    @staticmethod
+    def _negated(row) -> bool:
+        return "negated" in row.keys() and bool(row["negated"])
 
     def db_truth(self, staging_db: str | Path) -> dict:
-        """(relation, subject ID, object ID) → (strength, confidence) from the staging DB."""
-        return {(str(r["relation"]).lower(), _id_key(r["subject_id"]), _id_key(r["object_id"])): self._db_stv(r)
-                for r in self._db_rows(staging_db)}
+        """(relation, subject ID, object ID, negated) → (strength, confidence) from the staging DB."""
+        return {(str(r["relation"]).lower(), _id_key(r["subject_id"]), _id_key(r["object_id"]), self._negated(r)):
+                self._db_stv(r) for r in self._db_rows(staging_db)}
 
     def db_to_atoms(self, staging_db: str | Path) -> list[str]:
         """Atoms from a staging DB, for runs without MeTTa files."""
@@ -311,6 +319,7 @@ class MeTTaAdapter:
             subj = f"({str(r['subject_type']).lower()} {_name_slug(r['subject_name'])})"
             obj  = f"({str(r['object_type']).lower()} {_name_slug(r['object_name'])})"
             name = _make_atom_name(r["relation"], _name_slug(r["subject_name"]), _name_slug(r["object_name"]))
+            self.polarity.setdefault(name, set()).add('-' if self._negated(r) else '+')
             atoms.append(f"(: {name} ({_pascal(r['relation'])} {subj} {obj}) (STV {s:.3f} {c:.3f}))")
         return atoms
 

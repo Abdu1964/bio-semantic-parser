@@ -16,11 +16,11 @@ def _paper(root, name, doc, facts, nodes):
     run = root / name
     (run / "metta" / "disease").mkdir(parents=True)
     (run / "neo4j" / "disease").mkdir(parents=True)
-    edges, rows = [], ["source_id|target_id|relation|confidence"]
-    for rel, s, o, score in facts:
+    edges, rows = [], ["source_id|target_id|relation|confidence|negated"]
+    for rel, s, o, score, *neg in facts:                   # a fifth item True: a negative finding
         t = f"({rel} (disease {s}) (disease {o}))"
-        edges += [t, f"(negated {t} False)", f"(source {t} {doc})"]
-        rows.append(f"{s.replace('_', ':', 1)}|{o.replace('_', ':', 1)}|{rel}|{score}")
+        edges += [t, f"(negated {t} {bool(neg and neg[0])})", f"(source {t} {doc})"]
+        rows.append(f"{s.replace('_', ':', 1)}|{o.replace('_', ':', 1)}|{rel}|{score}|{str(bool(neg and neg[0])).lower()}")
     (run / "metta" / "disease" / f"edges_disease_{facts[0][0]}_disease.metta").write_text("\n".join(edges) + "\n")
     (run / "neo4j" / "disease" / f"edges_{facts[0][0]}.csv").write_text("\n".join(rows) + "\n")
     (run / "metta" / "disease" / "nodes_disease.metta").write_text("\n".join(
@@ -57,7 +57,7 @@ def test_store_evidence_confidence_is_read(tmp_path):
               "flagged_for_review default 0, negated default 0)")
     c.execute("insert into triples values ('causes', 'MESH:D1', 'MESH:D2', 0.9, '[\"P1\",\"P2\"]', 0.6667, 0, 0)")
     c.commit()
-    assert MeTTaAdapter().db_truth(db) == {("causes", "mesh_d1", "mesh_d2"): (0.9, 0.6667)}
+    assert MeTTaAdapter().db_truth(db) == {("causes", "mesh_d1", "mesh_d2", False): (0.9, 0.6667)}
 
 
 def test_malformed_predicates_are_skipped(tmp_path):
@@ -79,6 +79,14 @@ def test_misspelled_or_inflected_relation_words_still_match():
         query, _, notes = plan_query(q, names, ["Regulates", "Inhibits"])
         assert query == "(: $prf (Regulates chebi_26708 $target) $tv)", (q, notes)
     assert plan_query("what does sodium xyz", names, ["Regulates"])[0] is None   # nothing close: no guess
+
+
+def test_relation_words_and_no_relation_questions():
+    names = {"mesh_d1": {"experimental arthritis"}}
+    q, _, _ = plan_query("what does Experimental arthritis has decreased amount ?", names, ["HasDecreasedAmount"])
+    assert q == "(: $prf (HasDecreasedAmount mesh_d1 $target) $tv)"           # the relation's own words
+    q, f, notes = plan_query("what does Experimental arthritis ?", names, ["HasDecreasedAmount", "Regulates"])
+    assert q == "(: $prf (ALL_RELATIONS mesh_d1 $target) $tv)" and f["all_relations"] == ["HasDecreasedAmount", "Regulates"]
 
 
 def test_names_and_synonyms_resolve_to_the_entity():
@@ -120,15 +128,41 @@ def test_inference_both_ways_across_papers(papers, monkeypatch):
     assert any(a["inferred"] for a in only_by_rule.answers)
 
 
-def test_negated_facts_stay_out_and_metadata_is_read(tmp_path):
+def test_negative_findings_load_as_facts_and_metadata_is_read(tmp_path):
     f = tmp_path / "edges_x.metta"
     t1, t2 = "(causes (disease A) (disease B))", "(causes (disease A) (disease C))"
     f.write_text(f"{t1}\n(negated {t1} False)\n(paper_url {t1} https://example.org/p1)\n"
                  f"{t2}\n(negated {t2} True)\n")
     ad = MeTTaAdapter()
     atoms = ad._parse_file(f)
-    assert len(atoms) == 1 and "(Causes a b)" in atoms[0]           # "A does not cause C" is not a fact
+    assert len(atoms) == 2                                          # "A does not cause C" is evidence too
+    assert "(Causes a c) (STV 0.000" in atoms[1] and ad.polarity["causes_a_c"] == {"-"}
     assert ad._parse_file_meta(f)["causes_a_b"]["paper_url"] == "https://example.org/p1"
+    assert ad._parse_file_meta(f)["causes_a_c"]["negated"] is True
+
+
+@needs_petta
+def test_negative_findings_answer_and_revise_but_start_no_inference(tmp_path, monkeypatch):
+    monkeypatch.setenv("ENABLE_PLN", "true")
+    from pln import PLNModule
+    nodes = [("MESH_D1", "Hypertension", ""), ("MESH_D2", "Heart disease", ""), ("MESH_D3", "Heart failure", ""),
+             ("MESH_D4", "Stroke", "")]
+    p1 = _paper(tmp_path, "2026-01-01_00-00-00_P1", "P1", [("part_of", "MESH_D1", "MESH_D2", 0.9),
+                                                            ("causes", "MESH_D1", "MESH_D4", 0.9)], nodes)
+    p2 = _paper(tmp_path, "2026-01-02_00-00-00_P2", "P2", [("part_of", "MESH_D2", "MESH_D3", 0.9, True)], nodes)
+    p3 = _paper(tmp_path, "2026-01-03_00-00-00_P3", "P3", [("causes", "MESH_D1", "MESH_D4", 0.9, True)], nodes)
+    pln = PLNModule.from_env()
+    for p in (p1, p2, p3):
+        pln.load_paper(run_dir=p, staging_db=None)
+
+    neg = pln.ask("What is heart disease part of?").answers           # the negative finding answers
+    assert neg and neg[0]["negated"] and neg[0]["strength"] < 0.2
+    chained = [a for a in pln.ask("What is hypertension part of?").answers if a["object"] == "mesh_d3"]
+    assert not chained                                               # no inference through "D2 is not part of D3"
+    mixed = pln.ask("What does hypertension cause?").answers           # P1 says yes, P3 says no
+    assert mixed and mixed[0]["contested"] and 0.3 < mixed[0]["strength"] < 0.7
+    assert not any("mesh_d3" in a for a in pln.inferred() if "PartOf mesh_d1" in a)
+
 
 
 def test_schema_rules_come_from_the_schema():

@@ -22,6 +22,7 @@ class PLNModule:
         self._label_map: dict[str, tuple[str, str]] = {}
         self._atom_meta: dict[str, dict] = {}
         self._sources: list[dict] = []                        # one entry per loaded paper
+        self._polarity: dict[str, set] = {}                   # fact name → {'+'} / {'-'} / both (contested)
         self._fact_papers: dict[str, list[str]] = {}          # fact name → papers that state it
         self._backward_found: dict[str, dict] = {}            # triples a rule proved for a question
 
@@ -77,6 +78,7 @@ class PLNModule:
         paper = Path(run_dir).name if run_dir else Path(str(staging_db or '')).stem
         self._sources.append({'paper': paper, 'run_dir': str(run_dir or ''), 'files': files,
                               'staging_db': str(staging_db or ''), 'truth_values_from_db': len(truth)})
+        self._adapter.polarity = {}
         if run_dir:
             atoms.extend(self._adapter.load_run_dir(run_dir, truth))
             self._label_map.update(self._adapter.load_labels(run_dir))
@@ -93,18 +95,32 @@ class PLNModule:
         if not atoms:
             return 0
 
-        from pln.chaining.truth_revision import revise_atoms
-        atoms = revise_atoms(atoms)
-        new = []
+        from pln.chaining.truth_revision import revise_atoms, revise, parse_stv
+        atoms = revise_atoms(atoms)                  # within the paper: a finding and its negation are one fact
+        new, revised = [], []
         for atom in atoms:                           # a triple another paper already gave is not added twice:
             m = re.match(r'\(:\s+(\S+)', atom)       # its confidence already counts every paper stating it
             name = m.group(1) if m else atom
+            pol = self._adapter.polarity.get(name, {'+'})
             if name not in self._fact_papers:
                 new.append(atom)
+                self._polarity[name] = set(pol)
+            elif pol - self._polarity[name]:         # this paper disagrees: revise the two truth values
+                old = self._forward.fact(name)
+                stv = revise(parse_stv(old), parse_stv(atom)) if old and parse_stv(old) and parse_stv(atom) else None
+                if stv:
+                    atom = re.sub(r'\(STV [^)]*\)\)\s*$', f'(STV {stv[0]:.3f} {stv[1]:.3f}))', old)
+                    self._forward.replace_fact(name, atom)
+                    self._original_atoms = [atom if a == old else a for a in self._original_atoms]
+                    revised.append(atom)
+                self._polarity[name] |= pol
             self._fact_papers.setdefault(name, []).append(paper)
         self._original_atoms.extend(new)
         self._forward.load_atoms(new)
-        self._forward.invalidate(premises={m.group(1) for a in new if (m := re.match(r'\(:\s+\S+\s+\((\w+)', a))})
+        self._forward.negative = {n for n, p in self._polarity.items() if p == {'-'}}    # never a rule's premise
+        self._forward.contested = {n for n, p in self._polarity.items() if len(p) == 2}
+        self._forward.invalidate(premises={m.group(1) for a in new + revised
+                                           if (m := re.match(r'\(:\s+\S+\s+\((\w+)', a))})
                                                      # derive again only what the new facts' relations can affect
         self._reasoner.invalidate()
         self._rules_stale = True                     # rules follow the facts' relations and patterns

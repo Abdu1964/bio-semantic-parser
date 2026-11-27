@@ -46,9 +46,9 @@ def question_forms(predicate: str) -> tuple[str, str]:
 
 def _form_regex(form: str, slot: str) -> re.Pattern:
     """A question form as a pattern: the slot captures the entity name; spacing, case and a word's
-    -s/-es/-d/-ed ending ('regulates' for 'regulate') are free."""
+    -s/-es/-d/-ed ending ('regulates' for 'regulate') and an article before a word are free."""
     before, after = form.rstrip('?').split(slot)
-    esc = lambda t: r'\s+'.join(re.escape(w) + r'(?:e?s|e?d)?' for w in t.split())
+    esc = lambda t: r'\s+'.join(r'(?:(?:a|an|the)\s+)?' + re.escape(w) + r'(?:e?s|e?d)?' for w in t.split())
     return re.compile(rf"^\s*{esc(before)}\s*(.+?)\s*{esc(after)}\s*\??\s*$", re.I)
 
 
@@ -97,14 +97,49 @@ def plan_query(question: str, names: dict[str, set] | None = None,
         if changes:
             query, filters, notes = _plan(respelled, names, predicates)
             notes = [f"read {', '.join(changes)}"] + notes
+    if query is None and re.match(r"\s*(?:why|how|which)\b", question, re.I):   # the proof answers "why"
+        asked = re.sub(r"^\s*(?:why|how|which)\b", "What", question, flags=re.I)
+        query, filters, notes = plan_query(asked, names, predicates)
+        if query:
+            notes = [f"read '{question.split()[0]}' as 'what': the proof shows why"] + notes
+    if query is None:
+        query, filters, notes = _about(question, names, predicates or []) or (query, filters, notes)
     return query, filters, notes
+
+
+_ABOUT = re.compile(r"^\s*(?:what\s+(?:does|do|did|is|are|about)|tell\s+me\s+about|about)\s+(.+?)"
+                    r"(?:\s+(?:do|does|affect|have|has))?\s*\??\s*$", re.I)
+
+
+def _about(question: str, names: dict, predicates: list[str]):
+    """'What does X?' / 'Tell me about X': every relation with X as the subject. The query's relation is
+    ALL_RELATIONS and filters['all_relations'] lists them; the reasoner sends one query per relation."""
+    m = _ABOUT.match(question)
+    if not m or not predicates:
+        return None
+    name = m.group(1).strip()
+    found, how = _candidates(name, names)
+    if not found:
+        return None
+    filters: dict = {'all_relations': list(predicates)}
+    if len(found) == 1:
+        term, note = found[0], f"subject '{name}' → {found[0]} ({how})"
+    else:
+        term, note = '$subject', f"subject '{name}' matches {len(found)} entities ({how}): {', '.join(found[:12])} → query with $subject, keep only these"
+        filters['subject'] = set(found)
+    return (f"(: $prf (ALL_RELATIONS {term} $target) $tv)", filters,
+            [f"no relation named: every relation ({len(predicates)}) with '{name}' as the subject", note])
 
 
 def _plan(question: str, names: dict[str, set], predicates: list[str] | None) -> tuple[str | None, dict, list[str]]:
     # longer relations first, so 'regulates expression of' wins over 'regulates'
     for pred in sorted(predicates or [], key=lambda p: -len(_words(p))):
         fwd, back = question_forms(pred)
-        for form, slot, role, free in ((fwd, '{s}', 'subject', '$target'), (back, '{o}', 'object', '$source')):
+        plain = f"What does {{s}} {' '.join(_words(pred))}?"          # the relation's own words after "What does X"
+        forms = [(fwd, '{s}', 'subject', '$target'), (back, '{o}', 'object', '$source')]
+        if plain.lower() != fwd.lower():
+            forms.append((plain, '{s}', 'subject', '$target'))
+        for form, slot, role, free in forms:
             m = _form_regex(form, slot).match(question)
             if not m:
                 continue
