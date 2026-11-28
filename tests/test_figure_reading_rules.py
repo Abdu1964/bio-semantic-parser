@@ -34,3 +34,37 @@ def test_enrichment_becomes_an_association():
     assert kept.relation.value == "acts_upstream_of_positive_effect"
     already = _association_if_enrichment(_rel("associates_with", "Panel B shows cell adhesion regulation genes are enriched after 5 days of RTD-1"))
     assert already.relation.value == "associates_with" and already.evidence == "predicted"
+
+
+def test_gene_sets_signatures_and_scores_are_not_entities():
+    from src.figures.vision.reader import _not_an_entity
+    for name in ("AD-GWAS", "aQTL", "AD-DEG-linked-peaks", "erosion DEGs", "core cCRE signature", "erosion score"):
+        assert _not_an_entity(name), name
+    assert not _not_an_entity("Gleason score", "CLINICAL_MEASUREMENT")       # a clinical measure is an entity
+    assert not _not_an_entity("STAT3", "GENE")
+
+
+def _typed(subject_type, relation, reasoning, object_type="GENE"):
+    return BiologicalRelation(subject_name="early AD", subject_type=subject_type, relation=relation,
+                              object_name="MAML2", object_type=object_type, confidence=0.8,
+                              reasoning=reasoning, extraction_viable=True)
+
+
+def test_a_disease_or_cell_state_has_more_or_less_it_does_not_regulate():
+    from src.figures.vision.reader import _amount_if_holder
+    why = "The bar for early AD is lower than control for MAML2 in the differential expression panel"
+    assert _amount_if_holder(_typed("DISEASE", "downregulates", why)).relation.value == "has_decreased_amount"
+    assert _amount_if_holder(_typed("CELL_TYPE", "upregulates", why)).relation.value == "has_increased_amount"
+    assert _amount_if_holder(_typed("SMALL_MOLECULE", "downregulates", why)).relation.value == "downregulates"   # an agent
+
+
+def test_motif_and_heritability_results_are_predicted_associations():
+    motif = _association_if_enrichment(_typed("GENE", "interacts_with",
+        "Module M2 shows the STAT1 motif as the top hit in the motif analysis heatmap of panel B"))
+    assert motif.relation.value == "associates_with" and motif.evidence == "predicted"
+    ldsc = _association_if_enrichment(_typed("CELL_TYPE", "associates_with",
+        "LDSC heritability for atrial fibrillation is significant in adult atrial cardiomyocytes", "DISEASE"))
+    assert ldsc.evidence == "predicted"
+    ipa = _association_if_enrichment(_typed("SMALL_MOLECULE", "inhibits",
+        "The upstream regulator z-score for TNF is below -2 in the RTD-1 group of panel C"))
+    assert ipa.relation.value == "inhibits" and ipa.evidence == "predicted"

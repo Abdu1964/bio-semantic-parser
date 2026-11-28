@@ -31,12 +31,23 @@ _GROUP_HEADS = {"genes", "snps", "variants", "motifs", "modules", "tfs", "protei
                 "loci", "sites", "factors", "traits", "diseases", "pathways", "groups", "clusters", "samples"}
 
 
-def _not_an_entity(name: str) -> str:
-    """Why a figure name is a group or category rather than one entity, else ''."""
+# Last word of an analysis result named like an entity: a gene set, signature or score ("AD-GWAS", "aQTL",
+# "erosion DEGs", "core cCRE signature", "erosion score").
+_SET_HEADS = {"gwas", "qtl", "qtls", "eqtl", "aqtl", "sqtl", "caqtl", "deg", "degs", "dars", "signature",
+              "signatures", "score", "scores", "set", "sets"}
+
+
+def _not_an_entity(name: str, etype: str = "") -> str:
+    """Why a figure name is a group, gene set, signature or score rather than one entity, else ''."""
     from src.postextraction.entity_normalization import _non_canonical_reason
     words = name.lower().split()
     if words and words[-1] in _GROUP_HEADS:
         return "group of entities"
+    last = (re.split(r"[\s\-_/]+", name.lower().strip()) or [""])[-1]
+    if last in _GROUP_HEADS:
+        return "group of entities"
+    if last in _SET_HEADS and not (last.startswith("score") and etype == "CLINICAL_MEASUREMENT"):
+        return "gene set, signature or score"
     return _non_canonical_reason(name, "")
 
 
@@ -79,6 +90,23 @@ def _clean_name(name: str, tagged: bool = False) -> str:
     return cleaned or name
 
 
+_HOLDERS = {"DISEASE", "CANCER", "PHENOTYPE", "CELL_TYPE", "TISSUE", "ANATOMY", "GROSS_ANATOMICAL_STRUCTURE",
+            "DEVELOPMENTAL_STAGE", "POPULATION", "COHORT", "STUDY_POPULATION"}
+
+
+def _amount_if_holder(rel: BiologicalRelation) -> BiologicalRelation:
+    """A disease, stage, cell state or tissue with more or less of B has_increased/decreased_amount B; up- and
+    downregulates need an agent that causes the change (the taxonomy's definitions)."""
+    flip = {RelationType.UPREGULATES: RelationType.HAS_INCREASED_AMOUNT,
+            RelationType.DOWNREGULATES: RelationType.HAS_DECREASED_AMOUNT}.get(rel.relation)
+    if not flip or rel.subject_type.value not in _HOLDERS:
+        return rel
+    try:
+        return BiologicalRelation(**{**rel.model_dump(), "relation": flip})
+    except (ValidationError, TypeError):
+        return rel
+
+
 def _time_out_of_name(r: dict) -> dict:
     """A time point written with a name moves to the condition: '5 days RTD-1' → RTD-1, condition '5 days'."""
     for side in ("subject_name", "object_name"):
@@ -94,11 +122,19 @@ def _time_out_of_name(r: dict) -> dict:
     return r
 
 
+# Analyses whose results are associations (an over-represented set, motif or heritability), and ones that
+# predict activity from expression (upstream regulators, z-scores): both are predicted, not measured.
+_ASSOCIATION_ANALYSIS = re.compile(r"enrich|over-?represent|\bmotif|heritab|\bldsc\b|\bgsea\b|gene[- ]set", re.I)
+_ACTIVITY_PREDICTION = re.compile(r"upstream regulator|z-?score|predicted (?:activ|inhib)|\bipa\b", re.I)
+
+
 def _association_if_enrichment(rel: BiologicalRelation) -> BiologicalRelation:
-    """Enrichment shows an association: a causal or regulatory relation the model gave for it becomes
-    associates_with, predicted."""
-    if "enrich" not in (rel.reasoning or "").lower():
-        return rel
+    """An enrichment, motif or heritability result is an association: a causal, regulatory or binding relation
+    the model gave for it becomes associates_with, predicted. Activity predicted from expression keeps its
+    relation and is marked predicted."""
+    why = rel.reasoning or ""
+    if not _ASSOCIATION_ANALYSIS.search(why):
+        return rel.model_copy(update={"evidence": "predicted"}) if _ACTIVITY_PREDICTION.search(why) else rel
     if rel.relation.value.startswith(("associat", "correlat", "genetically_associated")):
         return rel.model_copy(update={"evidence": "predicted"})          # an association, still inferred
     return rel.model_copy(update={"relation": RelationType.ASSOCIATES_WITH, "evidence": "predicted"})
@@ -307,7 +343,7 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
             r = _time_out_of_name(r)
             try:
                 rel = _fix_type(BiologicalRelation(**_canonical_direction(r)))
-                rel = _association_if_enrichment(rel) if rel else rel
+                rel = _amount_if_holder(_association_if_enrichment(rel)) if rel else rel
             except (ValidationError, TypeError) as e:
                 invalid += 1
                 logger.info("Figure relation dropped (invalid): %s", str(e)[:200])
@@ -322,7 +358,8 @@ def read_figure(image: bytes, caption: str = "", label: str = "", context: set =
                 continue
             same = lambda a, b: re.sub(r"\s+", "", a.lower()) == re.sub(r"\s+", "", b.lower())   # keeps CD4+ vs CD4-
             why = ("self-loop" if same(rel.subject_name, rel.object_name)
-                   else _not_an_entity(rel.subject_name) or _not_an_entity(rel.object_name))
+                   else _not_an_entity(rel.subject_name, rel.subject_type.value)
+                   or _not_an_entity(rel.object_name, rel.object_type.value))
             if why:
                 not_entities += 1
                 logger.info("Figure relation dropped (%s): %s -> %s", why, rel.subject_name, rel.object_name)
